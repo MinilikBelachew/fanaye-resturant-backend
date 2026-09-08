@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:17.9-alpine
+    container_name: boilerplate-backend-postgres
+    restart: always
+    ports:
+      - "${DATABASE_PORT:-5436}:5432"
+    volumes:
+      - postgres_backend_data_prod:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    environment:
+      POSTGRES_USER: ${DATABASE_USERNAME:-root}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secret}
+      POSTGRES_DB: ${DATABASE_NAME:-api}
+    networks:
+      - backend-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: boilerplate-backend-redis
+    restart: always
+    ports:
+      - "${REDIS_PORT:-6376}:6379"
+    volumes:
+      - redis_backend_data_prod:/data
+    networks:
+      - backend-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: boilerplate-backend-api
+    restart: always
+    ports:
+      - "6040:3001"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      API_PREFIX: backend
+      DATABASE_HOST: postgres
+      DATABASE_URL: postgresql://${DATABASE_USERNAME:-root}:${DATABASE_PASSWORD:-secret}@postgres:5432/${DATABASE_NAME:-api}?schema=public
+      WORKER_HOST: redis://redis:6379/1
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - backend-network
+
+volumes:
+  postgres_backend_data_prod:
+  redis_backend_data_prod:
+
+networks:
+  backend-network:
+    driver: bridge

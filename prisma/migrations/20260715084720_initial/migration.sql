@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "file" ALTER COLUMN "id" DROP DEFAULT;

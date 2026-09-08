@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:17.9-alpine
+    container_name: boilerplate-backend-postgres
+    ports:
+      - "${DATABASE_PORT:-5436}:5432"
+    volumes:
+      - postgres_backend_data_dev:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    environment:
+      POSTGRES_USER: ${DATABASE_USERNAME:-root}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secret}
+      POSTGRES_DB: ${DATABASE_NAME:-api}
+    networks:
+      - backend-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: boilerplate-backend-redis
+    ports:
+      - "${REDIS_PORT:-6376}:6379"
+    volumes:
+      - redis_backend_data_dev:/data
+    networks:
+      - backend-network
+
+  maildev:
+    image: maildev/maildev:latest
+    container_name: boilerplate-backend-maildev
+    ports:
+      - "${MAIL_CLIENT_PORT:-1080}:1080"
+      - "${MAIL_PORT:-1025}:1025"
+    networks:
+      - backend-network
+
+  adminer:
+    image: adminer:latest
+    container_name: boilerplate-backend-adminer
+    ports:
+      - "8080:8080"
+    networks:
+      - backend-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: boilerplate-backend-api
+    ports:
+      - "${APP_PORT:-3001}:${APP_PORT:-3001}"
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+    env_file:
+      - .env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_URL: postgresql://${DATABASE_USERNAME:-root}:${DATABASE_PASSWORD:-secret}@postgres:5432/${DATABASE_NAME:-api}?schema=public
+      WORKER_HOST: redis://redis:6379/1
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - backend-network
+
+volumes:
+  postgres_backend_data_dev:
+  redis_backend_data_dev:
+
+networks:
+  backend-network:
+    driver: bridge

@@ -1,0 +1,74 @@
+name: Deploy Boilerplate Backend to VPS
+
+on:
+  # Allows manual deployment from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: 'Commit Hash, Branch, or Tag to deploy'
+        required: true
+        default: 'main'
+      environment:
+        description: 'Target Environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - 'production'
+          - 'development'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.git_ref }}
+
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 30m
+          script: |
+            set -e
+            echo "Starting backend deployment process for environment: ${{ github.event.inputs.environment }}..."
+
+            # Set directory and compose file based on environment
+            if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+              DEPLOY_DIR="/var/www/boilerplate/backend"
+              COMPOSE_FILE="docker-compose.prod.yml"
+            else
+              DEPLOY_DIR="/var/www/boilerplate-dev/backend"
+              COMPOSE_FILE="docker-compose.dev.yml"
+            fi
+
+            echo "Target Directory: $DEPLOY_DIR"
+            echo "Compose File: $COMPOSE_FILE"
+
+            # Check if directory exists, if not fail gracefully
+            if [ ! -d "$DEPLOY_DIR" ]; then
+              echo "Error: Target directory $DEPLOY_DIR does not exist on the server."
+              exit 1
+            fi
+
+            cd "$DEPLOY_DIR"
+
+            # Fetch all remote updates and reset to the specified ref
+            git fetch --all
+            git reset --hard origin/${{ github.event.inputs.git_ref }} || git reset --hard ${{ github.event.inputs.git_ref }}
+
+            # Rebuild and restart the container
+            echo "Rebuilding and restarting backend services..."
+            sudo docker compose -f "$COMPOSE_FILE" up -d --build
+
+            # Clean up unused Docker images to save space
+            echo "Pruning unused Docker images..."
+            sudo docker image prune -f
+
+            echo "Backend deployment successfully completed!"
