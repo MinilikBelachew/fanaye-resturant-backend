@@ -49,7 +49,8 @@ export class FloorService {
       throw new ForbiddenException('Waiter tables are for waiters only.');
     }
     const floor = await this.loadFloor(context);
-    const shiftDefinitionId = await this.resolveActiveShiftDefinitionId(context);
+    const shiftDefinitionId =
+      await this.resolveActiveShiftDefinitionId(context);
 
     // Per-table coverage for the active shift (any waiter). Matches canWaiterOpenTable:
     // if a coverage row exists for the table → only that waiter; else permanent assignment.
@@ -106,7 +107,12 @@ export class FloorService {
     const context = await this.requireWaiterOnShift(userId);
     const key = this.requireIdempotencyKey(idempotencyKey);
 
-    const existing = await this.findIdempotent(context, START_COMMAND, key, dto);
+    const existing = await this.findIdempotent(
+      context,
+      START_COMMAND,
+      key,
+      dto,
+    );
     if (existing) {
       return existing as unknown as TableSessionResponseDto;
     }
@@ -124,7 +130,11 @@ export class FloorService {
     }
 
     if (
-      !(await this.canWaiterOpenTable(context, table.id, table.assignedWaiterMembershipId))
+      !(await this.canWaiterOpenTable(
+        context,
+        table.id,
+        table.assignedWaiterMembershipId,
+      ))
     ) {
       throw new ForbiddenException({
         status: 403,
@@ -243,12 +253,10 @@ export class FloorService {
     const context = await this.requireBranch(userId);
     const key = this.requireIdempotencyKey(idempotencyKey);
 
-    const existing = await this.findIdempotent(
-      context,
-      CLOSE_COMMAND,
-      key,
-      { tableSessionId, ...dto },
-    );
+    const existing = await this.findIdempotent(context, CLOSE_COMMAND, key, {
+      tableSessionId,
+      ...dto,
+    });
     if (existing) {
       return existing as unknown as TableSessionResponseDto;
     }
@@ -408,8 +416,7 @@ export class FloorService {
         primaryWaiterMembershipId: session?.primaryWaiterMembershipId ?? null,
         waiterName: session?.primaryWaiter.employeeDisplayName ?? null,
         assignedWaiterMembershipId: table.assignedWaiterMembershipId ?? null,
-        assignedWaiterName:
-          table.assignedWaiter?.employeeDisplayName ?? null,
+        assignedWaiterName: table.assignedWaiter?.employeeDisplayName ?? null,
         mine: session?.primaryWaiterMembershipId === context.staffMembershipId,
         readyItemCount: items.filter((item) => item.state === READY_STATE)
           .length,
@@ -437,7 +444,8 @@ export class FloorService {
     tableId: string,
     permanentWaiterMembershipId: string | null,
   ): Promise<boolean> {
-    const shiftDefinitionId = await this.resolveActiveShiftDefinitionId(context);
+    const shiftDefinitionId =
+      await this.resolveActiveShiftDefinitionId(context);
     if (shiftDefinitionId) {
       const coverage = await this.prisma.diningTableShiftCoverage.findUnique({
         where: {

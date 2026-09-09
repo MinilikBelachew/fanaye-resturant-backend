@@ -53,7 +53,7 @@ export class OrdersService {
       }
     }
 
-    const menu = await this.prisma.menu.findFirst({
+    let menu = await this.prisma.menu.findFirst({
       where: {
         tenantId: context.tenantId!,
         status: 'ACTIVE',
@@ -72,7 +72,65 @@ export class OrdersService {
       orderBy: { createdAt: 'desc' },
     });
     if (!menu) {
-      throw new NotFoundException('No active menu for this branch.');
+      menu = await this.prisma.menu.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId ?? null,
+          name: 'Main Menu',
+          status: 'ACTIVE',
+          periods: {
+            create: [
+              {
+                tenantId: context.tenantId!,
+                name: 'All day',
+                startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
+                endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
+                daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
+                status: 'ACTIVE',
+                sortOrder: 0,
+              },
+            ],
+          },
+          categories: {
+            create: [
+              {
+                tenantId: context.tenantId!,
+                name: 'Kitchen',
+                sortOrder: 0,
+                status: 'ACTIVE',
+              },
+              {
+                tenantId: context.tenantId!,
+                name: 'Barista',
+                sortOrder: 1,
+                status: 'ACTIVE',
+              },
+              {
+                tenantId: context.tenantId!,
+                name: 'Cakes',
+                sortOrder: 2,
+                status: 'ACTIVE',
+              },
+              {
+                tenantId: context.tenantId!,
+                name: 'Soft Drinks',
+                sortOrder: 3,
+                status: 'ACTIVE',
+              },
+            ],
+          },
+        },
+        include: {
+          periods: {
+            where: { status: 'ACTIVE' },
+            orderBy: { sortOrder: 'asc' },
+          },
+          categories: {
+            where: { status: 'ACTIVE' },
+            orderBy: { sortOrder: 'asc' },
+          },
+        },
+      });
     }
 
     const activePeriod =
@@ -105,6 +163,7 @@ export class OrdersService {
         category: true,
         station: true,
         periods: true,
+        imageFile: true,
         modifiers: {
           orderBy: { sortOrder: 'asc' },
           include: {
@@ -151,6 +210,11 @@ export class OrdersService {
         categoryName: item.category?.name ?? item.station.name,
         station: { id: item.station.id, name: item.station.name },
         expectedPrepMinutes: item.expectedPrepMinutes,
+        imageKey: item.imageKey,
+        imageFileId: item.imageFileId,
+        imageUrl: item.imageFile?.path
+          ? item.imageFile.path.replace(/\\/g, '/')
+          : null,
         modifierGroups: item.modifiers
           .filter((assignment) => assignment.group.status === 'ACTIVE')
           .map((assignment) => {
@@ -441,7 +505,9 @@ export class OrdersService {
   ): Promise<ServedOrderItemDto> {
     const context = await this.requireBranch(userId);
     if (!context.staffMembershipId) {
-      throw new ForbiddenException('No restaurant membership for this account.');
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
     }
     if (!SERVE_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Only the waiter can mark this served.');
@@ -463,8 +529,7 @@ export class OrdersService {
     }
     if (
       context.roleCode === 'WAITER' &&
-      item.tableSession.primaryWaiterMembershipId !==
-        context.staffMembershipId
+      item.tableSession.primaryWaiterMembershipId !== context.staffMembershipId
     ) {
       throw new ForbiddenException('This is not your table.');
     }

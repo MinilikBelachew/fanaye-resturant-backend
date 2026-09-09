@@ -425,7 +425,8 @@ export class MenuService {
           name: group.name.trim(),
           requiredDefault: kind === 'choice',
           minSelections: kind === 'choice' ? 1 : 0,
-          maxSelections: kind === 'choice' ? 1 : Math.max(group.options.length, 1),
+          maxSelections:
+            kind === 'choice' ? 1 : Math.max(group.options.length, 1),
           status: 'ACTIVE',
           options: {
             create: (group.options ?? [])
@@ -529,7 +530,7 @@ export class MenuService {
       if (!menu) throw new NotFoundException('Menu not found.');
       return menu;
     }
-    const menu = await this.prisma.menu.findFirst({
+    let menu = await this.prisma.menu.findFirst({
       where: {
         tenantId: context.tenantId!,
         status: 'ACTIVE',
@@ -537,7 +538,57 @@ export class MenuService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    if (!menu) throw new NotFoundException('No active menu for this branch.');
+    if (!menu) {
+      menu = await this.prisma.menu.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId ?? null,
+          name: 'Main Menu',
+          status: 'ACTIVE',
+          periods: {
+            create: [
+              {
+                tenantId: context.tenantId!,
+                name: 'All day',
+                startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
+                endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
+                daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
+                status: 'ACTIVE',
+                sortOrder: 0,
+              },
+            ],
+          },
+          categories: {
+            create: [
+              {
+                tenantId: context.tenantId!,
+                name: 'Kitchen',
+                sortOrder: 0,
+                status: 'ACTIVE',
+              },
+              {
+                tenantId: context.tenantId!,
+                name: 'Barista',
+                sortOrder: 1,
+                status: 'ACTIVE',
+              },
+              {
+                tenantId: context.tenantId!,
+                name: 'Cakes',
+                sortOrder: 2,
+                status: 'ACTIVE',
+              },
+              {
+                tenantId: context.tenantId!,
+                name: 'Soft Drinks',
+                sortOrder: 3,
+                status: 'ACTIVE',
+              },
+            ],
+          },
+        },
+      });
+    }
     return menu;
   }
 

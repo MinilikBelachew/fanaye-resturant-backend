@@ -1,12 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsInt,
-  IsOptional,
-  IsString,
-  Matches,
-  Min,
-} from 'class-validator';
+import { IsInt, IsOptional, IsString, Matches, Min } from 'class-validator';
 
 export class CreateDailyCloseDto {
   @ApiProperty({ example: '2026-09-08' })

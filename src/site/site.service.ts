@@ -92,7 +92,8 @@ export class SiteService {
             id: 'hero',
             layout: 'overlay',
             headline: tenantName,
-            subheadline: 'Fresh plates, warm hospitality, and Ethiopian flavor.',
+            subheadline:
+              'Fresh plates, warm hospitality, and Ethiopian flavor.',
             ctaLabel: 'View menu',
             ctaHref: '#menu',
             secondaryCtaLabel: 'Visit us',
@@ -171,9 +172,7 @@ export class SiteService {
       ),
       textColor: String(raw.textColor || DEFAULT_THEME.textColor),
       logoUrl:
-        typeof raw.logoUrl === 'string' && raw.logoUrl
-          ? raw.logoUrl
-          : null,
+        typeof raw.logoUrl === 'string' && raw.logoUrl ? raw.logoUrl : null,
       fontDisplay: String(raw.fontDisplay || DEFAULT_THEME.fontDisplay),
       fontBody: String(raw.fontBody || DEFAULT_THEME.fontBody),
     };
@@ -186,19 +185,17 @@ export class SiteService {
     return this.defaultDraft('Restaurant');
   }
 
-  private toResponse(
-    site: {
-      id: string;
-      tenantId: string;
-      slug: string;
-      status: string;
-      themeJson: unknown;
-      draftDataJson: unknown;
-      publishedDataJson: unknown;
-      publishedAt: Date | null;
-      tenant: { displayName: string };
-    },
-  ): SiteResponseDto {
+  private toResponse(site: {
+    id: string;
+    tenantId: string;
+    slug: string;
+    status: string;
+    themeJson: unknown;
+    draftDataJson: unknown;
+    publishedDataJson: unknown;
+    publishedAt: Date | null;
+    tenant: { displayName: string };
+  }): SiteResponseDto {
     return {
       id: site.id,
       tenantId: site.tenantId,

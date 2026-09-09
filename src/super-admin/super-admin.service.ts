@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
@@ -32,14 +36,41 @@ import {
 const TENANT_PROFILE_KEY = 'TENANT_PROFILE';
 const PLATFORM_FLAGS_KEY = 'PLATFORM_FEATURE_FLAGS';
 
-const DEFAULT_FEATURE_FLAGS: Array<Omit<FeatureFlagDto, 'enabled'> & { enabled: boolean }> = [
-  { key: 'tina_verify', name: 'TinaVerify payment proof', scope: 'Platform', enabled: true },
-  { key: 'multi_branch', name: 'Multi-branch tenancy', scope: 'Pro+', enabled: true },
-  { key: 'kds', name: 'Kitchen display system', scope: 'All plans', enabled: true },
+const DEFAULT_FEATURE_FLAGS: Array<
+  Omit<FeatureFlagDto, 'enabled'> & { enabled: boolean }
+> = [
+  {
+    key: 'tina_verify',
+    name: 'TinaVerify payment proof',
+    scope: 'Platform',
+    enabled: true,
+  },
+  {
+    key: 'multi_branch',
+    name: 'Multi-branch tenancy',
+    scope: 'Pro+',
+    enabled: true,
+  },
+  {
+    key: 'kds',
+    name: 'Kitchen display system',
+    scope: 'All plans',
+    enabled: true,
+  },
   { key: 'barista', name: 'Barista station', scope: 'Pro+', enabled: true },
   { key: 'cakes', name: 'Cakes station', scope: 'Pro+', enabled: true },
-  { key: 'soft_drinks', name: 'Soft drinks station', scope: 'Pro+', enabled: true },
-  { key: 'qr_guest', name: 'Guest QR ordering', scope: 'Deferred', enabled: false },
+  {
+    key: 'soft_drinks',
+    name: 'Soft drinks station',
+    scope: 'Pro+',
+    enabled: true,
+  },
+  {
+    key: 'qr_guest',
+    name: 'Guest QR ordering',
+    scope: 'Deferred',
+    enabled: false,
+  },
 ];
 
 const MANAGER_ROLE_CODES = new Set(['MANAGER', 'OWNER_ADMIN']);
@@ -89,7 +120,7 @@ export class SuperAdminService {
   private async verifySuperAdminAccess(userId: string): Promise<boolean> {
     try {
       if (!userId) return true;
-      const user = await this.prisma.appUser.findUnique({
+      await this.prisma.appUser.findUnique({
         where: { id: String(userId) },
         include: {
           platformRoles: { where: { status: 'ACTIVE' } },
@@ -101,8 +132,12 @@ export class SuperAdminService {
     }
   }
 
-  private readProfile(entitlements?: Array<{ entitlementKey: string; valueJson: unknown }> | null): TenantProfileJson {
-    const row = entitlements?.find((e) => e.entitlementKey === TENANT_PROFILE_KEY);
+  private readProfile(
+    entitlements?: Array<{ entitlementKey: string; valueJson: unknown }> | null,
+  ): TenantProfileJson {
+    const row = entitlements?.find(
+      (e) => e.entitlementKey === TENANT_PROFILE_KEY,
+    );
     return asProfileJson(row?.valueJson);
   }
 
@@ -182,7 +217,9 @@ export class SuperAdminService {
     branchId: string,
     membershipId: string,
   ): Promise<void> {
-    const role = await tx.restaurantRole.findUnique({ where: { code: 'MANAGER' } });
+    const role = await tx.restaurantRole.findUnique({
+      where: { code: 'MANAGER' },
+    });
     if (!role) return;
 
     const existing = await tx.staffRoleAssignment.findFirst({
@@ -273,7 +310,9 @@ export class SuperAdminService {
     }
 
     // KPI 1: Live & Provisioned Tenants
-    const liveTenantsCount = tenants.filter((t) => t.status === 'ACTIVE').length || Math.max(tenants.length, 4);
+    const liveTenantsCount =
+      tenants.filter((t) => t.status === 'ACTIVE').length ||
+      Math.max(tenants.length, 4);
     const provisionedTenantsCount = Math.max(tenants.length, 4);
 
     // KPI 2: Network GMV Today
@@ -296,10 +335,10 @@ export class SuperAdminService {
       const city = name.includes('Adama')
         ? 'Adama'
         : name.includes('Bahir')
-        ? 'Bahir Dar'
-        : name.includes('Hawassa')
-        ? 'Hawassa'
-        : 'Addis Ababa';
+          ? 'Bahir Dar'
+          : name.includes('Hawassa')
+            ? 'Hawassa'
+            : 'Addis Ababa';
       citiesSet.add(city);
     });
     if (citiesSet.size === 0) {
@@ -353,7 +392,20 @@ export class SuperAdminService {
     };
 
     // Multi-Wave Area Chart: Network GMV & Growth Trend
-    const monthNames = ['Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'];
+    const monthNames = [
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+    ];
     const gmvTrend: NetworkGmvTrendPointDto[] = monthNames.map((m, idx) => ({
       period: m,
       networkGmv: Number((72 + idx * 4.2 + (idx % 3) * 3).toFixed(1)),
@@ -388,7 +440,8 @@ export class SuperAdminService {
       planCounts.ENTERPRISE = 1;
     }
 
-    const totalPlans = Object.values(planCounts).reduce((a, b) => a + b, 0) || 1;
+    const totalPlans =
+      Object.values(planCounts).reduce((a, b) => a + b, 0) || 1;
     const planDistribution: PlanDistributionItemDto[] = [
       {
         planCode: 'PRO',
@@ -408,7 +461,9 @@ export class SuperAdminService {
         planCode: 'ENTERPRISE',
         name: 'Enterprise Tier',
         tenantCount: planCounts.ENTERPRISE || 1,
-        percentage: Math.round(((planCounts.ENTERPRISE || 1) / totalPlans) * 100),
+        percentage: Math.round(
+          ((planCounts.ENTERPRISE || 1) / totalPlans) * 100,
+        ),
         color: '#f97316',
       },
       {
@@ -427,10 +482,10 @@ export class SuperAdminService {
       const c = name.includes('Adama')
         ? 'Adama'
         : name.includes('Bahir')
-        ? 'Bahir Dar'
-        : name.includes('Hawassa')
-        ? 'Hawassa'
-        : 'Addis Ababa';
+          ? 'Bahir Dar'
+          : name.includes('Hawassa')
+            ? 'Hawassa'
+            : 'Addis Ababa';
       cityCounts[c] = (cityCounts[c] ?? 0) + 1;
     }
     if (Object.keys(cityCounts).length === 0) {
@@ -439,8 +494,11 @@ export class SuperAdminService {
       cityCounts['Adama'] = 1;
       cityCounts['Bahir Dar'] = 1;
     }
-    const totalBranchCount = Object.values(cityCounts).reduce((a, b) => a + b, 0) || 1;
-    const cityDistribution: CityDistributionItemDto[] = Object.entries(cityCounts).map(([city, count]) => ({
+    const totalBranchCount =
+      Object.values(cityCounts).reduce((a, b) => a + b, 0) || 1;
+    const cityDistribution: CityDistributionItemDto[] = Object.entries(
+      cityCounts,
+    ).map(([city, count]) => ({
       city,
       branchCount: count,
       percentage: Math.round((count / totalBranchCount) * 100),
@@ -452,23 +510,33 @@ export class SuperAdminService {
       const cityName = t.displayName?.includes('Adama')
         ? 'Adama'
         : t.displayName?.includes('Bahir')
-        ? 'Bahir Dar'
-        : t.displayName?.includes('Hawassa')
-        ? 'Hawassa'
-        : 'Addis Ababa';
+          ? 'Bahir Dar'
+          : t.displayName?.includes('Hawassa')
+            ? 'Hawassa'
+            : 'Addis Ababa';
       const planCode = t.subscriptions?.[0]?.plan?.name || 'Pro';
-      const defaultGmv = t.status === 'ACTIVE' ? (t.displayName?.includes('Oven') ? 51280 : t.displayName?.includes('Buna') ? 12440 : 38720) : 0;
+      const defaultGmv =
+        t.status === 'ACTIVE'
+          ? t.displayName?.includes('Oven')
+            ? 51280
+            : t.displayName?.includes('Buna')
+              ? 12440
+              : 38720
+          : 0;
 
       return {
         id: t.id,
         name: t.displayName || t.legalName || 'Restaurant',
-        slug: (t.displayName || 'restaurant').toLowerCase().replace(/\s+/g, '-'),
+        slug: (t.displayName || 'restaurant')
+          .toLowerCase()
+          .replace(/\s+/g, '-'),
         plan: planCode,
         city: cityName,
         branchCount: Math.max(branchCount, 1),
         gmvTodayValue: defaultGmv,
         gmvTodayFormatted: formatK(defaultGmv),
-        activeTablesCount: t.status === 'ACTIVE' ? (todaySessions.length || 16) : 0,
+        activeTablesCount:
+          t.status === 'ACTIVE' ? todaySessions.length || 16 : 0,
         status: t.status,
         active: t.status === 'ACTIVE',
       };
@@ -538,7 +606,10 @@ export class SuperAdminService {
       entityName: a.entityType,
       description: a.reason ?? `${a.action} performed on ${a.entityType}`,
       occurredAt: a.occurredAt.toISOString(),
-      severity: a.action.includes('LOCKED') || a.action.includes('PROVISION') ? 'info' : 'default',
+      severity:
+        a.action.includes('LOCKED') || a.action.includes('PROVISION')
+          ? 'info'
+          : 'default',
     }));
 
     if (recentAuditEvents.length === 0) {
@@ -636,10 +707,16 @@ export class SuperAdminService {
     const result: TenantDetailDto[] = tenants.map((t) => {
       const gmv = tenantGmvMap.get(t.id) || 0;
       const primaryBranch = t.branches?.[0];
-      const planName = t.subscriptions?.[0]?.plan?.name || (t.status === 'ACTIVE' ? 'Pro' : 'Starter');
-      const managerMembership = t.staffMemberships?.find((m: any) => m.user?.displayName);
-      const managerName = managerMembership?.user?.displayName || 'Hiwot Bekele';
-      const managerEmail = managerMembership?.user?.email || 'admin@restaurant.et';
+      const planName =
+        t.subscriptions?.[0]?.plan?.name ||
+        (t.status === 'ACTIVE' ? 'Pro' : 'Starter');
+      const managerMembership = t.staffMemberships?.find(
+        (m: any) => m.user?.displayName,
+      );
+      const managerName =
+        managerMembership?.user?.displayName || 'Hiwot Bekele';
+      const managerEmail =
+        managerMembership?.user?.email || 'admin@restaurant.et';
       const managerPhone = managerMembership?.user?.phone || '+251 11 667 2100';
 
       const branchesList = (t.branches || []).map((b: any) => ({
@@ -655,26 +732,38 @@ export class SuperAdminService {
       const cityName = t.displayName?.includes('Adama')
         ? 'Adama'
         : t.displayName?.includes('Bahir')
-        ? 'Bahir Dar'
-        : t.displayName?.includes('Hawassa')
-        ? 'Hawassa'
-        : 'Addis Ababa';
+          ? 'Bahir Dar'
+          : t.displayName?.includes('Hawassa')
+            ? 'Hawassa'
+            : 'Addis Ababa';
 
       const profile = this.readProfile(t.entitlements);
-      const defaultGmv = t.status === 'ACTIVE' ? (t.displayName?.includes('Oven') ? 51280 : t.displayName?.includes('Buna') ? 12440 : 38720) : 0;
+      const defaultGmv =
+        t.status === 'ACTIVE'
+          ? t.displayName?.includes('Oven')
+            ? 51280
+            : t.displayName?.includes('Buna')
+              ? 12440
+              : 38720
+          : 0;
       const finalGmv = gmv > 0 ? gmv : defaultGmv;
 
       return {
         id: t.id,
         name: t.displayName || t.legalName || 'Restaurant',
         legalName: t.legalName ?? undefined,
-        slug: (t.displayName || 'restaurant').toLowerCase().replace(/\s+/g, '-'),
+        slug: (t.displayName || 'restaurant')
+          .toLowerCase()
+          .replace(/\s+/g, '-'),
         plan: planName,
         city: profile.city || cityName,
-        area: profile.area || (cityName === 'Addis Ababa' ? 'Bole' : 'Downtown'),
+        area:
+          profile.area || (cityName === 'Addis Ababa' ? 'Bole' : 'Downtown'),
         address:
           profile.address ||
-          (primaryBranch ? `${primaryBranch.name}, ${cityName}` : `Main Boulevard, ${cityName}`),
+          (primaryBranch
+            ? `${primaryBranch.name}, ${cityName}`
+            : `Main Boulevard, ${cityName}`),
         phone: profile.contactPhone || managerPhone,
         email: profile.contactEmail || managerEmail,
         manager: managerName,
@@ -693,18 +782,27 @@ export class SuperAdminService {
         gmvTodayFormatted: formatK(finalGmv),
         status: t.status,
         active: t.status === 'ACTIVE',
-        provisionedAt: t.createdAt ? t.createdAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '12 Mar 2026',
-        branchesList: branchesList.length > 0 ? branchesList : [
-          {
-            id: `branch-${t.id.slice(0, 8)}`,
-            name: `${t.displayName || 'Main'} Branch`,
-            displayCode: 'MAIN',
-            status: t.status,
-            timezone: 'Africa/Addis_Ababa',
-            tablesCount: Math.max(t.diningTables?.length || 0, 12),
-            staffCount: Math.max(t.staffMemberships?.length || 0, 8),
-          }
-        ],
+        provisionedAt: t.createdAt
+          ? t.createdAt.toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            })
+          : '12 Mar 2026',
+        branchesList:
+          branchesList.length > 0
+            ? branchesList
+            : [
+                {
+                  id: `branch-${t.id.slice(0, 8)}`,
+                  name: `${t.displayName || 'Main'} Branch`,
+                  displayCode: 'MAIN',
+                  status: t.status,
+                  timezone: 'Africa/Addis_Ababa',
+                  tablesCount: Math.max(t.diningTables?.length || 0, 12),
+                  staffCount: Math.max(t.staffMemberships?.length || 0, 8),
+                },
+              ],
       };
     });
 
@@ -863,10 +961,16 @@ export class SuperAdminService {
     return { data: result };
   }
 
-  async getTenantById(userId: string, tenantId: string): Promise<TenantDetailResponseDto> {
+  async getTenantById(
+    userId: string,
+    tenantId: string,
+  ): Promise<TenantDetailResponseDto> {
     const listResponse = await this.getTenants(userId);
     const found = listResponse.data.find(
-      (t) => t.id === tenantId || t.slug === tenantId || t.name.toLowerCase() === tenantId.toLowerCase()
+      (t) =>
+        t.id === tenantId ||
+        t.slug === tenantId ||
+        t.name.toLowerCase() === tenantId.toLowerCase(),
     );
 
     if (!found) {
@@ -902,18 +1006,28 @@ export class SuperAdminService {
 
       const profile = this.readProfile(dbTenant.entitlements);
       const planName = dbTenant.subscriptions[0]?.plan?.name || 'Pro';
-      const managerMembership = dbTenant.staffMemberships.find((m) => m.user?.displayName);
+      const managerMembership = dbTenant.staffMemberships.find(
+        (m) => m.user?.displayName,
+      );
       const detail: TenantDetailDto = {
         id: dbTenant.id,
         name: dbTenant.displayName || dbTenant.legalName || 'Restaurant',
         legalName: dbTenant.legalName ?? undefined,
-        slug: (dbTenant.displayName || 'restaurant').toLowerCase().replace(/\s+/g, '-'),
+        slug: (dbTenant.displayName || 'restaurant')
+          .toLowerCase()
+          .replace(/\s+/g, '-'),
         plan: planName,
         city: profile.city || 'Addis Ababa',
         area: profile.area || 'Bole',
         address: profile.address || 'Bole Road, Addis Ababa',
-        phone: profile.contactPhone || managerMembership?.user?.phone || '+251 11 667 2100',
-        email: profile.contactEmail || managerMembership?.user?.email || 'admin@restaurant.et',
+        phone:
+          profile.contactPhone ||
+          managerMembership?.user?.phone ||
+          '+251 11 667 2100',
+        email:
+          profile.contactEmail ||
+          managerMembership?.user?.email ||
+          'admin@restaurant.et',
         manager: managerMembership?.user?.displayName || 'Hiwot Bekele',
         hours: profile.hours || '08:00 – 23:00',
         concept: profile.concept || 'Casual dining',
@@ -924,7 +1038,11 @@ export class SuperAdminService {
         gmvTodayFormatted: 'ETB 38.7k',
         status: dbTenant.status,
         active: dbTenant.status === 'ACTIVE',
-        provisionedAt: dbTenant.createdAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+        provisionedAt: dbTenant.createdAt.toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
         branchesList: dbTenant.branches.map((b) => ({
           id: b.id,
           name: b.name,
@@ -942,7 +1060,10 @@ export class SuperAdminService {
     return { data: found };
   }
 
-  async createTenant(userId: string, dto: CreateTenantDto): Promise<TenantDetailResponseDto> {
+  async createTenant(
+    userId: string,
+    dto: CreateTenantDto,
+  ): Promise<TenantDetailResponseDto> {
     await this.verifySuperAdminAccess(userId);
 
     const displayName = (dto.name || '').trim();
@@ -982,8 +1103,7 @@ export class SuperAdminService {
 
       // 2. Create primary Branch
       const branchCode = (
-        dto.branchCode ||
-        displayName.slice(0, 3).toUpperCase() + '-1'
+        dto.branchCode || displayName.slice(0, 3).toUpperCase() + '-1'
       ).slice(0, 40);
       const branch = await tx.branch.create({
         data: {
@@ -1064,7 +1184,9 @@ export class SuperAdminService {
 
       // 6. Create Manager AppUser & Staff Membership if email or managerName is provided
       if (dto.managerEmail || dto.managerName) {
-        const email = dto.managerEmail?.trim() || `manager.${tenant.id.slice(0, 6)}@restaurant.et`;
+        const email =
+          dto.managerEmail?.trim() ||
+          `manager.${tenant.id.slice(0, 6)}@restaurant.et`;
         const phone = dto.managerPhone?.trim() || dto.phone;
 
         let managerUser = await tx.appUser.findFirst({
@@ -1091,7 +1213,11 @@ export class SuperAdminService {
         }
 
         if (dto.managerPassword?.trim()) {
-          await this.upsertUserPassword(tx, managerUser.id, dto.managerPassword.trim());
+          await this.upsertUserPassword(
+            tx,
+            managerUser.id,
+            dto.managerPassword.trim(),
+          );
         }
 
         const managerMembership = await tx.tenantStaffMembership.create({
@@ -1113,7 +1239,12 @@ export class SuperAdminService {
           },
         });
 
-        await this.ensureManagerRole(tx, tenant.id, branch.id, managerMembership.id);
+        await this.ensureManagerRole(
+          tx,
+          tenant.id,
+          branch.id,
+          managerMembership.id,
+        );
       }
 
       await this.upsertTenantProfile(tx, tenant.id, userId, {
@@ -1194,9 +1325,7 @@ export class SuperAdminService {
         await tx.branch.update({
           where: { id: primaryBranch.id },
           data: {
-            ...(dto.branchName?.trim()
-              ? { name: dto.branchName.trim() }
-              : {}),
+            ...(dto.branchName?.trim() ? { name: dto.branchName.trim() } : {}),
             ...(dto.branchCode !== undefined
               ? { displayCode: dto.branchCode?.trim() || null }
               : {}),
@@ -1261,7 +1390,7 @@ export class SuperAdminService {
         dto.email;
 
       if (wantsManagerUpdate) {
-        let membership = existing.staffMemberships[0];
+        const membership = existing.staffMemberships[0];
         const managerName =
           dto.managerName?.trim() ||
           membership?.employeeDisplayName ||
@@ -1279,7 +1408,9 @@ export class SuperAdminService {
           undefined;
 
         if (!membership) {
-          let managerUser = await tx.appUser.findFirst({ where: { email: managerEmail } });
+          let managerUser = await tx.appUser.findFirst({
+            where: { email: managerEmail },
+          });
           if (!managerUser) {
             managerUser = await tx.appUser.create({
               data: {
@@ -1412,10 +1543,7 @@ export class SuperAdminService {
       return {
         id: event.id,
         action: event.action,
-        entityName:
-          event.tenant?.displayName ||
-          event.entityType ||
-          'Platform',
+        entityName: event.tenant?.displayName || event.entityType || 'Platform',
         description:
           event.reason ||
           `${event.action} on ${event.entityType}${
@@ -1471,7 +1599,8 @@ export class SuperAdminService {
       branchName: branch.name,
       branchCode: branch.displayCode || 'MAIN',
       tenantId: branch.tenantId,
-      tenantName: branch.tenant.displayName || branch.tenant.legalName || 'Tenant',
+      tenantName:
+        branch.tenant.displayName || branch.tenant.legalName || 'Tenant',
       status: branch.status,
       openSessions: branch.tableSessions.length,
       openOrders: branch.orders.length,

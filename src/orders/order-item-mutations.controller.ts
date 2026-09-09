@@ -109,11 +109,7 @@ export class CancellationRequestsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: DecideCancellationDto,
   ): Promise<MutationDataResponseDto> {
-    return this.mutations.approveCancellation(
-      String(request.user.id),
-      id,
-      dto,
-    );
+    return this.mutations.approveCancellation(String(request.user.id), id, dto);
   }
 
   @Post(':id/reject')
@@ -124,11 +120,7 @@ export class CancellationRequestsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: DecideCancellationDto,
   ): Promise<MutationDataResponseDto> {
-    return this.mutations.rejectCancellation(
-      String(request.user.id),
-      id,
-      dto,
-    );
+    return this.mutations.rejectCancellation(String(request.user.id), id, dto);
   }
 }
 

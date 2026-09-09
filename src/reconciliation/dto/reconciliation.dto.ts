@@ -1,5 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNumberString, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import {
+  IsNumberString,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from 'class-validator';
 
 export class SubmitReconciliationDto {
   @ApiProperty()

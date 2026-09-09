@@ -151,7 +151,8 @@ export class DailyCloseService {
           orderCount: snapshot.orderCount,
           itemCount: snapshot.itemCount,
           managerOverrideCount: snapshot.managerOverrideCount,
-          blockingIssuesJson: snapshot.blockers as unknown as Prisma.InputJsonValue,
+          blockingIssuesJson:
+            snapshot.blockers as unknown as Prisma.InputJsonValue,
         },
       });
       await this.replaceLines(tx, context, close.id, snapshot);
@@ -369,7 +370,8 @@ export class DailyCloseService {
     };
     if (query.from || query.to) {
       where.businessDate = {};
-      if (query.from) where.businessDate.gte = this.parseBusinessDate(query.from);
+      if (query.from)
+        where.businessDate.gte = this.parseBusinessDate(query.from);
       if (query.to) where.businessDate.lte = this.parseBusinessDate(query.to);
     }
     if (query.status?.trim()) {
@@ -590,9 +592,7 @@ export class DailyCloseService {
     for (const drop of openDrops) {
       blockers.push({
         code:
-          drop.status === 'DISPUTED'
-            ? 'DISPUTED_CASH_DROP'
-            : 'OPEN_CASH_DROP',
+          drop.status === 'DISPUTED' ? 'DISPUTED_CASH_DROP' : 'OPEN_CASH_DROP',
         message: `${drop.waiter.employeeDisplayName} has a ${drop.status.toLowerCase()} cash drop.`,
         entityId: drop.id,
       });
@@ -717,7 +717,9 @@ export class DailyCloseService {
         new Prisma.Decimal(0),
       );
     }
-    return new Prisma.Decimal(session.openingFloatAmount).plus(drops).plus(other);
+    return new Prisma.Decimal(session.openingFloatAmount)
+      .plus(drops)
+      .plus(other);
   }
 
   private async waiterLineForShift(
@@ -761,8 +763,7 @@ export class DailyCloseService {
     const verifiedTransferAmount = payments
       .filter(
         (p) =>
-          p.method === 'TRANSFER' &&
-          ['SETTLED', 'VERIFIED'].includes(p.status),
+          p.method === 'TRANSFER' && ['SETTLED', 'VERIFIED'].includes(p.status),
       )
       .reduce((sum, p) => sum.plus(p.amount), new Prisma.Decimal(0));
     const cashDropped = drops
@@ -1116,10 +1117,7 @@ function parseBlockers(json: Prisma.JsonValue | null): DailyCloseBlockerDto[] {
     return {
       code: String(row.code ?? 'UNKNOWN'),
       message: String(
-        row.message ??
-          row.tableName ??
-          row.code ??
-          'Blocking issue',
+        row.message ?? row.tableName ?? row.code ?? 'Blocking issue',
       ),
       entityId:
         (row.entityId as string) ??

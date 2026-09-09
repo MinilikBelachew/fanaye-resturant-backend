@@ -68,7 +68,10 @@ export class SetWaiterTableCoverageDto {
   @IsUUID()
   shiftDefinitionId: string;
 
-  @ApiProperty({ type: [String], description: 'Dining table ids for this shift' })
+  @ApiProperty({
+    type: [String],
+    description: 'Dining table ids for this shift',
+  })
   @IsArray()
   @IsUUID('4', { each: true })
   tableIds: string[];

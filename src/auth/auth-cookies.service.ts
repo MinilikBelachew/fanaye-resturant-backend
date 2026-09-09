@@ -37,9 +37,12 @@ export class AuthCookiesService {
   }
 
   private cookieOptions(remember: boolean): CookieOptions {
-    const refreshExpires = this.configService.getOrThrow('auth.refreshExpires', {
-      infer: true,
-    });
+    const refreshExpires = this.configService.getOrThrow(
+      'auth.refreshExpires',
+      {
+        infer: true,
+      },
+    );
 
     return {
       httpOnly: true,

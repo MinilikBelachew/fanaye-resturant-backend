@@ -12,15 +12,17 @@ import {
 import { IPaginationOptions } from '../../../../../utils/types/pagination-options';
 import { RoleEnum } from '../../../../../roles/roles.enum';
 
-const SORT_FIELD_MAP: Record<string, keyof Prisma.AppUserOrderByWithRelationInput> =
-  {
-    firstName: 'displayName',
-    lastName: 'displayName',
-    email: 'email',
-    createdAt: 'createdAt',
-    updatedAt: 'updatedAt',
-    id: 'id',
-  };
+const SORT_FIELD_MAP: Record<
+  string,
+  keyof Prisma.AppUserOrderByWithRelationInput
+> = {
+  firstName: 'displayName',
+  lastName: 'displayName',
+  email: 'email',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  id: 'id',
+};
 
 @Injectable()
 export class UsersPrismaRepository implements UserRepository {

@@ -1,5 +1,4 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
@@ -79,9 +78,6 @@ export class ManagerDashboardService {
       todayPayments,
       yesterdayClose,
       todayOrderItems,
-      recentCloses,
-      past7DaysDrops,
-      past7DaysPayments,
     ] = await Promise.all([
       // 1. Total Dining Tables in branch
       this.prisma.diningTable.findMany({
@@ -125,56 +121,16 @@ export class ManagerDashboardService {
         where: { branchId, businessDate },
         include: { currentStation: true },
       }),
-
-      // 7. Recent Operational Daily Closes for monthly trends
-      this.prisma.operationalDailyClose.findMany({
-        where: { branchId },
-        orderBy: { businessDate: 'desc' },
-        take: 30,
-      }),
-
-      // 8. Past 7 days Cash Drops
-      this.prisma.cashDrop.findMany({
-        where: {
-          branchId,
-          businessDate: {
-            gte: new Date(
-              businessDate.getTime() - 7 * 24 * 60 * 60 * 1000,
-            ),
-            lte: businessDate,
-          },
-          status: { in: ['RECEIVED', 'RESOLVED', 'INITIATED'] },
-        },
-      }),
-
-      // 9. Past 7 days Payments
-      this.prisma.payment.findMany({
-        where: {
-          branchId,
-          businessDate: {
-            gte: new Date(
-              businessDate.getTime() - 7 * 24 * 60 * 60 * 1000,
-            ),
-            lte: businessDate,
-          },
-          status: { in: ['SETTLED', 'VERIFIED'] },
-        },
-      }),
     ]);
 
     // Calculate Today's Revenue & Collections
-    let todayGrossSales = 0;
     let todayNetRevenue = 0;
     for (const b of todayBills) {
-      todayGrossSales += Number(b.subtotalAmount);
       todayNetRevenue += Number(b.totalAmount);
     }
 
     let todayCashSales = 0;
     let todayVerifiedTransferSales = 0;
-    let todayPendingTransferSales = 0;
-    let todayVerifiedReceiptsCount = 0;
-    let todayTotalTransfersCount = 0;
 
     const channelTotals: Record<string, number> = {
       telebirr: 0,
@@ -190,12 +146,8 @@ export class ManagerDashboardService {
         todayCashSales += amt;
         channelTotals.cash += amt;
       } else if (p.method === 'TRANSFER') {
-        todayTotalTransfersCount++;
         if (['SETTLED', 'VERIFIED'].includes(p.status)) {
           todayVerifiedTransferSales += amt;
-          if (p.receipt) todayVerifiedReceiptsCount++;
-        } else {
-          todayPendingTransferSales += amt;
         }
 
         const ch = (p.transferChannel ?? '').toUpperCase();
@@ -203,7 +155,11 @@ export class ManagerDashboardService {
           channelTotals.telebirr += amt;
         } else if (ch.includes('CBE')) {
           channelTotals.cbe += amt;
-        } else if (ch.includes('AWASH') || ch.includes('DASHEN') || ch.includes('BANK')) {
+        } else if (
+          ch.includes('AWASH') ||
+          ch.includes('DASHEN') ||
+          ch.includes('BANK')
+        ) {
           channelTotals.transfer += amt;
         } else {
           channelTotals.other += amt;
@@ -212,11 +168,12 @@ export class ManagerDashboardService {
     }
 
     const totalCollections = todayCashSales + todayVerifiedTransferSales;
-    const finalRevenue = todayNetRevenue > 0 ? todayNetRevenue : totalCollections;
+    const finalRevenue =
+      todayNetRevenue > 0 ? todayNetRevenue : totalCollections;
 
     // Yesterday Trend Comparison
     let revTrend = '+23%';
-    let revTrendLabel = 'vs yesterday';
+    const revTrendLabel = 'vs yesterday';
     if (yesterdayClose && Number(yesterdayClose.netBilledSales) > 0) {
       const yestNet = Number(yesterdayClose.netBilledSales);
       const diff = ((finalRevenue - yestNet) / yestNet) * 100;
@@ -293,7 +250,10 @@ export class ManagerDashboardService {
       {
         id: 'telebirr',
         name: 'Telebirr',
-        sharePercentage: totalChannelVolume > 0 ? Math.round((channelTotals.telebirr / totalChannelVolume) * 100) : 38,
+        sharePercentage:
+          totalChannelVolume > 0
+            ? Math.round((channelTotals.telebirr / totalChannelVolume) * 100)
+            : 38,
         amountFormatted: formatK(channelTotals.telebirr || 18800),
         amountValue: channelTotals.telebirr || 18800,
         color: '#e85d04',
@@ -301,7 +261,10 @@ export class ManagerDashboardService {
       {
         id: 'cbe',
         name: 'CBE Birr',
-        sharePercentage: totalChannelVolume > 0 ? Math.round((channelTotals.cbe / totalChannelVolume) * 100) : 29,
+        sharePercentage:
+          totalChannelVolume > 0
+            ? Math.round((channelTotals.cbe / totalChannelVolume) * 100)
+            : 29,
         amountFormatted: formatK(channelTotals.cbe || 14300),
         amountValue: channelTotals.cbe || 14300,
         color: '#ea580c',
@@ -309,7 +272,10 @@ export class ManagerDashboardService {
       {
         id: 'transfer',
         name: 'Bank transfer (Awash/Dashen)',
-        sharePercentage: totalChannelVolume > 0 ? Math.round((channelTotals.transfer / totalChannelVolume) * 100) : 19,
+        sharePercentage:
+          totalChannelVolume > 0
+            ? Math.round((channelTotals.transfer / totalChannelVolume) * 100)
+            : 19,
         amountFormatted: formatK(channelTotals.transfer || 9400),
         amountValue: channelTotals.transfer || 9400,
         color: '#f97316',
@@ -317,7 +283,10 @@ export class ManagerDashboardService {
       {
         id: 'cash',
         name: 'Cash',
-        sharePercentage: totalChannelVolume > 0 ? Math.round((channelTotals.cash / totalChannelVolume) * 100) : 11,
+        sharePercentage:
+          totalChannelVolume > 0
+            ? Math.round((channelTotals.cash / totalChannelVolume) * 100)
+            : 11,
         amountFormatted: formatK(channelTotals.cash || 5400),
         amountValue: channelTotals.cash || 5400,
         color: '#fb923c',
@@ -325,7 +294,10 @@ export class ManagerDashboardService {
       {
         id: 'other',
         name: 'Partner / Card',
-        sharePercentage: totalChannelVolume > 0 ? Math.round((channelTotals.other / totalChannelVolume) * 100) : 3,
+        sharePercentage:
+          totalChannelVolume > 0
+            ? Math.round((channelTotals.other / totalChannelVolume) * 100)
+            : 3,
         amountFormatted: formatK(channelTotals.other || 1500),
         amountValue: channelTotals.other || 1500,
         color: '#fdba74',
@@ -432,23 +404,40 @@ export class ManagerDashboardService {
     }
 
     // Sales Trend (Gross vs Net vs Collections)
-    const monthNames = ['Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'];
-    const salesTrend: RevenueVsCollectionsPointDto[] = monthNames.map((m, idx) => ({
-      period: m,
-      grossSales: Number((35 + idx * 1.5 + (idx % 3) * 2).toFixed(1)),
-      netRevenue: Number((33 + idx * 1.4 + (idx % 3) * 1.8).toFixed(1)),
-      collections: Number((32 + idx * 1.3 + (idx % 3) * 1.7).toFixed(1)),
-    }));
+    const monthNames = [
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+    ];
+    const salesTrend: RevenueVsCollectionsPointDto[] = monthNames.map(
+      (m, idx) => ({
+        period: m,
+        grossSales: Number((35 + idx * 1.5 + (idx % 3) * 2).toFixed(1)),
+        netRevenue: Number((33 + idx * 1.4 + (idx % 3) * 1.8).toFixed(1)),
+        collections: Number((32 + idx * 1.3 + (idx % 3) * 1.7).toFixed(1)),
+      }),
+    );
 
     // Weekly Cash Movement
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const weeklyCashMovement: WeeklyCashMovementPointDto[] = days.map((d, i) => {
-      return {
-        day: d,
-        digitalInflow: Number((6 + i * 0.9 + (i % 2) * 1.2).toFixed(1)),
-        cashDrop: Number((4.5 + i * 0.7 + (i % 2) * 0.8).toFixed(1)),
-      };
-    });
+    const weeklyCashMovement: WeeklyCashMovementPointDto[] = days.map(
+      (d, i) => {
+        return {
+          day: d,
+          digitalInflow: Number((6 + i * 0.9 + (i % 2) * 1.2).toFixed(1)),
+          cashDrop: Number((4.5 + i * 0.7 + (i % 2) * 0.8).toFixed(1)),
+        };
+      },
+    );
 
     const data: ManagerDashboardDataDto = {
       kpis,

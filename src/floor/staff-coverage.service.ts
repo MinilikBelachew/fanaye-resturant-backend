@@ -409,8 +409,7 @@ export class StaffCoverageService {
             tenantId: context.tenantId!,
             staffMembershipId: membershipId,
             roleId: role.id,
-            branchId:
-              nextRoleCode === 'OWNER_ADMIN' ? null : context.branchId!,
+            branchId: nextRoleCode === 'OWNER_ADMIN' ? null : context.branchId!,
             status: 'ACTIVE',
             grantedByMembershipId: context.staffMembershipId,
           },
@@ -450,7 +449,9 @@ export class StaffCoverageService {
     return { data: this.toStaffDto(member) };
   }
 
-  async listShifts(userId: string): Promise<AdminShiftDefinitionListResponseDto> {
+  async listShifts(
+    userId: string,
+  ): Promise<AdminShiftDefinitionListResponseDto> {
     const context = await this.requireAdmin(userId);
     const shifts = await this.prisma.shiftDefinition.findMany({
       where: { branchId: context.branchId!, status: 'ACTIVE' },
@@ -796,10 +797,7 @@ export class StaffCoverageService {
     return fallback?.id ?? null;
   }
 
-  private async loadStaffMember(
-    context: AuthContextDto,
-    membershipId: string,
-  ) {
+  private async loadStaffMember(context: AuthContextDto, membershipId: string) {
     const member = await this.prisma.tenantStaffMembership.findFirst({
       where: {
         id: membershipId,

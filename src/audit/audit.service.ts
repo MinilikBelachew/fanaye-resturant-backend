@@ -295,9 +295,10 @@ function presentAction(
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(' '),
     badge: fallbackBadge,
-    variant: category === 'fulfillment' || category === 'payments'
-      ? 'success'
-      : 'default',
+    variant:
+      category === 'fulfillment' || category === 'payments'
+        ? 'success'
+        : 'default',
   };
 }
 

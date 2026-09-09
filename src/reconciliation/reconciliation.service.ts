@@ -35,7 +35,10 @@ export class ReconciliationService {
   async preview(userId: string): Promise<ReconciliationPreviewResponseDto> {
     const context = await this.requireCashierOnShift(userId);
     const session = await this.ensureOpenSession(context);
-    const totals = await this.computeExpected(session.id, session.openingFloatAmount);
+    const totals = await this.computeExpected(
+      session.id,
+      session.openingFloatAmount,
+    );
     const existing = await this.prisma.cashierReconciliation.findUnique({
       where: { cashierFinancialSessionId: session.id },
     });
@@ -169,9 +172,7 @@ export class ReconciliationService {
     return payload;
   }
 
-  async listForReview(
-    userId: string,
-  ): Promise<ReconciliationListResponseDto> {
+  async listForReview(userId: string): Promise<ReconciliationListResponseDto> {
     const context = await this.requireReviewer(userId);
     const rows = await this.prisma.cashierReconciliation.findMany({
       where: {
@@ -351,9 +352,7 @@ export class ReconciliationService {
     return context;
   }
 
-  private async requireCashierOnShift(
-    userId: string,
-  ): Promise<AuthContextDto> {
+  private async requireCashierOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
     if (!CASHIER_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Reconciliation is for cashiers.');

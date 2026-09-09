@@ -63,7 +63,6 @@ export class IdentityContextService {
       ? PLATFORM_ROLE_CODE
       : (roleAssignment?.role.code ?? 'NONE');
 
-
     const workspaces: AuthWorkspaceDto[] = [];
     if (isPlatformAdmin) {
       workspaces.push({
@@ -86,7 +85,8 @@ export class IdentityContextService {
     }
 
     const permissions =
-      roleAssignment?.role.permissions.map((item) => item.permission.code) ?? [];
+      roleAssignment?.role.permissions.map((item) => item.permission.code) ??
+      [];
 
     return {
       userId: user.id,
@@ -95,7 +95,8 @@ export class IdentityContextService {
       phone: user.phone,
       tenantId: membership?.tenantId ?? null,
       branchId: branchAssignment?.branchId ?? null,
-      branchName: branchAssignment?.branch.name ?? membership?.tenant.displayName ?? null,
+      branchName:
+        branchAssignment?.branch.name ?? membership?.tenant.displayName ?? null,
       staffMembershipId: membership?.id ?? null,
       roleCode,
       stationId: stationAssignment?.stationId ?? null,

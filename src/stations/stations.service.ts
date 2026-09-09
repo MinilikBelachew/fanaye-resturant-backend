@@ -196,7 +196,9 @@ export class StationsService {
   ) {
     const context = await this.requireBranch(userId);
     if (!context.staffMembershipId) {
-      throw new ForbiddenException('No restaurant membership for this account.');
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
     }
     const item = await this.prisma.orderItem.findFirst({
       where: { id: orderItemId, branchId: context.branchId! },
@@ -265,7 +267,9 @@ const ticketInclude = {
   },
 } satisfies Prisma.OrderItemInclude;
 
-type TicketRecord = Prisma.OrderItemGetPayload<{ include: typeof ticketInclude }>;
+type TicketRecord = Prisma.OrderItemGetPayload<{
+  include: typeof ticketInclude;
+}>;
 
 function parseStates(raw?: string): string[] {
   if (!raw?.trim()) return DEFAULT_STATES;

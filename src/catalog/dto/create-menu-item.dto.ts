@@ -55,7 +55,9 @@ export class CreateMenuItemDto {
   @IsString()
   name: string;
 
-  @ApiPropertyOptional({ example: 'Minced lean beef seasoned with spiced butter.' })
+  @ApiPropertyOptional({
+    example: 'Minced lean beef seasoned with spiced butter.',
+  })
   @IsString()
   @IsOptional()
   description?: string;

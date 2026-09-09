@@ -11,10 +11,7 @@ import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { ExpectedTableSessionVersionDto } from './dto/expected-table-session-version.dto';
-import {
-  CashPaymentDto,
-  TransferPaymentDto,
-} from './dto/payment.dto';
+import { CashPaymentDto, TransferPaymentDto } from './dto/payment.dto';
 import {
   BillDto,
   BillRequestCreatedDto,
@@ -53,12 +50,10 @@ export class BillingService {
   ): Promise<BillRequestCreatedDto> {
     const context = await this.requireWaiterOnShift(userId);
     const key = this.requireIdempotencyKey(idempotencyKey);
-    const existing = await this.findIdempotent(
-      context,
-      REQUEST_COMMAND,
-      key,
-      { tableSessionId, ...dto },
-    );
+    const existing = await this.findIdempotent(context, REQUEST_COMMAND, key, {
+      tableSessionId,
+      ...dto,
+    });
     if (existing) return existing as unknown as BillRequestCreatedDto;
 
     const session = await this.prisma.tableSession.findFirst({
@@ -268,8 +263,7 @@ export class BillingService {
         billRequestId: request.id,
         tableSessionId: request.tableSessionId,
         tableDisplayName:
-          table.displayNumber ??
-          table.displayName.replace(/^Table\s+/i, ''),
+          table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''),
         waiter: {
           membershipId: request.requestedByMembershipId,
           displayName: request.requestedBy.employeeDisplayName,
@@ -297,18 +291,20 @@ export class BillingService {
   ): Promise<BillDto> {
     const context = await this.requireBranch(userId);
     if (!GENERATE_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Only cashier or manager can generate bills.');
+      throw new ForbiddenException(
+        'Only cashier or manager can generate bills.',
+      );
     }
     if (!context.staffMembershipId) {
-      throw new ForbiddenException('No restaurant membership for this account.');
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
     }
     const key = this.requireIdempotencyKey(idempotencyKey);
-    const existing = await this.findIdempotent(
-      context,
-      GENERATE_COMMAND,
-      key,
-      { billRequestId, ...dto },
-    );
+    const existing = await this.findIdempotent(context, GENERATE_COMMAND, key, {
+      billRequestId,
+      ...dto,
+    });
     if (existing) return existing as unknown as BillDto;
 
     const request = await this.prisma.billRequest.findFirst({
@@ -346,9 +342,7 @@ export class BillingService {
         errors: { bill: 'BILL_ALREADY_EXISTS' },
       });
     }
-    if (
-      request.tableSession.version !== dto.expectedTableSessionVersion
-    ) {
+    if (request.tableSession.version !== dto.expectedTableSessionVersion) {
       this.staleVersion(request.tableSession.version);
     }
 
@@ -512,12 +506,10 @@ export class BillingService {
   ): Promise<CashPaymentResponseDto> {
     const context = await this.requireCollectorOnShift(userId);
     const key = this.requireIdempotencyKey(idempotencyKey);
-    const existing = await this.findIdempotent(
-      context,
-      CASH_COMMAND,
-      key,
-      { billId, ...dto },
-    );
+    const existing = await this.findIdempotent(context, CASH_COMMAND, key, {
+      billId,
+      ...dto,
+    });
     if (existing) return existing as unknown as CashPaymentResponseDto;
 
     const bill = await this.loadPayableBill(context, billId);
@@ -620,12 +612,10 @@ export class BillingService {
   ): Promise<TransferPaymentResponseDto> {
     const context = await this.requireCollectorOnShift(userId);
     const key = this.requireIdempotencyKey(idempotencyKey);
-    const existing = await this.findIdempotent(
-      context,
-      TRANSFER_COMMAND,
-      key,
-      { billId, ...dto },
-    );
+    const existing = await this.findIdempotent(context, TRANSFER_COMMAND, key, {
+      billId,
+      ...dto,
+    });
     if (existing) return existing as unknown as TransferPaymentResponseDto;
 
     const bill = await this.loadPayableBill(context, billId);
@@ -786,8 +776,7 @@ export class BillingService {
           billNumber: payment.bill.billNumber,
           tableSessionId: payment.bill.tableSessionId,
           tableDisplayName:
-            table.displayNumber ??
-            table.displayName.replace(/^Table\s+/i, ''),
+            table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''),
           waiterName: payment.collector.employeeDisplayName,
           sessionStatus: session.status,
           tableClosed: session.status === 'CLOSED' || Boolean(session.closedAt),

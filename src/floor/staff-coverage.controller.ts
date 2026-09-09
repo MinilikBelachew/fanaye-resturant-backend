@@ -64,11 +64,7 @@ export class StaffCoverageController {
     @Param('membershipId', ParseUUIDPipe) membershipId: string,
     @Body() dto: UpdateAdminStaffDto,
   ): Promise<AdminStaffMemberResponseDto> {
-    return this.staff.updateStaff(
-      String(request.user.id),
-      membershipId,
-      dto,
-    );
+    return this.staff.updateStaff(String(request.user.id), membershipId, dto);
   }
 
   @Get('shift-definitions')

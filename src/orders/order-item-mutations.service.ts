@@ -340,7 +340,8 @@ export class OrderItemMutationsService {
       where: { id: requestId, branchId: context.branchId! },
       include: { orderItem: true },
     });
-    if (!request) throw new NotFoundException('Cancellation request not found.');
+    if (!request)
+      throw new NotFoundException('Cancellation request not found.');
     if (request.status !== 'PENDING') {
       throw new UnprocessableEntityException({
         status: 422,
@@ -348,10 +349,7 @@ export class OrderItemMutationsService {
         errors: { status: request.status },
       });
     }
-    this.assertVersion(
-      request.orderItem.version,
-      dto.expectedOrderItemVersion,
-    );
+    this.assertVersion(request.orderItem.version, dto.expectedOrderItemVersion);
 
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
@@ -420,10 +418,7 @@ export class OrderItemMutationsService {
         errors: { status: request.status },
       });
     }
-    this.assertVersion(
-      request.orderItem.version,
-      dto.expectedOrderItemVersion,
-    );
+    this.assertVersion(request.orderItem.version, dto.expectedOrderItemVersion);
 
     const now = new Date();
     if (!approve) {
@@ -521,7 +516,11 @@ export class OrderItemMutationsService {
         },
         include: { station: true },
       });
-      if (!menuItem || !menuItem.station || menuItem.station.status !== 'ACTIVE') {
+      if (
+        !menuItem ||
+        !menuItem.station ||
+        menuItem.station.status !== 'ACTIVE'
+      ) {
         throw new UnprocessableEntityException({
           status: 422,
           code: 'MENU_ITEM_UNAVAILABLE',
@@ -565,15 +564,14 @@ export class OrderItemMutationsService {
           }
         : {};
 
-    const statePatch =
-      change.menuItemId
-        ? {}
-        : {
-            // Instruction-only change on early items keeps current state.
-            state: DIRECT_CHANGE_STATES.includes(item.state)
-              ? item.state
-              : 'QUEUED',
-          };
+    const statePatch = change.menuItemId
+      ? {}
+      : {
+          // Instruction-only change on early items keeps current state.
+          state: DIRECT_CHANGE_STATES.includes(item.state)
+            ? item.state
+            : 'QUEUED',
+        };
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (createAppliedRequest) {

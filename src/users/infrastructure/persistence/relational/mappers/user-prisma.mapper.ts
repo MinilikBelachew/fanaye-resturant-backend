@@ -33,7 +33,8 @@ export class UserPrismaMapper {
     domainEntity.id = raw.id;
     domainEntity.email = raw.email;
     domainEntity.password = raw.credential?.passwordHash ?? undefined;
-    domainEntity.provider = raw.credential?.authProvider ?? raw.authProvider ?? 'email';
+    domainEntity.provider =
+      raw.credential?.authProvider ?? raw.authProvider ?? 'email';
     domainEntity.socialId = raw.credential?.socialId ?? null;
     domainEntity.firstName = names.firstName;
     domainEntity.lastName = names.lastName;
@@ -46,7 +47,8 @@ export class UserPrismaMapper {
 
     domainEntity.createdAt = raw.createdAt;
     domainEntity.updatedAt = raw.updatedAt;
-    domainEntity.deletedAt = raw.accountStatus === 'DISABLED' ? raw.updatedAt : (null as any);
+    domainEntity.deletedAt =
+      raw.accountStatus === 'DISABLED' ? raw.updatedAt : (null as any);
 
     return domainEntity;
   }

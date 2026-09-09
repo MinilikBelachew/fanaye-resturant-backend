@@ -44,7 +44,9 @@ export class AuthService {
     private readonly identityContextService: IdentityContextService,
   ) {}
 
-  async validateLogin(loginDto: AuthEmailLoginDto): Promise<LoginSessionResult> {
+  async validateLogin(
+    loginDto: AuthEmailLoginDto,
+  ): Promise<LoginSessionResult> {
     const user = await this.usersService.findByEmail(loginDto.email);
 
     if (!user) {
@@ -115,7 +117,9 @@ export class AuthService {
       remember: loginDto.remember ?? true,
     });
 
-    const context = await this.identityContextService.getByUserId(String(user.id));
+    const context = await this.identityContextService.getByUserId(
+      String(user.id),
+    );
 
     return {
       refreshToken,

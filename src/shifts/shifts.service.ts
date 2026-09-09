@@ -43,7 +43,10 @@ export class ShiftsService {
       orderBy: { clockInAt: 'desc' },
     });
 
-    const upcoming = await this.nextAssignment(context.staffMembershipId, context.branchId);
+    const upcoming = await this.nextAssignment(
+      context.staffMembershipId,
+      context.branchId,
+    );
 
     return {
       clockedIn: Boolean(open),
@@ -52,10 +55,15 @@ export class ShiftsService {
     };
   }
 
-  async clockIn(userId: string, dto: ClockInDto): Promise<CurrentShiftResponseDto> {
+  async clockIn(
+    userId: string,
+    dto: ClockInDto,
+  ): Promise<CurrentShiftResponseDto> {
     const context = await this.identityContext.getByUserId(userId);
     if (!context.staffMembershipId || !context.tenantId || !context.branchId) {
-      throw new ForbiddenException('No restaurant membership for this account.');
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
     }
 
     const current = await this.getCurrent(userId);
@@ -90,7 +98,9 @@ export class ShiftsService {
     if (assignment?.scheduledStartAt) {
       lateByMinutes = Math.max(
         0,
-        Math.round((now.getTime() - assignment.scheduledStartAt.getTime()) / 60000),
+        Math.round(
+          (now.getTime() - assignment.scheduledStartAt.getTime()) / 60000,
+        ),
       );
     }
 
@@ -131,7 +141,9 @@ export class ShiftsService {
   ): Promise<CurrentShiftResponseDto> {
     const context = await this.identityContext.getByUserId(userId);
     if (!context.staffMembershipId) {
-      throw new ForbiddenException('No restaurant membership for this account.');
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
     }
 
     const session = await this.prisma.shiftSession.findFirst({

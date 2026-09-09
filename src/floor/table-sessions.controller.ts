@@ -12,7 +12,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiHeader, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiHeader,
+  ApiOkResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { FloorService } from './floor.service';
 import { StartTableSessionDto } from './dto/start-table-session.dto';
 import { CloseTableSessionDto } from './dto/close-table-session.dto';

@@ -122,6 +122,18 @@ export class WaiterMenuItemDto {
   @Expose()
   expectedPrepMinutes: number | null;
 
+  @ApiPropertyOptional()
+  @Expose()
+  imageKey?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  imageFileId?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  imageUrl?: string | null;
+
   @ApiProperty({ type: () => [WaiterModifierGroupDto] })
   @Expose()
   @Type(() => WaiterModifierGroupDto)

@@ -13,7 +13,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiHeader, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiHeader,
+  ApiOkResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { DailyCloseService } from './daily-close.service';
 import {
   CreateDailyCloseDto,
@@ -84,11 +89,7 @@ export class DailyCloseController {
     @Body() dto: CreateDailyCloseDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<DailyCloseResponseDto> {
-    return this.dailyClose.create(
-      String(request.user.id),
-      dto,
-      idempotencyKey,
-    );
+    return this.dailyClose.create(String(request.user.id), dto, idempotencyKey);
   }
 
   @Post(':id/refresh')

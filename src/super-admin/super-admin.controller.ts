@@ -48,13 +48,19 @@ export class SuperAdminController {
       return String(request.user.id);
     }
     const authHeader = request?.headers?.authorization;
-    if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    if (
+      authHeader &&
+      typeof authHeader === 'string' &&
+      authHeader.startsWith('Bearer ')
+    ) {
       try {
         const parts = authHeader.split(' ');
         if (parts[1]) {
           const payloadBase64 = parts[1].split('.')[1];
           if (payloadBase64) {
-            const decoded = JSON.parse(Buffer.from(payloadBase64, 'base64').toString('utf8'));
+            const decoded = JSON.parse(
+              Buffer.from(payloadBase64, 'base64').toString('utf8'),
+            );
             if (decoded?.id) {
               return String(decoded.id);
             }
@@ -149,7 +155,11 @@ export class SuperAdminController {
     @Body() dto: SuspendPlatformStaffDto,
   ): Promise<PlatformStaffMemberDto> {
     const userId = this.extractUserId(request);
-    return this.superAdminService.suspendPlatformStaff(userId, membershipId, dto);
+    return this.superAdminService.suspendPlatformStaff(
+      userId,
+      membershipId,
+      dto,
+    );
   }
 
   @Patch('staff/:membershipId/password')

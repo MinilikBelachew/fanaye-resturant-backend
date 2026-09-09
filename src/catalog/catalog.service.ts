@@ -68,7 +68,11 @@ export class CatalogService {
     return { context, tenantId, branchId, menu };
   }
 
-  private async resolveStation(tenantId: string, branchId: string | null, stationIdOrCode: string) {
+  private async resolveStation(
+    tenantId: string,
+    branchId: string | null,
+    stationIdOrCode: string,
+  ) {
     let station = await this.prisma.preparationStation.findFirst({
       where: {
         OR: [
@@ -81,7 +85,9 @@ export class CatalogService {
     });
 
     if (!station && branchId) {
-      const stationCode = stationIdOrCode.replace(/^station-/, '').toUpperCase();
+      const stationCode = stationIdOrCode
+        .replace(/^station-/, '')
+        .toUpperCase();
       const stationName =
         stationCode.charAt(0) + stationCode.slice(1).toLowerCase();
       station = await this.prisma.preparationStation.create({
@@ -114,7 +120,9 @@ export class CatalogService {
     }
 
     if (!station) {
-      throw new UnprocessableEntityException('Unable to resolve preparation station.');
+      throw new UnprocessableEntityException(
+        'Unable to resolve preparation station.',
+      );
     }
 
     return station;
@@ -197,9 +205,16 @@ export class CatalogService {
     };
   }
 
-  async create(userId: string, dto: CreateMenuItemDto): Promise<MenuItemSingleResponseDto> {
+  async create(
+    userId: string,
+    dto: CreateMenuItemDto,
+  ): Promise<MenuItemSingleResponseDto> {
     const { tenantId, branchId, menu } = await this.getContextAndMenu(userId);
-    const station = await this.resolveStation(tenantId, branchId, dto.stationId);
+    const station = await this.resolveStation(
+      tenantId,
+      branchId,
+      dto.stationId,
+    );
 
     let categoryId = dto.menuCategoryId;
     if (!categoryId && dto.category) {
@@ -322,7 +337,11 @@ export class CatalogService {
 
     let stationId = existing.preparationStationId;
     if (dto.stationId) {
-      const station = await this.resolveStation(tenantId, branchId, dto.stationId);
+      const station = await this.resolveStation(
+        tenantId,
+        branchId,
+        dto.stationId,
+      );
       stationId = station.id;
     }
 
@@ -330,10 +349,13 @@ export class CatalogService {
       where: { id },
       data: {
         name: dto.name ? dto.name.trim() : undefined,
-        description: dto.description !== undefined ? dto.description.trim() : undefined,
-        currentPrice: dto.price !== undefined ? new Prisma.Decimal(dto.price) : undefined,
+        description:
+          dto.description !== undefined ? dto.description.trim() : undefined,
+        currentPrice:
+          dto.price !== undefined ? new Prisma.Decimal(dto.price) : undefined,
         preparationStationId: stationId,
-        menuCategoryId: dto.menuCategoryId !== undefined ? dto.menuCategoryId : undefined,
+        menuCategoryId:
+          dto.menuCategoryId !== undefined ? dto.menuCategoryId : undefined,
         expectedPrepMinutes: dto.expectedPreparationMinutes,
         soldOut: dto.available !== undefined ? !dto.available : undefined,
       },
@@ -362,7 +384,10 @@ export class CatalogService {
     };
   }
 
-  async toggle86(userId: string, id: string): Promise<MenuItemSingleResponseDto> {
+  async toggle86(
+    userId: string,
+    id: string,
+  ): Promise<MenuItemSingleResponseDto> {
     const { tenantId } = await this.getContextAndMenu(userId);
     const existing = await this.prisma.menuItem.findFirst({
       where: { id, tenantId },
@@ -418,7 +443,10 @@ export class CatalogService {
     return { success: true };
   }
 
-  async createCategory(userId: string, dto: CreateCategoryDto): Promise<MenuCategoryDto> {
+  async createCategory(
+    userId: string,
+    dto: CreateCategoryDto,
+  ): Promise<MenuCategoryDto> {
     const { tenantId, menu } = await this.getContextAndMenu(userId);
 
     const created = await this.prisma.menuCategory.create({

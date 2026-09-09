@@ -122,10 +122,7 @@ export class CashCustodyService {
     statusQuery?: string,
   ): Promise<CashDropQueueResponseDto> {
     const context = await this.requireCashier(userId);
-    const statuses = parseStatuses(statusQuery) ?? [
-      'INITIATED',
-      'DISPUTED',
-    ];
+    const statuses = parseStatuses(statusQuery) ?? ['INITIATED', 'DISPUTED'];
     const drops = await this.prisma.cashDrop.findMany({
       where: {
         branchId: context.branchId!,
@@ -177,12 +174,10 @@ export class CashCustodyService {
   ): Promise<ReceiveCashDropResponseDto> {
     const context = await this.requireCashierOnShift(userId);
     const key = this.requireIdempotencyKey(idempotencyKey);
-    const existing = await this.findIdempotent(
-      context,
-      RECEIVE_COMMAND,
-      key,
-      { cashDropId, ...dto },
-    );
+    const existing = await this.findIdempotent(context, RECEIVE_COMMAND, key, {
+      cashDropId,
+      ...dto,
+    });
     if (existing) return existing as unknown as ReceiveCashDropResponseDto;
 
     const drop = await this.prisma.cashDrop.findFirst({
@@ -318,12 +313,10 @@ export class CashCustodyService {
   ): Promise<CashDropDto> {
     const context = await this.requireCashierOnShift(userId);
     const key = this.requireIdempotencyKey(idempotencyKey);
-    const existing = await this.findIdempotent(
-      context,
-      RESOLVE_COMMAND,
-      key,
-      { disputeId, ...dto },
-    );
+    const existing = await this.findIdempotent(context, RESOLVE_COMMAND, key, {
+      disputeId,
+      ...dto,
+    });
     if (existing) return existing as unknown as CashDropDto;
 
     const dispute = await this.prisma.cashDropDispute.findFirst({
@@ -586,9 +579,7 @@ export class CashCustodyService {
     return context;
   }
 
-  private async requireCashierOnShift(
-    userId: string,
-  ): Promise<AuthContextDto> {
+  private async requireCashierOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireCashier(userId);
     if (!context.staffMembershipId || !context.shiftSessionId) {
       throw new ForbiddenException({
