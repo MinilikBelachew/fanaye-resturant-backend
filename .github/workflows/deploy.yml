@@ -1,4 +1,4 @@
-name: Deploy Boilerplate Backend to VPS
+name: Deploy Restaurant Backend to VPS
 
 on:
   # Allows manual deployment from the GitHub Actions tab
@@ -15,7 +15,7 @@ on:
         type: choice
         options:
           - 'production'
-          - 'development'
+          - 'staging'
 
 jobs:
   deploy:
@@ -29,46 +29,118 @@ jobs:
 
       - name: Deploy to Server via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          PROD_ENV: ${{ secrets.PROD_ENV_FILE }}
+          STAGE_ENV: ${{ secrets.STAGE_ENV_FILE }}
+          TARGET_ENV: ${{ github.event.inputs.environment }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
+          envs: PROD_ENV,STAGE_ENV,TARGET_ENV
           command_timeout: 30m
           script: |
             set -e
-            echo "Starting backend deployment process for environment: ${{ github.event.inputs.environment }}..."
+            echo "Starting backend deployment for environment: $TARGET_ENV..."
 
-            # Set directory and compose file based on environment
-            if [ "${{ github.event.inputs.environment }}" = "production" ]; then
-              DEPLOY_DIR="/var/www/boilerplate/backend"
-              COMPOSE_FILE="docker-compose.prod.yml"
+            # 1. Set environment variables, folder paths, and project names
+            if [ "$TARGET_ENV" = "production" ]; then
+              ROOT_DIR="/var/www/restaurant"
+              SERVICE_DIR="/var/www/restaurant/backend"
+              PROJECT_NAME="restaurant"
+              export IMAGE_TAG="prod"
+              ENV_CONTENT="$PROD_ENV"
             else
-              DEPLOY_DIR="/var/www/boilerplate-dev/backend"
-              COMPOSE_FILE="docker-compose.dev.yml"
+              ROOT_DIR="/var/www/restaurant-stage"
+              SERVICE_DIR="/var/www/restaurant-stage/backend"
+              PROJECT_NAME="restaurant-stage"
+              export IMAGE_TAG="stage"
+              ENV_CONTENT="$STAGE_ENV"
             fi
 
-            echo "Target Directory: $DEPLOY_DIR"
-            echo "Compose File: $COMPOSE_FILE"
+            # Ensure proper folder ownership in case files were touched by root
+            sudo chown -R $USER:$USER "$ROOT_DIR" 2>/dev/null || true
 
-            # Check if directory exists, if not fail gracefully
-            if [ ! -d "$DEPLOY_DIR" ]; then
-              echo "Error: Target directory $DEPLOY_DIR does not exist on the server."
-              exit 1
+            # 2. First-time auto-clone if directory does not exist
+            if [ ! -d "$SERVICE_DIR" ]; then
+              echo "First-time setup: Initializing $ROOT_DIR and cloning backend via SSH..."
+              mkdir -p "$ROOT_DIR"
+              cd "$ROOT_DIR"
+              git clone git@github-restaurant-backend:MinilikBelachew/fanaye-resturant-backend.git backend
             fi
 
-            cd "$DEPLOY_DIR"
-
-            # Fetch all remote updates and reset to the specified ref
+            # 3. Pull latest source code
+            echo "Updating backend source code in $SERVICE_DIR..."
+            cd "$SERVICE_DIR"
             git fetch --all
             git reset --hard origin/${{ github.event.inputs.git_ref }} || git reset --hard ${{ github.event.inputs.git_ref }}
 
-            # Rebuild and restart the container
-            echo "Rebuilding and restarting backend services..."
-            sudo docker compose -f "$COMPOSE_FILE" up -d --build
+            # 4. Smart Merge .env from GitHub Secrets if provided
+            if [ -n "$ENV_CONTENT" ]; then
+              echo "Smart merging $TARGET_ENV backend .env with GitHub Secrets..."
+              ENV_CONTENT="$ENV_CONTENT" node -e '
+                const fs = require("fs");
+                const path = process.argv[1];
+                const incoming = process.env.ENV_CONTENT || "";
+                
+                let lines = [];
+                if (fs.existsSync(path)) {
+                  lines = fs.readFileSync(path, "utf8").split(/\r?\n/);
+                }
+                
+                const incomingEntries = incoming.split(/\r?\n/)
+                  .map(line => line.trim())
+                  .filter(line => line && !line.startsWith("#") && line.includes("="));
+                
+                const incomingMap = new Map();
+                for (const entry of incomingEntries) {
+                  const idx = entry.indexOf("=");
+                  const key = entry.slice(0, idx).trim();
+                  const val = entry.slice(idx + 1);
+                  if (key) incomingMap.set(key, val);
+                }
+                
+                const updatedKeys = new Set();
+                const newLines = lines.map(line => {
+                  const trimmed = line.trim();
+                  if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
+                    return line;
+                  }
+                  const idx = trimmed.indexOf("=");
+                  const key = trimmed.slice(0, idx).trim();
+                  if (incomingMap.has(key)) {
+                    updatedKeys.add(key);
+                    return `${key}=${incomingMap.get(key)}`;
+                  }
+                  return line;
+                });
+                
+                for (const [key, val] of incomingMap.entries()) {
+                  if (!updatedKeys.has(key)) {
+                    newLines.push(`${key}=${val}`);
+                  }
+                }
+                
+                fs.writeFileSync(path, newLines.join("\n").trim() + "\n", { mode: 0o600 });
+                console.log("Successfully merged " + incomingMap.size + " environment variable(s) into " + path);
+              ' "$SERVICE_DIR/.env"
+            fi
 
-            # Clean up unused Docker images to save space
+            # 5. Rebuild and restart container with isolated project & image tag
+            echo "Rebuilding backend services under project ${PROJECT_NAME}-backend (image tag: $IMAGE_TAG)..."
+            cd "$SERVICE_DIR"
+
+            PREFIX="restaurant"
+            if [ "$TARGET_ENV" != "production" ]; then
+              PREFIX="restaurant-stage"
+            fi
+            docker rm -f "${PREFIX}-api" "${PREFIX}-postgres" "${PREFIX}-redis" 2>/dev/null || true
+
+            IMAGE_TAG="$IMAGE_TAG" docker compose -p "${PROJECT_NAME}-backend" -f docker-compose.prod.yml up -d --build
+
+            # 6. Clean up unused Docker images to save space
             echo "Pruning unused Docker images..."
-            sudo docker image prune -f
+            docker image prune -f
 
-            echo "Backend deployment successfully completed!"
+            echo "Backend deployment to $TARGET_ENV (tag: $IMAGE_TAG) successfully completed!"
