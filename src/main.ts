@@ -18,23 +18,18 @@ async function bootstrap() {
   useContainer(app.select(AppModule), { fallbackOnErrors: true });
   const configService = app.get(ConfigService<AllConfigType>);
 
-  const frontendDomain = configService.get('app.frontendDomain', {
-    infer: true,
-  });
-  const origins = (frontendDomain ?? 'http://localhost:3000')
+  const frontendDomain =
+    configService.get('app.frontendDomain', { infer: true }) ||
+    'http://localhost:3000';
+  const origins = frontendDomain
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
 
   app.enableCors({
-    origin: origins.length === 1 ? origins[0] : origins,
+    origin: origins.includes('*') ? true : origins,
     credentials: true,
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'x-custom-lang',
-      'Idempotency-Key',
-    ],
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
   });
 
   app.enableShutdownHooks();

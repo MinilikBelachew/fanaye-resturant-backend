@@ -49,6 +49,8 @@ services:
     restart: always
     ports:
       - "${BACKEND_PORT:-6060}:3001"
+    volumes:
+      - restaurant_files_data_prod:/usr/src/app/files
     env_file:
       - .env
     environment:
@@ -71,6 +73,7 @@ services:
 volumes:
   restaurant_postgres_backend_data_prod:
   restaurant_redis_backend_data_prod:
+  restaurant_files_data_prod:
 
 networks:
   restaurant-backend-network:
