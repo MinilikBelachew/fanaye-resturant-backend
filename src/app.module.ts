@@ -35,6 +35,8 @@ import { MenuModule } from './menu/menu.module';
 import { ManagerDashboardModule } from './manager-dashboard/manager-dashboard.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { SuperAdminModule } from './super-admin/super-admin.module';
+import { AuditModule } from './audit/audit.module';
+import { SiteModule } from './site/site.module';
 
 @Module({
   imports: [
@@ -99,6 +101,8 @@ import { SuperAdminModule } from './super-admin/super-admin.module';
     ManagerDashboardModule,
     CatalogModule,
     SuperAdminModule,
+    AuditModule,
+    SiteModule,
   ],
 })
 export class AppModule {}

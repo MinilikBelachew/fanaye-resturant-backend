@@ -209,9 +209,28 @@ model Tenant {
   orderChangeRequests OrderChangeRequest[]
   cancellationRequests CancellationRequest[]
   productionExceptions ProductionException[]
+  site                   TenantSite?
 
   @@index([status], map: "ix_tenants__status")
   @@map("tenants")
+}
+
+model TenantSite {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenantId           String    @unique @map("tenant_id") @db.Uuid
+  slug               String    @unique @db.VarChar(80)
+  status             String    @default("DRAFT") @db.VarChar(24)
+  themeJson          Json      @map("theme_json")
+  draftDataJson      Json      @map("draft_data_json")
+  publishedDataJson  Json?     @map("published_data_json")
+  publishedAt        DateTime? @map("published_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([status], map: "ix_tenant_sites__status")
+  @@map("tenant_sites")
 }
 
 model TenantSettings {

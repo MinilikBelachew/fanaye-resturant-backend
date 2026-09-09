@@ -16,8 +16,10 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { StaffCoverageService } from './staff-coverage.service';
 import {
+  CreateAdminStaffDto,
   CreateShiftDefinitionDto,
   SetWaiterTableCoverageDto,
+  UpdateAdminStaffDto,
   UpdateShiftDefinitionDto,
 } from './dto/staff-coverage.dto';
 import {
@@ -25,6 +27,7 @@ import {
   AdminShiftDefinitionResponseDto,
   AdminShiftFloorResponseDto,
   AdminStaffListResponseDto,
+  AdminStaffMemberResponseDto,
   AdminWaiterCoverageResponseDto,
 } from './dto/staff-coverage-response.dto';
 
@@ -42,6 +45,30 @@ export class StaffCoverageController {
   @ApiOkResponse({ type: AdminStaffListResponseDto })
   listStaff(@Request() request): Promise<AdminStaffListResponseDto> {
     return this.staff.listStaff(String(request.user.id));
+  }
+
+  @Post('staff')
+  @ApiOkResponse({ type: AdminStaffMemberResponseDto })
+  @HttpCode(HttpStatus.OK)
+  createStaff(
+    @Request() request,
+    @Body() dto: CreateAdminStaffDto,
+  ): Promise<AdminStaffMemberResponseDto> {
+    return this.staff.createStaff(String(request.user.id), dto);
+  }
+
+  @Patch('staff/:membershipId')
+  @ApiOkResponse({ type: AdminStaffMemberResponseDto })
+  updateStaff(
+    @Request() request,
+    @Param('membershipId', ParseUUIDPipe) membershipId: string,
+    @Body() dto: UpdateAdminStaffDto,
+  ): Promise<AdminStaffMemberResponseDto> {
+    return this.staff.updateStaff(
+      String(request.user.id),
+      membershipId,
+      dto,
+    );
   }
 
   @Get('shift-definitions')

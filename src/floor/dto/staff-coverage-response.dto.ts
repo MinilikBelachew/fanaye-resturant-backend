@@ -85,6 +85,11 @@ export class AdminStaffListResponseDto {
   shifts: AdminShiftDefinitionDto[];
 }
 
+export class AdminStaffMemberResponseDto {
+  @ApiProperty({ type: AdminStaffMemberDto })
+  data: AdminStaffMemberDto;
+}
+
 export class AdminShiftDefinitionListResponseDto {
   @ApiProperty({ type: [AdminShiftDefinitionDto] })
   data: AdminShiftDefinitionDto[];

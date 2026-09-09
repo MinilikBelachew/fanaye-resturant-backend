@@ -1,13 +1,22 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
   CityDistributionItemDto,
   CreateTenantDto,
+  FeatureFlagDto,
+  FeatureFlagsResponseDto,
+  LiveOpsResponseDto,
+  PlatformAuditEventDto,
+  PlatformAuditListResponseDto,
+  PlatformStaffListResponseDto,
+  PlatformStaffMemberDto,
+  ResetPlatformStaffPasswordDto,
+  SuspendPlatformStaffDto,
   NetworkGmvTrendPointDto,
   PlanDistributionItemDto,
-  PlatformAuditEventDto,
   PlatformHealthRadarPointDto,
   SuperAdminDashboardDataDto,
   SuperAdminDashboardResponseDto,
@@ -16,7 +25,39 @@ import {
   TenantDetailResponseDto,
   TenantFleetItemDto,
   TenantListResponseDto,
+  UpdateFeatureFlagDto,
+  UpdateTenantDto,
 } from './dto/super-admin-dashboard.dto';
+
+const TENANT_PROFILE_KEY = 'TENANT_PROFILE';
+const PLATFORM_FLAGS_KEY = 'PLATFORM_FEATURE_FLAGS';
+
+const DEFAULT_FEATURE_FLAGS: Array<Omit<FeatureFlagDto, 'enabled'> & { enabled: boolean }> = [
+  { key: 'tina_verify', name: 'TinaVerify payment proof', scope: 'Platform', enabled: true },
+  { key: 'multi_branch', name: 'Multi-branch tenancy', scope: 'Pro+', enabled: true },
+  { key: 'kds', name: 'Kitchen display system', scope: 'All plans', enabled: true },
+  { key: 'barista', name: 'Barista station', scope: 'Pro+', enabled: true },
+  { key: 'cakes', name: 'Cakes station', scope: 'Pro+', enabled: true },
+  { key: 'soft_drinks', name: 'Soft drinks station', scope: 'Pro+', enabled: true },
+  { key: 'qr_guest', name: 'Guest QR ordering', scope: 'Deferred', enabled: false },
+];
+
+const MANAGER_ROLE_CODES = new Set(['MANAGER', 'OWNER_ADMIN']);
+
+type TenantProfileJson = {
+  city?: string;
+  area?: string;
+  address?: string;
+  hours?: string;
+  concept?: string;
+  contactPhone?: string;
+  contactEmail?: string;
+};
+
+function asProfileJson(value: unknown): TenantProfileJson {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as TenantProfileJson;
+}
 
 function ymd(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -58,6 +99,111 @@ export class SuperAdminService {
     } catch {
       return true;
     }
+  }
+
+  private readProfile(entitlements?: Array<{ entitlementKey: string; valueJson: unknown }> | null): TenantProfileJson {
+    const row = entitlements?.find((e) => e.entitlementKey === TENANT_PROFILE_KEY);
+    return asProfileJson(row?.valueJson);
+  }
+
+  private async upsertTenantProfile(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    actorUserId: string,
+    patch: TenantProfileJson,
+  ): Promise<void> {
+    const cleaned: TenantProfileJson = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (typeof value === 'string' && value.trim()) {
+        cleaned[key as keyof TenantProfileJson] = value.trim();
+      }
+    }
+    if (Object.keys(cleaned).length === 0) return;
+
+    const existing = await tx.tenantEntitlement.findFirst({
+      where: {
+        tenantId,
+        entitlementKey: TENANT_PROFILE_KEY,
+        effectiveTo: null,
+      },
+    });
+
+    if (existing) {
+      await tx.tenantEntitlement.update({
+        where: { id: existing.id },
+        data: {
+          valueJson: {
+            ...asProfileJson(existing.valueJson),
+            ...cleaned,
+          },
+          changedByUserId: actorUserId,
+        },
+      });
+      return;
+    }
+
+    await tx.tenantEntitlement.create({
+      data: {
+        tenantId,
+        entitlementKey: TENANT_PROFILE_KEY,
+        valueJson: cleaned,
+        effectiveFrom: new Date(),
+        changedByUserId: actorUserId,
+      },
+    });
+  }
+
+  private async upsertUserPassword(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    password: string,
+  ): Promise<void> {
+    const passwordHash = await bcrypt.hash(password.slice(0, 72), 10);
+    const existing = await tx.userCredential.findUnique({ where: { userId } });
+    if (existing) {
+      await tx.userCredential.update({
+        where: { userId },
+        data: { passwordHash },
+      });
+      return;
+    }
+    await tx.userCredential.create({
+      data: {
+        userId,
+        passwordHash,
+        authProvider: 'email',
+      },
+    });
+  }
+
+  private async ensureManagerRole(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    branchId: string,
+    membershipId: string,
+  ): Promise<void> {
+    const role = await tx.restaurantRole.findUnique({ where: { code: 'MANAGER' } });
+    if (!role) return;
+
+    const existing = await tx.staffRoleAssignment.findFirst({
+      where: {
+        tenantId,
+        staffMembershipId: membershipId,
+        roleId: role.id,
+        status: 'ACTIVE',
+      },
+    });
+    if (existing) return;
+
+    await tx.staffRoleAssignment.create({
+      data: {
+        tenantId,
+        branchId,
+        staffMembershipId: membershipId,
+        roleId: role.id,
+        status: 'ACTIVE',
+      },
+    });
   }
 
   async getDashboard(
@@ -464,6 +610,12 @@ export class SuperAdminService {
               include: { user: true },
             },
             diningTables: true,
+            entitlements: {
+              where: {
+                entitlementKey: TENANT_PROFILE_KEY,
+                effectiveTo: null,
+              },
+            },
           },
           orderBy: { createdAt: 'desc' },
         }),
@@ -508,6 +660,7 @@ export class SuperAdminService {
         ? 'Hawassa'
         : 'Addis Ababa';
 
+      const profile = this.readProfile(t.entitlements);
       const defaultGmv = t.status === 'ACTIVE' ? (t.displayName?.includes('Oven') ? 51280 : t.displayName?.includes('Buna') ? 12440 : 38720) : 0;
       const finalGmv = gmv > 0 ? gmv : defaultGmv;
 
@@ -517,14 +670,22 @@ export class SuperAdminService {
         legalName: t.legalName ?? undefined,
         slug: (t.displayName || 'restaurant').toLowerCase().replace(/\s+/g, '-'),
         plan: planName,
-        city: cityName,
-        area: cityName === 'Addis Ababa' ? 'Bole' : 'Downtown',
-        address: primaryBranch ? `${primaryBranch.name}, ${cityName}` : `Main Boulevard, ${cityName}`,
-        phone: managerPhone,
-        email: managerEmail,
+        city: profile.city || cityName,
+        area: profile.area || (cityName === 'Addis Ababa' ? 'Bole' : 'Downtown'),
+        address:
+          profile.address ||
+          (primaryBranch ? `${primaryBranch.name}, ${cityName}` : `Main Boulevard, ${cityName}`),
+        phone: profile.contactPhone || managerPhone,
+        email: profile.contactEmail || managerEmail,
         manager: managerName,
-        hours: '08:00 – 23:00',
-        concept: t.displayName?.includes('Coffee') || t.displayName?.includes('Buna') ? 'Artisanal Cafe & Roastery' : t.displayName?.includes('Oven') ? 'Multi-branch dining & grill' : 'Casual Dining & Bar',
+        hours: profile.hours || '08:00 – 23:00',
+        concept:
+          profile.concept ||
+          (t.displayName?.includes('Coffee') || t.displayName?.includes('Buna')
+            ? 'Artisanal Cafe & Roastery'
+            : t.displayName?.includes('Oven')
+              ? 'Multi-branch dining & grill'
+              : 'Casual Dining & Bar'),
         branches: Math.max(t.branches?.length || 0, 1),
         tableCount: Math.max(t.diningTables?.length || 0, 12),
         staffCount: Math.max(t.staffMemberships?.length || 0, 8),
@@ -726,6 +887,12 @@ export class SuperAdminService {
             include: { user: true },
           },
           diningTables: true,
+          entitlements: {
+            where: {
+              entitlementKey: TENANT_PROFILE_KEY,
+              effectiveTo: null,
+            },
+          },
         },
       });
 
@@ -733,6 +900,7 @@ export class SuperAdminService {
         throw new UnauthorizedException(`Tenant ${tenantId} not found`);
       }
 
+      const profile = this.readProfile(dbTenant.entitlements);
       const planName = dbTenant.subscriptions[0]?.plan?.name || 'Pro';
       const managerMembership = dbTenant.staffMemberships.find((m) => m.user?.displayName);
       const detail: TenantDetailDto = {
@@ -741,14 +909,14 @@ export class SuperAdminService {
         legalName: dbTenant.legalName ?? undefined,
         slug: (dbTenant.displayName || 'restaurant').toLowerCase().replace(/\s+/g, '-'),
         plan: planName,
-        city: 'Addis Ababa',
-        area: 'Bole',
-        address: 'Bole Road, Addis Ababa',
-        phone: managerMembership?.user?.phone || '+251 11 667 2100',
-        email: managerMembership?.user?.email || 'admin@restaurant.et',
+        city: profile.city || 'Addis Ababa',
+        area: profile.area || 'Bole',
+        address: profile.address || 'Bole Road, Addis Ababa',
+        phone: profile.contactPhone || managerMembership?.user?.phone || '+251 11 667 2100',
+        email: profile.contactEmail || managerMembership?.user?.email || 'admin@restaurant.et',
         manager: managerMembership?.user?.displayName || 'Hiwot Bekele',
-        hours: '08:00 – 23:00',
-        concept: 'Casual dining',
+        hours: profile.hours || '08:00 – 23:00',
+        concept: profile.concept || 'Casual dining',
         branches: Math.max(dbTenant.branches.length, 1),
         tableCount: Math.max(dbTenant.diningTables.length, 12),
         staffCount: Math.max(dbTenant.staffMemberships.length, 8),
@@ -777,6 +945,11 @@ export class SuperAdminService {
   async createTenant(userId: string, dto: CreateTenantDto): Promise<TenantDetailResponseDto> {
     await this.verifySuperAdminAccess(userId);
 
+    const displayName = (dto.name || '').trim();
+    if (!displayName) {
+      throw new BadRequestException('Restaurant brand name is required.');
+    }
+
     const planCode = (dto.planCode || 'PRO').toUpperCase();
     let plan = await this.prisma.subscriptionPlan.findFirst({
       where: { code: planCode },
@@ -791,8 +964,8 @@ export class SuperAdminService {
       // 1. Create Tenant
       const tenant = await tx.tenant.create({
         data: {
-          displayName: dto.name,
-          legalName: dto.legalName || dto.name,
+          displayName,
+          legalName: (dto.legalName || displayName).trim(),
           status: 'ACTIVE',
           defaultTimezone: 'Africa/Addis_Ababa',
           currencyCode: 'ETB',
@@ -808,11 +981,14 @@ export class SuperAdminService {
       });
 
       // 2. Create primary Branch
-      const branchCode = (dto.branchCode || (dto.name.slice(0, 3).toUpperCase() + '-1')).slice(0, 40);
+      const branchCode = (
+        dto.branchCode ||
+        displayName.slice(0, 3).toUpperCase() + '-1'
+      ).slice(0, 40);
       const branch = await tx.branch.create({
         data: {
           tenantId: tenant.id,
-          name: dto.branchName || `${dto.name} Main Branch`,
+          name: (dto.branchName || `${displayName} Main Branch`).trim(),
           displayCode: branchCode,
           timezone: 'Africa/Addis_Ababa',
           status: 'ACTIVE',
@@ -904,6 +1080,18 @@ export class SuperAdminService {
               accountStatus: 'ACTIVE',
             },
           });
+        } else {
+          managerUser = await tx.appUser.update({
+            where: { id: managerUser.id },
+            data: {
+              displayName: dto.managerName || managerUser.displayName,
+              phone: phone || managerUser.phone,
+            },
+          });
+        }
+
+        if (dto.managerPassword?.trim()) {
+          await this.upsertUserPassword(tx, managerUser.id, dto.managerPassword.trim());
         }
 
         const managerMembership = await tx.tenantStaffMembership.create({
@@ -924,7 +1112,19 @@ export class SuperAdminService {
             status: 'ACTIVE',
           },
         });
+
+        await this.ensureManagerRole(tx, tenant.id, branch.id, managerMembership.id);
       }
+
+      await this.upsertTenantProfile(tx, tenant.id, userId, {
+        city: dto.city,
+        area: dto.area,
+        address: dto.address,
+        hours: dto.hours,
+        concept: dto.concept,
+        contactPhone: dto.phone,
+        contactEmail: dto.email,
+      });
 
       // 7. Log audit event
       await tx.auditEvent.create({
@@ -935,7 +1135,7 @@ export class SuperAdminService {
           action: 'TENANT_PROVISIONED',
           entityType: 'TENANT',
           entityId: tenant.id,
-          reason: `Provisioned tenant ${dto.name} with ${tableCount} tables and 4 stations.`,
+          reason: `Provisioned tenant ${displayName} with ${tableCount} tables and 4 stations.`,
         },
       });
 
@@ -943,5 +1143,619 @@ export class SuperAdminService {
     });
 
     return this.getTenantById(userId, createdTenant.id);
+  }
+
+  async updateTenant(
+    userId: string,
+    tenantId: string,
+    dto: UpdateTenantDto,
+  ): Promise<TenantDetailResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const existing = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: {
+        branches: { orderBy: { createdAt: 'asc' } },
+        subscriptions: {
+          where: { subscriptionStatus: 'ACTIVE' },
+          include: { plan: true },
+        },
+        staffMemberships: {
+          include: { user: true },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    if (!existing) {
+      throw new UnauthorizedException(`Tenant ${tenantId} not found`);
+    }
+
+    const displayName = dto.name?.trim();
+    if (displayName !== undefined && displayName.length < 2) {
+      throw new BadRequestException('Restaurant brand name is required.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      if (displayName || dto.legalName !== undefined) {
+        await tx.tenant.update({
+          where: { id: tenantId },
+          data: {
+            ...(displayName ? { displayName } : {}),
+            ...(dto.legalName !== undefined
+              ? { legalName: dto.legalName?.trim() || null }
+              : {}),
+          },
+        });
+      }
+
+      const primaryBranch = existing.branches[0];
+      if (primaryBranch && (dto.branchName || dto.branchCode !== undefined)) {
+        await tx.branch.update({
+          where: { id: primaryBranch.id },
+          data: {
+            ...(dto.branchName?.trim()
+              ? { name: dto.branchName.trim() }
+              : {}),
+            ...(dto.branchCode !== undefined
+              ? { displayCode: dto.branchCode?.trim() || null }
+              : {}),
+          },
+        });
+      }
+
+      if (dto.planCode?.trim()) {
+        const planCode = dto.planCode.trim().toUpperCase();
+        const plan = await tx.subscriptionPlan.findFirst({
+          where: { code: planCode },
+        });
+        if (plan) {
+          const activeSub = existing.subscriptions[0];
+          if (activeSub) {
+            if (activeSub.planId !== plan.id) {
+              await tx.tenantSubscription.update({
+                where: { id: activeSub.id },
+                data: {
+                  subscriptionStatus: 'ENDED',
+                  effectiveTo: new Date(),
+                },
+              });
+              await tx.tenantSubscription.create({
+                data: {
+                  tenantId,
+                  planId: plan.id,
+                  subscriptionStatus: 'ACTIVE',
+                  effectiveFrom: new Date(),
+                },
+              });
+            }
+          } else {
+            await tx.tenantSubscription.create({
+              data: {
+                tenantId,
+                planId: plan.id,
+                subscriptionStatus: 'ACTIVE',
+                effectiveFrom: new Date(),
+              },
+            });
+          }
+        }
+      }
+
+      await this.upsertTenantProfile(tx, tenantId, userId, {
+        city: dto.city,
+        area: dto.area,
+        address: dto.address,
+        hours: dto.hours,
+        concept: dto.concept,
+        contactPhone: dto.phone,
+        contactEmail: dto.email,
+      });
+
+      const wantsManagerUpdate =
+        dto.managerName ||
+        dto.managerEmail ||
+        dto.managerPhone ||
+        dto.managerPassword ||
+        dto.phone ||
+        dto.email;
+
+      if (wantsManagerUpdate) {
+        let membership = existing.staffMemberships[0];
+        const managerName =
+          dto.managerName?.trim() ||
+          membership?.employeeDisplayName ||
+          membership?.user?.displayName ||
+          'Restaurant Manager';
+        const managerEmail =
+          dto.managerEmail?.trim() ||
+          membership?.user?.email ||
+          dto.email?.trim() ||
+          `manager.${tenantId.slice(0, 6)}@restaurant.et`;
+        const managerPhone =
+          dto.managerPhone?.trim() ||
+          dto.phone?.trim() ||
+          membership?.user?.phone ||
+          undefined;
+
+        if (!membership) {
+          let managerUser = await tx.appUser.findFirst({ where: { email: managerEmail } });
+          if (!managerUser) {
+            managerUser = await tx.appUser.create({
+              data: {
+                displayName: managerName,
+                email: managerEmail,
+                phone: managerPhone,
+                accountStatus: 'ACTIVE',
+              },
+            });
+          } else {
+            managerUser = await tx.appUser.update({
+              where: { id: managerUser.id },
+              data: {
+                displayName: managerName,
+                phone: managerPhone || managerUser.phone,
+              },
+            });
+          }
+
+          const createdMembership = await tx.tenantStaffMembership.create({
+            data: {
+              tenantId,
+              userId: managerUser.id,
+              employeeDisplayName: managerName,
+              status: 'ACTIVE',
+              joinedAt: new Date(),
+            },
+          });
+
+          if (primaryBranch) {
+            await tx.branchStaffAssignment.create({
+              data: {
+                tenantId,
+                branchId: primaryBranch.id,
+                staffMembershipId: createdMembership.id,
+                status: 'ACTIVE',
+              },
+            });
+            await this.ensureManagerRole(
+              tx,
+              tenantId,
+              primaryBranch.id,
+              createdMembership.id,
+            );
+          }
+
+          if (dto.managerPassword?.trim()) {
+            await this.upsertUserPassword(
+              tx,
+              managerUser.id,
+              dto.managerPassword.trim(),
+            );
+          }
+        } else {
+          await tx.appUser.update({
+            where: { id: membership.userId },
+            data: {
+              displayName: managerName,
+              ...(dto.managerEmail?.trim()
+                ? { email: dto.managerEmail.trim() }
+                : {}),
+              ...(managerPhone ? { phone: managerPhone } : {}),
+            },
+          });
+
+          await tx.tenantStaffMembership.update({
+            where: { id: membership.id },
+            data: { employeeDisplayName: managerName },
+          });
+
+          if (dto.managerPassword?.trim()) {
+            await this.upsertUserPassword(
+              tx,
+              membership.userId,
+              dto.managerPassword.trim(),
+            );
+          }
+
+          if (primaryBranch) {
+            await this.ensureManagerRole(
+              tx,
+              tenantId,
+              primaryBranch.id,
+              membership.id,
+            );
+          }
+        }
+      }
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId,
+          branchId: existing.branches[0]?.id,
+          actorUserId: userId,
+          action: 'TENANT_UPDATED',
+          entityType: 'TENANT',
+          entityId: tenantId,
+          reason: `Updated tenant ${displayName || existing.displayName}`,
+        },
+      });
+    });
+
+    return this.getTenantById(userId, tenantId);
+  }
+
+  async listAuditEvents(
+    userId: string,
+    take = 50,
+  ): Promise<PlatformAuditListResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const events = await this.prisma.auditEvent.findMany({
+      orderBy: { occurredAt: 'desc' },
+      take,
+      include: {
+        tenant: true,
+        actorUser: true,
+      },
+    });
+
+    const data: PlatformAuditEventDto[] = events.map((event) => {
+      const severity = event.action.includes('SUSPEND')
+        ? 'warning'
+        : event.action.includes('PASSWORD')
+          ? 'warning'
+          : event.action.includes('PROVISION')
+            ? 'success'
+            : 'info';
+
+      return {
+        id: event.id,
+        action: event.action,
+        entityName:
+          event.tenant?.displayName ||
+          event.entityType ||
+          'Platform',
+        description:
+          event.reason ||
+          `${event.action} on ${event.entityType}${
+            event.actorUser?.displayName
+              ? ` by ${event.actorUser.displayName}`
+              : ''
+          }`,
+        occurredAt: event.occurredAt.toISOString(),
+        severity,
+      };
+    });
+
+    return { data };
+  }
+
+  async getLiveOps(userId: string): Promise<LiveOpsResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    const branches = await this.prisma.branch.findMany({
+      where: { status: 'ACTIVE' },
+      include: {
+        tenant: true,
+        diningTables: true,
+        tableSessions: {
+          where: {
+            closedAt: null,
+            status: { not: 'CLOSED' },
+          },
+        },
+        orders: {
+          where: {
+            tableSession: {
+              closedAt: null,
+              status: { not: 'CLOSED' },
+            },
+          },
+        },
+        bills: {
+          where: {
+            paidAt: null,
+            status: { notIn: ['SETTLED', 'CLOSED', 'CANCELLED'] },
+          },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    const mapped = branches.map((branch) => ({
+      branchId: branch.id,
+      branchName: branch.name,
+      branchCode: branch.displayCode || 'MAIN',
+      tenantId: branch.tenantId,
+      tenantName: branch.tenant.displayName || branch.tenant.legalName || 'Tenant',
+      status: branch.status,
+      openSessions: branch.tableSessions.length,
+      openOrders: branch.orders.length,
+      unpaidBills: branch.bills.length,
+      tableCount: branch.diningTables.length,
+    }));
+
+    const liveTenantIds = new Set(
+      mapped
+        .filter((b) => b.openSessions > 0 || b.openOrders > 0)
+        .map((b) => b.tenantId),
+    );
+
+    return {
+      summary: {
+        openSessions: mapped.reduce((sum, b) => sum + b.openSessions, 0),
+        openOrders: mapped.reduce((sum, b) => sum + b.openOrders, 0),
+        unpaidBills: mapped.reduce((sum, b) => sum + b.unpaidBills, 0),
+        activeBranches: mapped.length,
+        liveTenants: liveTenantIds.size,
+      },
+      branches: mapped,
+    };
+  }
+
+  async listPlatformStaff(
+    userId: string,
+  ): Promise<PlatformStaffListResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const memberships = await this.prisma.tenantStaffMembership.findMany({
+      include: {
+        tenant: true,
+        user: {
+          include: {
+            credential: true,
+            sessions: {
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+          },
+        },
+        roleAssignments: {
+          where: { status: 'ACTIVE' },
+          include: { role: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const data: PlatformStaffMemberDto[] = memberships
+      .map((m) => {
+        const assignedRoles = m.roleAssignments.map((r) => r.role.code);
+        const roles = [
+          ...new Set(
+            assignedRoles.filter((code) => MANAGER_ROLE_CODES.has(code)),
+          ),
+        ];
+
+        return {
+          membershipId: m.id,
+          userId: m.userId,
+          displayName: m.employeeDisplayName || m.user.displayName,
+          email: m.user.email ?? undefined,
+          phone: m.user.phone ?? undefined,
+          tenantId: m.tenantId,
+          tenantName: m.tenant.displayName || m.tenant.legalName || 'Tenant',
+          roles,
+          accountStatus: m.user.accountStatus,
+          membershipStatus: m.status,
+          lastLoginAt: m.user.sessions[0]?.createdAt?.toISOString() ?? null,
+          hasPassword: Boolean(m.user.credential?.passwordHash),
+        };
+      })
+      .filter((row) => row.roles.length > 0);
+
+    return { data };
+  }
+
+  private async getStaffMemberDto(
+    membershipId: string,
+  ): Promise<PlatformStaffMemberDto> {
+    const list = await this.listPlatformStaff('system');
+    const found = list.data.find((row) => row.membershipId === membershipId);
+    if (!found) {
+      throw new UnauthorizedException('Staff member not found');
+    }
+    return found;
+  }
+
+  async suspendPlatformStaff(
+    userId: string,
+    membershipId: string,
+    dto: SuspendPlatformStaffDto,
+  ): Promise<PlatformStaffMemberDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const membership = await this.prisma.tenantStaffMembership.findUnique({
+      where: { id: membershipId },
+      include: { user: true, tenant: true },
+    });
+    if (!membership) {
+      throw new UnauthorizedException('Staff member not found');
+    }
+
+    const nextAccount = dto.suspended ? 'SUSPENDED' : 'ACTIVE';
+    const nextMembership = dto.suspended ? 'INACTIVE' : 'ACTIVE';
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.appUser.update({
+        where: { id: membership.userId },
+        data: { accountStatus: nextAccount },
+      });
+      await tx.tenantStaffMembership.update({
+        where: { id: membershipId },
+        data: {
+          status: nextMembership,
+          deactivatedAt: dto.suspended ? new Date() : null,
+        },
+      });
+
+      if (dto.suspended) {
+        await tx.authSession.updateMany({
+          where: { userId: membership.userId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      }
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId: membership.tenantId,
+          actorUserId: userId,
+          action: dto.suspended ? 'STAFF_SUSPENDED' : 'STAFF_REACTIVATED',
+          entityType: 'STAFF_MEMBERSHIP',
+          entityId: membershipId,
+          reason: `${dto.suspended ? 'Suspended' : 'Reactivated'} ${
+            membership.employeeDisplayName
+          } at ${membership.tenant.displayName}`,
+        },
+      });
+    });
+
+    return this.getStaffMemberDto(membershipId);
+  }
+
+  async resetPlatformStaffPassword(
+    userId: string,
+    membershipId: string,
+    dto: ResetPlatformStaffPasswordDto,
+  ): Promise<PlatformStaffMemberDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const password = dto.password?.trim();
+    if (!password || password.length < 6) {
+      throw new BadRequestException('Password must be at least 6 characters.');
+    }
+
+    const membership = await this.prisma.tenantStaffMembership.findUnique({
+      where: { id: membershipId },
+      include: { tenant: true },
+    });
+    if (!membership) {
+      throw new UnauthorizedException('Staff member not found');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.upsertUserPassword(tx, membership.userId, password);
+      await tx.authSession.updateMany({
+        where: { userId: membership.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      await tx.auditEvent.create({
+        data: {
+          tenantId: membership.tenantId,
+          actorUserId: userId,
+          action: 'STAFF_PASSWORD_RESET',
+          entityType: 'STAFF_MEMBERSHIP',
+          entityId: membershipId,
+          reason: `Password reset for ${membership.employeeDisplayName} at ${membership.tenant.displayName}`,
+        },
+      });
+    });
+
+    return this.getStaffMemberDto(membershipId);
+  }
+
+  private async readPlatformFlagOverrides(): Promise<Record<string, boolean>> {
+    const row = await this.prisma.tenantEntitlement.findFirst({
+      where: {
+        entitlementKey: PLATFORM_FLAGS_KEY,
+        effectiveTo: null,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!row?.valueJson || typeof row.valueJson !== 'object') return {};
+    const json = row.valueJson as Record<string, unknown>;
+    const flags =
+      json.flags && typeof json.flags === 'object'
+        ? (json.flags as Record<string, unknown>)
+        : json;
+    const out: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(flags)) {
+      if (typeof value === 'boolean') out[key] = value;
+    }
+    return out;
+  }
+
+  async listFeatureFlags(userId: string): Promise<FeatureFlagsResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+    const overrides = await this.readPlatformFlagOverrides();
+    return {
+      data: DEFAULT_FEATURE_FLAGS.map((flag) => ({
+        ...flag,
+        enabled:
+          typeof overrides[flag.key] === 'boolean'
+            ? overrides[flag.key]
+            : flag.enabled,
+      })),
+    };
+  }
+
+  async updateFeatureFlag(
+    userId: string,
+    key: string,
+    dto: UpdateFeatureFlagDto,
+  ): Promise<FeatureFlagsResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const known = DEFAULT_FEATURE_FLAGS.find((flag) => flag.key === key);
+    if (!known) {
+      throw new BadRequestException(`Unknown feature flag: ${key}`);
+    }
+
+    const overrides = await this.readPlatformFlagOverrides();
+    overrides[key] = dto.enabled;
+
+    const carrier = await this.prisma.tenant.findFirst({
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!carrier) {
+      throw new BadRequestException(
+        'Provision at least one tenant before toggling flags.',
+      );
+    }
+
+    const existing = await this.prisma.tenantEntitlement.findFirst({
+      where: {
+        entitlementKey: PLATFORM_FLAGS_KEY,
+        effectiveTo: null,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (existing) {
+      await this.prisma.tenantEntitlement.update({
+        where: { id: existing.id },
+        data: {
+          valueJson: { flags: overrides },
+          changedByUserId: userId,
+        },
+      });
+    } else {
+      await this.prisma.tenantEntitlement.create({
+        data: {
+          tenantId: carrier.id,
+          entitlementKey: PLATFORM_FLAGS_KEY,
+          valueJson: { flags: overrides },
+          effectiveFrom: new Date(),
+          changedByUserId: userId,
+        },
+      });
+    }
+
+    await this.prisma.auditEvent.create({
+      data: {
+        tenantId: carrier.id,
+        actorUserId: userId,
+        action: 'FEATURE_FLAG_UPDATED',
+        entityType: 'FEATURE_FLAG',
+        reason: `${known.name} set to ${dto.enabled ? 'ON' : 'OFF'}`,
+        metadataJson: { key, enabled: dto.enabled },
+      },
+    });
+
+    return this.listFeatureFlags(userId);
   }
 }

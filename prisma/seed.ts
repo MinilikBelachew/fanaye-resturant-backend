@@ -1753,8 +1753,13 @@ async function main() {
       entityType: 'ORDER',
       entityId: ORDER_1_ID,
       action: 'CONFIRM_ORDER',
-      newState: { status: 'IN_FULFILLMENT' },
+      newState: {
+        status: 'IN_FULFILLMENT',
+        summary: 'Items dispatched to Kitchen and Barista',
+        tableDisplayName: 'Table 1',
+      },
       commandId: IDEMPOTENCY_ORDER_ID,
+      minutesAgo: 25,
     },
     {
       id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f352',
@@ -1765,7 +1770,12 @@ async function main() {
       entityType: 'PAYMENT',
       entityId: TABLE_2_CASH_PAYMENT_ID,
       action: 'CONFIRM_CASH_PAYMENT',
-      newState: { status: 'SETTLED', amount: 365 },
+      newState: {
+        status: 'SETTLED',
+        amount: 365,
+        tableDisplayName: 'Table 2',
+      },
+      minutesAgo: 40,
     },
     {
       id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f353',
@@ -1778,6 +1788,7 @@ async function main() {
       action: 'CONFIRM_CASH_DROP_RECEIPT',
       newState: { status: 'RECEIVED', amount: 365 },
       commandId: IDEMPOTENCY_DROP_ID,
+      minutesAgo: 35,
     },
     {
       id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f354',
@@ -1789,13 +1800,109 @@ async function main() {
       entityId: DAILY_CLOSE_ID,
       action: 'GENERATE_DAILY_CLOSE',
       newState: { status: 'READY_FOR_REVIEW', blockingIssueCount: 3 },
+      minutesAgo: 120,
+    },
+    {
+      id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f355',
+      actorUserId: '55555555-5555-4555-8555-555555555557',
+      actorStaffId: '77777777-7777-4777-8777-555555555557',
+      role: 'STATION_OPERATOR',
+      shiftId: null,
+      entityType: 'ORDER_ITEM',
+      entityId: ORDER_ITEM_BURGER_ID,
+      action: 'MARK_ITEM_READY',
+      newState: {
+        itemName: 'Cheeseburger (x2)',
+        stationName: 'Kitchen',
+        summary: 'Ticket completed',
+      },
+      minutesAgo: 18,
+    },
+    {
+      id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f356',
+      actorUserId: '55555555-5555-4555-8555-555555555558',
+      actorStaffId: MERON_MEMBERSHIP_ID,
+      role: 'STATION_OPERATOR',
+      shiftId: null,
+      entityType: 'ORDER_ITEM',
+      entityId: ORDER_ITEM_MACCHIATO_ID,
+      action: 'MARK_ITEM_READY',
+      newState: {
+        itemName: 'Caramel Macchiato',
+        stationName: 'Barista',
+      },
+      minutesAgo: 50,
+    },
+    {
+      id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f357',
+      actorUserId: KARIM_USER_ID,
+      actorStaffId: KARIM_MEMBERSHIP_ID,
+      role: 'WAITER',
+      shiftId: KARIM_SHIFT_SESSION_ID,
+      entityType: 'PAYMENT',
+      entityId: TABLE_2_CASH_PAYMENT_ID,
+      action: 'TINAVERIFY_SCAN',
+      newState: {
+        summary: 'Fiscal tax QR check submitted',
+        tableDisplayName: 'Table 12',
+        amount: 1480,
+      },
+      minutesAgo: 12,
+    },
+    {
+      id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f358',
+      actorUserId: HANA_USER_ID,
+      actorStaffId: HANA_MEMBERSHIP_ID,
+      role: 'MANAGER',
+      shiftId: null,
+      entityType: 'DINING_TABLE',
+      entityId: TABLE_1_ID,
+      action: 'ASSIGN_TABLE_COVERAGE',
+      newState: {
+        summary: 'Tables 1–4 assigned to Karim Tesfaye for morning shift',
+      },
+      minutesAgo: 90,
+    },
+    {
+      id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f359',
+      actorUserId: SARA_USER_ID,
+      actorStaffId: SARA_MEMBERSHIP_ID,
+      role: 'CASHIER',
+      shiftId: SARA_SHIFT_SESSION_ID,
+      entityType: 'CASHIER_SESSION',
+      entityId: SARA_CASHIER_SESSION_ID,
+      action: 'OPEN_CASHIER_SESSION',
+      newState: {
+        summary: 'Opening float verified: ETB 2,500.00',
+      },
+      minutesAgo: 180,
+    },
+    {
+      id: 'f3f3f3f3-f3f3-43f3-83f3-f3f3f3f3f360',
+      actorUserId: HANA_USER_ID,
+      actorStaffId: HANA_MEMBERSHIP_ID,
+      role: 'MANAGER',
+      shiftId: null,
+      entityType: 'SYSTEM',
+      entityId: null,
+      action: 'SYSTEM_HEALTH_CHECK',
+      newState: {
+        summary: 'Local offline queues synchronized with cloud database',
+      },
+      minutesAgo: 240,
     },
   ];
 
   for (const event of auditEvents) {
+    const occurredAt = new Date(now.getTime() - event.minutesAgo * 60_000);
     await prisma.auditEvent.upsert({
       where: { id: event.id },
-      update: {},
+      update: {
+        action: event.action,
+        entityType: event.entityType,
+        newStateJson: event.newState,
+        occurredAt,
+      },
       create: {
         id: event.id,
         tenantId: TENANT_ID,
@@ -1809,7 +1916,7 @@ async function main() {
         action: event.action,
         newStateJson: event.newState,
         idempotencyCommandId: event.commandId,
-        occurredAt: now,
+        occurredAt,
       },
     });
   }

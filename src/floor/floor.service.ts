@@ -50,16 +50,29 @@ export class FloorService {
     }
     const floor = await this.loadFloor(context);
     const shiftDefinitionId = await this.resolveActiveShiftDefinitionId(context);
-    const coveredTableIds = await this.coveredTableIdsForWaiter(
-      context,
-      shiftDefinitionId,
-    );
+
+    // Per-table coverage for the active shift (any waiter). Matches canWaiterOpenTable:
+    // if a coverage row exists for the table → only that waiter; else permanent assignment.
+    const coverageByTable = new Map<string, string>();
+    if (shiftDefinitionId && context.branchId) {
+      const rows = await this.prisma.diningTableShiftCoverage.findMany({
+        where: {
+          branchId: context.branchId,
+          shiftDefinitionId,
+        },
+        select: { diningTableId: true, waiterMembershipId: true },
+      });
+      for (const row of rows) {
+        coverageByTable.set(row.diningTableId, row.waiterMembershipId);
+      }
+    }
 
     const filtered = floor.data.filter((table) => {
+      const coverageWaiterId = coverageByTable.get(table.tableId);
       const assignedToMe =
-        coveredTableIds.has(table.tableId) ||
-        (!coveredTableIds.size &&
-          table.assignedWaiterMembershipId === context.staffMembershipId);
+        coverageWaiterId != null
+          ? coverageWaiterId === context.staffMembershipId
+          : table.assignedWaiterMembershipId === context.staffMembershipId;
       if (!assignedToMe && !table.mine) return false;
       if (view === 'available') return !table.tableSessionId;
       if (view === 'my') return table.mine;
@@ -73,7 +86,16 @@ export class FloorService {
       }
       return true;
     });
-    return { locations: floor.locations, data: filtered };
+
+    const visibleLocationIds = new Set(
+      filtered.map((table) => table.locationId).filter(Boolean),
+    );
+    return {
+      locations: floor.locations.filter((location) =>
+        visibleLocationIds.has(location.id),
+      ),
+      data: filtered,
+    };
   }
 
   async startSession(
@@ -433,24 +455,6 @@ export class FloorService {
       !!permanentWaiterMembershipId &&
       permanentWaiterMembershipId === context.staffMembershipId
     );
-  }
-
-  private async coveredTableIdsForWaiter(
-    context: AuthContextDto,
-    shiftDefinitionId: string | null,
-  ): Promise<Set<string>> {
-    if (!shiftDefinitionId || !context.staffMembershipId) {
-      return new Set();
-    }
-    const rows = await this.prisma.diningTableShiftCoverage.findMany({
-      where: {
-        branchId: context.branchId!,
-        shiftDefinitionId,
-        waiterMembershipId: context.staffMembershipId,
-      },
-      select: { diningTableId: true },
-    });
-    return new Set(rows.map((row) => row.diningTableId));
   }
 
   private async resolveActiveShiftDefinitionId(

@@ -183,6 +183,14 @@ export class FloorLayoutService {
       },
     });
 
+    if (dto.assignedWaiterMembershipId) {
+      await this.syncPermanentAssignmentToShifts(
+        context,
+        created.id,
+        dto.assignedWaiterMembershipId,
+      );
+    }
+
     return { data: this.toTableDto(created) };
   }
 
@@ -232,7 +240,47 @@ export class FloorLayoutService {
       },
     });
 
+    if (dto.assignedWaiterMembershipId !== undefined) {
+      await this.syncPermanentAssignmentToShifts(
+        context,
+        updated.id,
+        dto.assignedWaiterMembershipId,
+      );
+    }
+
     return { data: this.toTableDto(updated) };
+  }
+
+  /** Keep shift coverage in sync when manager assigns a permanent waiter. */
+  private async syncPermanentAssignmentToShifts(
+    context: AuthContextDto,
+    diningTableId: string,
+    waiterMembershipId: string | null,
+  ) {
+    const shifts = await this.prisma.shiftDefinition.findMany({
+      where: { branchId: context.branchId!, status: 'ACTIVE' },
+      select: { id: true },
+    });
+    if (shifts.length === 0) return;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.diningTableShiftCoverage.deleteMany({
+        where: {
+          branchId: context.branchId!,
+          diningTableId,
+        },
+      });
+      if (!waiterMembershipId) return;
+      await tx.diningTableShiftCoverage.createMany({
+        data: shifts.map((shift) => ({
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          diningTableId,
+          shiftDefinitionId: shift.id,
+          waiterMembershipId,
+        })),
+      });
+    });
   }
 
   private async listWaiters(context: AuthContextDto) {

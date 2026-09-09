@@ -1,4 +1,23 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform, Type } from 'class-transformer';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsEmail,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+} from 'class-validator';
+
+function emptyToUndefined({ value }: { value: unknown }) {
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  return value;
+}
 
 export class SuperAdminKpisDto {
   @ApiProperty({ example: 3 })
@@ -292,61 +311,377 @@ export class TenantDetailResponseDto {
 
 export class CreateTenantDto {
   @ApiProperty({ example: 'Abyssinia Grill & Lounge' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(180)
   name: string;
 
   @ApiPropertyOptional({ example: 'Abyssinia Hospitality PLC' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(180)
   legalName?: string;
 
   @ApiPropertyOptional({ example: 'Casual Dining' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
   concept?: string;
 
   @ApiPropertyOptional({ example: 'PRO' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
   planCode?: string;
 
   @ApiProperty({ example: 'Addis Ababa' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(80)
   city: string;
 
   @ApiProperty({ example: 'Bole' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
   area: string;
 
   @ApiProperty({ example: 'Bole Road, Next to Edna Mall' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(255)
   address: string;
 
   @ApiProperty({ example: '+251 91 123 4567' })
+  @IsString()
+  @MinLength(7)
+  @MaxLength(32)
   phone: string;
 
   @ApiProperty({ example: 'hello@abyssinia.et' })
+  @IsEmail()
+  @MaxLength(255)
   email: string;
 
   @ApiProperty({ example: 'Dawit Haile' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(160)
   managerName: string;
 
   @ApiPropertyOptional({ example: '+251 91 123 4567' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
   managerPhone?: string;
 
   @ApiPropertyOptional({ example: 'manager@abyssinia.et' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
   managerEmail?: string;
 
   @ApiPropertyOptional({ example: 'Password123!' })
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  @MaxLength(72)
   managerPassword?: string;
 
   @ApiProperty({ example: 'Bole Flagship' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(180)
   branchName: string;
 
   @ApiPropertyOptional({ example: 'BOLE-1' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
   branchCode?: string;
 
   @ApiPropertyOptional({ example: '08:00 – 23:00' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
   hours?: string;
 
   @ApiPropertyOptional({ example: 16 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(60)
   tableCount?: number;
 
   @ApiPropertyOptional({
     example: ['KITCHEN', 'BARISTA', 'CAKES', 'SOFT_DRINKS'],
     type: [String],
   })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
   activeStations?: string[];
+}
+
+export class UpdateTenantDto {
+  @ApiPropertyOptional({ example: 'Abyssinia Grill & Lounge' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(180)
+  name?: string;
+
+  @ApiPropertyOptional({ example: 'Abyssinia Hospitality PLC' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsString()
+  @MaxLength(180)
+  legalName?: string;
+
+  @ApiPropertyOptional({ example: 'Casual Dining' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  concept?: string;
+
+  @ApiPropertyOptional({ example: 'PRO' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  planCode?: string;
+
+  @ApiPropertyOptional({ example: 'Addis Ababa' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(80)
+  city?: string;
+
+  @ApiPropertyOptional({ example: 'Bole' })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  area?: string;
+
+  @ApiPropertyOptional({ example: 'Bole Road, Next to Edna Mall' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(255)
+  address?: string;
+
+  @ApiPropertyOptional({ example: '+251 91 123 4567' })
+  @IsOptional()
+  @IsString()
+  @MinLength(7)
+  @MaxLength(32)
+  phone?: string;
+
+  @ApiPropertyOptional({ example: 'hello@abyssinia.et' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
+  email?: string;
+
+  @ApiPropertyOptional({ example: 'Dawit Haile' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(160)
+  managerName?: string;
+
+  @ApiPropertyOptional({ example: '+251 91 123 4567' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  managerPhone?: string;
+
+  @ApiPropertyOptional({ example: 'manager@abyssinia.et' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
+  managerEmail?: string;
+
+  @ApiPropertyOptional({
+    example: 'Password123!',
+    description: 'Leave empty to keep the current manager password.',
+  })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  @MaxLength(72)
+  managerPassword?: string;
+
+  @ApiPropertyOptional({ example: 'Bole Flagship' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(180)
+  branchName?: string;
+
+  @ApiPropertyOptional({ example: 'BOLE-1' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  branchCode?: string;
+
+  @ApiPropertyOptional({ example: '08:00 – 23:00' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  hours?: string;
+}
+
+export class PlatformAuditListResponseDto {
+  @ApiProperty({ type: () => [PlatformAuditEventDto] })
+  data: PlatformAuditEventDto[];
+}
+
+export class LiveOpsBranchDto {
+  @ApiProperty()
+  branchId: string;
+
+  @ApiProperty()
+  branchName: string;
+
+  @ApiProperty()
+  branchCode: string;
+
+  @ApiProperty()
+  tenantId: string;
+
+  @ApiProperty()
+  tenantName: string;
+
+  @ApiProperty()
+  status: string;
+
+  @ApiProperty({ example: 4 })
+  openSessions: number;
+
+  @ApiProperty({ example: 2 })
+  openOrders: number;
+
+  @ApiProperty({ example: 1 })
+  unpaidBills: number;
+
+  @ApiProperty({ example: 16 })
+  tableCount: number;
+}
+
+export class LiveOpsSummaryDto {
+  @ApiProperty({ example: 12 })
+  openSessions: number;
+
+  @ApiProperty({ example: 8 })
+  openOrders: number;
+
+  @ApiProperty({ example: 3 })
+  unpaidBills: number;
+
+  @ApiProperty({ example: 5 })
+  activeBranches: number;
+
+  @ApiProperty({ example: 4 })
+  liveTenants: number;
+}
+
+export class LiveOpsResponseDto {
+  @ApiProperty({ type: () => LiveOpsSummaryDto })
+  summary: LiveOpsSummaryDto;
+
+  @ApiProperty({ type: () => [LiveOpsBranchDto] })
+  branches: LiveOpsBranchDto[];
+}
+
+export class PlatformStaffMemberDto {
+  @ApiProperty()
+  membershipId: string;
+
+  @ApiProperty()
+  userId: string;
+
+  @ApiProperty()
+  displayName: string;
+
+  @ApiPropertyOptional()
+  email?: string;
+
+  @ApiPropertyOptional()
+  phone?: string;
+
+  @ApiProperty()
+  tenantId: string;
+
+  @ApiProperty()
+  tenantName: string;
+
+  @ApiProperty({ type: [String], example: ['MANAGER'] })
+  roles: string[];
+
+  @ApiProperty({ example: 'ACTIVE' })
+  accountStatus: string;
+
+  @ApiProperty({ example: 'ACTIVE' })
+  membershipStatus: string;
+
+  @ApiPropertyOptional({ example: '2026-09-09T06:00:00.000Z' })
+  lastLoginAt?: string | null;
+
+  @ApiProperty({ example: true })
+  hasPassword: boolean;
+}
+
+export class PlatformStaffListResponseDto {
+  @ApiProperty({ type: () => [PlatformStaffMemberDto] })
+  data: PlatformStaffMemberDto[];
+}
+
+export class SuspendPlatformStaffDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  suspended: boolean;
+}
+
+export class ResetPlatformStaffPasswordDto {
+  @ApiProperty({ example: 'Password123!' })
+  @IsString()
+  @MinLength(6)
+  @MaxLength(72)
+  password: string;
+}
+
+export class FeatureFlagDto {
+  @ApiProperty({ example: 'qr_guest' })
+  key: string;
+
+  @ApiProperty({ example: 'Guest QR ordering' })
+  name: string;
+
+  @ApiProperty({ example: 'Deferred' })
+  scope: string;
+
+  @ApiProperty({ example: false })
+  enabled: boolean;
+}
+
+export class FeatureFlagsResponseDto {
+  @ApiProperty({ type: () => [FeatureFlagDto] })
+  data: FeatureFlagDto[];
+}
+
+export class UpdateFeatureFlagDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  enabled: boolean;
 }
 
 
