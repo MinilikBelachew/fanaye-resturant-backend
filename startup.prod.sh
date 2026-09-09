@@ -4,9 +4,9 @@ set -e
 # Wait for database to be ready
 /opt/wait-for-it.sh "${DATABASE_HOST:-postgres}:5432" --timeout=60 --strict -- echo "Database is up"
 
-# Run migrations
+# Run production database migrations
 echo "Deploying Prisma database migrations..."
-npx prisma migrate deploy || npx prisma db push --accept-data-loss
+npm run migration:run
 
 # Seed initial database records (enabled by default)
 if [ "${RUN_SEED:-true}" = "true" ]; then
