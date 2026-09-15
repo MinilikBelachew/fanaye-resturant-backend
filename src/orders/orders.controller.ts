@@ -44,4 +44,18 @@ export class OrdersController {
       idempotencyKey,
     );
   }
+
+  @Post('send-to-kitchen')
+  @ApiOkResponse({ description: 'Dispatches confirmed order items to kitchen queues' })
+  @HttpCode(HttpStatus.OK)
+  sendToKitchen(
+    @Request() request,
+    @Body() dto: { tableSessionId: string; orderId?: string },
+  ) {
+    return this.ordersService.sendToKitchen(
+      String(request.user.id),
+      dto.tableSessionId,
+      dto.orderId,
+    );
+  }
 }

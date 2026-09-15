@@ -175,6 +175,26 @@ export class SiteService {
         typeof raw.logoUrl === 'string' && raw.logoUrl ? raw.logoUrl : null,
       fontDisplay: String(raw.fontDisplay || DEFAULT_THEME.fontDisplay),
       fontBody: String(raw.fontBody || DEFAULT_THEME.fontBody),
+      backgroundType:
+        typeof raw.backgroundType === 'string' && raw.backgroundType
+          ? raw.backgroundType
+          : 'solid',
+      backgroundGradient:
+        typeof raw.backgroundGradient === 'string' && raw.backgroundGradient
+          ? raw.backgroundGradient
+          : null,
+      backgroundImageUrl:
+        typeof raw.backgroundImageUrl === 'string' && raw.backgroundImageUrl
+          ? raw.backgroundImageUrl
+          : null,
+      backgroundOverlayOpacity:
+        typeof raw.backgroundOverlayOpacity === 'number'
+          ? raw.backgroundOverlayOpacity
+          : 0.85,
+      borderRadius:
+        typeof raw.borderRadius === 'string' && raw.borderRadius
+          ? raw.borderRadius
+          : 'md',
     };
   }
 

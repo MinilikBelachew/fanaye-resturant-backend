@@ -498,6 +498,58 @@ export class BillingService {
     return toBillDto(bill);
   }
 
+  async sendBillToWaiter(
+    userId: string,
+    billId: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const context = await this.requireBranch(userId);
+
+    const bill = await this.prisma.bill.findFirst({
+      where: { id: billId, branchId: context.branchId! },
+      include: {
+        tableSession: {
+          include: {
+            table: true,
+            primaryWaiter: true,
+          },
+        },
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found.');
+    }
+
+    const waiterId = bill.tableSession.primaryWaiterMembershipId;
+    if (!waiterId) {
+      throw new UnprocessableEntityException('No waiter assigned to this table session.');
+    }
+
+    const tableName = bill.tableSession.table.displayName;
+    await this.prisma.notification.create({
+      data: {
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        recipientStaffMembershipId: waiterId,
+        type: 'BILL_READY',
+        severity: 'URGENT',
+        title: `🧾 Bill Ready · ${tableName}`,
+        body: `Bill #${bill.billNumber} for ${money(bill.totalAmount)} ETB is ready at the cashier. Please deliver to guest.`,
+        payloadJson: {
+          billId: bill.id,
+          billNumber: bill.billNumber,
+          tableSessionId: bill.tableSessionId,
+          total: money(bill.totalAmount),
+        },
+      },
+    });
+
+    return {
+      success: true,
+      message: `Bill notification sent to ${bill.tableSession.primaryWaiter?.employeeDisplayName || 'waiter'}.`,
+    };
+  }
+
   async payCash(
     userId: string,
     billId: string,

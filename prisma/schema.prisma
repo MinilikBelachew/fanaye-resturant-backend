@@ -225,6 +225,7 @@ model TenantSite {
   draftDataJson      Json      @map("draft_data_json")
   publishedDataJson  Json?     @map("published_data_json")
   publishedAt        DateTime? @map("published_at") @db.Timestamptz(6)
+  qrMenuConfigJson   Json?     @map("qr_menu_config_json")
   createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -727,6 +728,8 @@ model MenuItem {
   expectedPrepMinutes   Int?     @map("expected_prep_minutes")
   status                String   @default("ACTIVE") @db.VarChar(20)
   soldOut               Boolean  @default(false) @map("sold_out")
+  badge                 String?  @db.VarChar(40)
+  showOnQrMenu          Boolean  @default(true) @map("show_on_qr_menu")
   sortOrder             Int      @default(0) @map("sort_order")
   imageFileId           String?  @map("image_file_id") @db.Uuid
   imageKey              String?  @map("image_key") @db.VarChar(40)
@@ -868,6 +871,7 @@ model DiningTable {
   status                     String    @default("AVAILABLE") @db.VarChar(20)
   sortOrder                  Int       @default(0) @map("sort_order")
   assignedWaiterMembershipId String?   @map("assigned_waiter_membership_id") @db.Uuid
+  qrCodeUrl                  String?   @map("qr_code_url") @db.Text
   createdAt                  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   archivedAt                 DateTime? @map("archived_at") @db.Timestamptz(6)

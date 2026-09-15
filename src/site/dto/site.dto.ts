@@ -45,6 +45,30 @@ export class SiteThemeDto {
   @IsOptional()
   @IsString()
   fontBody?: string;
+
+  @ApiPropertyOptional({ example: 'solid', enum: ['solid', 'gradient', 'image'] })
+  @IsOptional()
+  @IsString()
+  backgroundType?: string | null;
+
+  @ApiPropertyOptional({ example: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)' })
+  @IsOptional()
+  @IsString()
+  backgroundGradient?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://...' })
+  @IsOptional()
+  @IsString()
+  backgroundImageUrl?: string | null;
+
+  @ApiPropertyOptional({ example: 0.85 })
+  @IsOptional()
+  backgroundOverlayOpacity?: number | null;
+
+  @ApiPropertyOptional({ example: 'md', enum: ['none', 'md', 'xl', 'full'] })
+  @IsOptional()
+  @IsString()
+  borderRadius?: string | null;
 }
 
 export class UpdateSiteDto {

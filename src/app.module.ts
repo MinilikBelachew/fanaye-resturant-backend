@@ -37,6 +37,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { SuperAdminModule } from './super-admin/super-admin.module';
 import { AuditModule } from './audit/audit.module';
 import { SiteModule } from './site/site.module';
+import { QrMenuModule } from './qr-menu/qr-menu.module';
 
 @Module({
   imports: [
@@ -103,6 +104,7 @@ import { SiteModule } from './site/site.module';
     SuperAdminModule,
     AuditModule,
     SiteModule,
+    QrMenuModule,
   ],
 })
 export class AppModule {}

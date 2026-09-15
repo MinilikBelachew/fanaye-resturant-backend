@@ -565,6 +565,78 @@ export class OrdersService {
     };
   }
 
+  async sendToKitchen(
+    userId: string,
+    tableSessionId: string,
+    orderId?: string,
+  ): Promise<{ success: boolean; count: number; message: string }> {
+    const context = await this.requireBranch(userId);
+    if (!['WAITER', 'MANAGER', 'OWNER'].includes(context.roleCode)) {
+      throw new ForbiddenException('Only staff can send orders to kitchen.');
+    }
+
+    const session = await this.prisma.tableSession.findFirst({
+      where: {
+        id: tableSessionId,
+        branchId: context.branchId!,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Table session not found.');
+    }
+
+    if (session.closedAt || session.status === 'CLOSED') {
+      throw new UnprocessableEntityException('Table session is closed.');
+    }
+
+    const filter: Prisma.OrderItemWhereInput = {
+      tableSessionId,
+      branchId: context.branchId!,
+      cancelledAt: null,
+      state: 'CONFIRMED',
+      ...(orderId ? { orderId } : {}),
+    };
+
+    const confirmedItems = await this.prisma.orderItem.findMany({
+      where: filter,
+    });
+
+    if (confirmedItems.length === 0) {
+      return {
+        success: true,
+        count: 0,
+        message: 'All items are already in kitchen queue or served.',
+      };
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.orderItem.updateMany({
+        where: filter,
+        data: {
+          state: 'QUEUED',
+          queuedAt: now,
+          version: { increment: 1 },
+        },
+      });
+
+      await tx.tableSession.update({
+        where: { id: session.id },
+        data: {
+          status: 'ACTIVE_ORDER',
+          version: { increment: 1 },
+        },
+      });
+    });
+
+    return {
+      success: true,
+      count: confirmedItems.length,
+      message: `Sent ${confirmedItems.length} item(s) to kitchen stations!`,
+    };
+  }
+
   private async requireBranch(userId: string): Promise<AuthContextDto> {
     const context = await this.identity.getByUserId(userId);
     if (!context.tenantId || !context.branchId) {
