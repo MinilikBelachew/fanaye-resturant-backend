@@ -115,8 +115,13 @@ export class CashierCashDropsController {
   queue(
     @Request() request,
     @Query('status') status?: string,
+    @Query('dateFilter') dateFilter?: string,
   ): Promise<CashDropQueueResponseDto> {
-    return this.cashCustody.listCashierDrops(String(request.user.id), status);
+    return this.cashCustody.listCashierDrops(
+      String(request.user.id),
+      status,
+      dateFilter,
+    );
   }
 }
 

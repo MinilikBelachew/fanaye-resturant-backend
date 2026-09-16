@@ -120,20 +120,51 @@ export class CashCustodyService {
   async listCashierDrops(
     userId: string,
     statusQuery?: string,
+    dateFilter?: string,
   ): Promise<CashDropQueueResponseDto> {
     const context = await this.requireCashier(userId);
-    const statuses = parseStatuses(statusQuery) ?? ['INITIATED', 'DISPUTED'];
+    let statuses: string[] = ['INITIATED', 'DISPUTED'];
+    if (statusQuery) {
+      if (statusQuery.toUpperCase() === 'ALL') {
+        statuses = ['INITIATED', 'DISPUTED', 'RECEIVED', 'RESOLVED'];
+      } else {
+        statuses = parseStatuses(statusQuery) ?? statuses;
+      }
+    }
+
+    const whereClause: Prisma.CashDropWhereInput = {
+      branchId: context.branchId!,
+      status: { in: statuses },
+    };
+
+    const now = new Date();
+    const today = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+    const yesterday = new Date(today);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+
+    if (dateFilter) {
+      const df = dateFilter.toUpperCase();
+      if (df === 'TODAY') {
+        whereClause.businessDate = today;
+      } else if (df === 'YESTERDAY') {
+        whereClause.businessDate = yesterday;
+      } else if (df === 'LAST_7_DAYS') {
+        const past7 = new Date(today);
+        past7.setUTCDate(past7.getUTCDate() - 6);
+        whereClause.businessDate = { gte: past7, lte: today };
+      }
+    }
+
     const drops = await this.prisma.cashDrop.findMany({
-      where: {
-        branchId: context.branchId!,
-        status: { in: statuses },
-      },
+      where: whereClause,
       include: {
         waiter: true,
         dispute: true,
       },
-      orderBy: { initiatedAt: 'asc' },
-      take: 50,
+      orderBy: { initiatedAt: 'desc' },
+      take: 100,
     });
     return {
       data: drops.map((drop) => ({
@@ -478,31 +509,53 @@ export class CashCustodyService {
   }
 
   private async ensureCashierFinancialSession(context: AuthContextDto) {
-    const open = await this.prisma.cashierFinancialSession.findFirst({
+    const existing = await this.prisma.cashierFinancialSession.findFirst({
       where: {
         shiftSessionId: context.shiftSessionId!,
-        status: 'OPEN',
       },
     });
-    if (open) return open;
+    if (existing) {
+      if (existing.status !== 'OPEN') {
+        return this.prisma.cashierFinancialSession.update({
+          where: { id: existing.id },
+          data: { status: 'OPEN' },
+        });
+      }
+      return existing;
+    }
 
     const shift = await this.prisma.shiftSession.findUnique({
       where: { id: context.shiftSessionId! },
     });
     if (!shift) throw new NotFoundException('Cashier shift not found.');
 
-    return this.prisma.cashierFinancialSession.create({
-      data: {
-        tenantId: context.tenantId!,
-        branchId: context.branchId!,
-        businessDate: shift.businessDate,
-        cashierMembershipId: context.staffMembershipId!,
-        shiftSessionId: context.shiftSessionId!,
-        status: 'OPEN',
-        openingFloatAmount: 0,
-        currencyCode: 'ETB',
-      },
-    });
+    try {
+      return await this.prisma.cashierFinancialSession.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          businessDate: shift.businessDate,
+          cashierMembershipId: context.staffMembershipId!,
+          shiftSessionId: context.shiftSessionId!,
+          status: 'OPEN',
+          openingFloatAmount: 0,
+          currencyCode: 'ETB',
+        },
+      });
+    } catch (err: unknown) {
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        (err as { code: string }).code === 'P2002'
+      ) {
+        const found = await this.prisma.cashierFinancialSession.findFirst({
+          where: { shiftSessionId: context.shiftSessionId! },
+        });
+        if (found) return found;
+      }
+      throw err;
+    }
   }
 
   private async writeReceiveLedger(
@@ -699,6 +752,7 @@ function toDropDto(drop: {
   receivedAt: Date | null;
   resolutionAmount: Prisma.Decimal | null;
   version: number;
+  businessDate?: Date;
 }): CashDropDto {
   return {
     cashDropId: drop.id,
@@ -712,5 +766,8 @@ function toDropDto(drop: {
       ? money(drop.resolutionAmount)
       : null,
     version: drop.version,
+    businessDate: drop.businessDate
+      ? drop.businessDate.toISOString().slice(0, 10)
+      : undefined,
   };
 }

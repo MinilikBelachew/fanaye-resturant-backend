@@ -83,6 +83,10 @@ export class CashDropDto {
   @ApiPropertyOptional()
   @Expose()
   disputeStatus?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  businessDate?: string;
 }
 
 export class CashDropQueueResponseDto {

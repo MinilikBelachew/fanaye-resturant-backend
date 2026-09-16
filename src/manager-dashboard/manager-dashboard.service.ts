@@ -71,6 +71,9 @@ export class ManagerDashboardService {
     const yesterdayDate = new Date(businessDate);
     yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
 
+    const sevenDaysAgo = new Date(businessDate);
+    sevenDaysAgo.setUTCDate(sevenDaysAgo.getUTCDate() - 6);
+
     const [
       tables,
       activeSessions,
@@ -78,6 +81,9 @@ export class ManagerDashboardService {
       todayPayments,
       yesterdayClose,
       todayOrderItems,
+      past7Payments,
+      past7CashDrops,
+      past7Bills,
     ] = await Promise.all([
       // 1. Total Dining Tables in branch
       this.prisma.diningTable.findMany({
@@ -120,6 +126,39 @@ export class ManagerDashboardService {
       this.prisma.orderItem.findMany({
         where: { branchId, businessDate },
         include: { currentStation: true },
+      }),
+
+      // 7. Trailing 7 days payments
+      this.prisma.payment.findMany({
+        where: {
+          branchId,
+          businessDate: { gte: sevenDaysAgo, lte: businessDate },
+          status: { in: ['SETTLED', 'VERIFIED'] },
+        },
+        select: { amount: true, method: true, businessDate: true },
+      }),
+
+      // 8. Trailing 7 days cash drops
+      this.prisma.cashDrop.findMany({
+        where: {
+          branchId,
+          businessDate: { gte: sevenDaysAgo, lte: businessDate },
+          status: { in: ['CONFIRMED', 'COLLECTED', 'RECEIVED'] },
+        },
+        select: {
+          declaredAmount: true,
+          countedAmount: true,
+          businessDate: true,
+        },
+      }),
+
+      // 9. Trailing 7 days bills
+      this.prisma.bill.findMany({
+        where: {
+          branchId,
+          businessDate: { gte: sevenDaysAgo, lte: businessDate },
+        },
+        select: { totalAmount: true, businessDate: true },
       }),
     ]);
 
@@ -172,12 +211,15 @@ export class ManagerDashboardService {
       todayNetRevenue > 0 ? todayNetRevenue : totalCollections;
 
     // Yesterday Trend Comparison
-    let revTrend = '+23%';
-    const revTrendLabel = 'vs yesterday';
+    let revTrend = '0%';
+    let revTrendLabel = 'vs yesterday';
     if (yesterdayClose && Number(yesterdayClose.netBilledSales) > 0) {
       const yestNet = Number(yesterdayClose.netBilledSales);
       const diff = ((finalRevenue - yestNet) / yestNet) * 100;
       revTrend = `${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%`;
+    } else if (finalRevenue > 0) {
+      revTrend = '+100%';
+      revTrendLabel = 'first sales of day';
     }
 
     // Prep time calculation
@@ -205,14 +247,15 @@ export class ManagerDashboardService {
               60
             ).toFixed(1),
           )
-        : 7.4;
+        : 0;
 
     // Tables Occupancy
-    const totalTablesCount = Math.max(1, tables.length || 14);
-    const activeTablesCount = activeSessions.length || 8;
-    const occupancyPercent = Math.round(
-      (activeTablesCount / totalTablesCount) * 100,
-    );
+    const totalTablesCount = tables.length;
+    const activeTablesCount = activeSessions.length;
+    const occupancyPercent =
+      totalTablesCount > 0
+        ? Math.round((activeTablesCount / totalTablesCount) * 100)
+        : 0;
 
     // TinaVerify Mix
     const tinaMixPercent =
@@ -220,25 +263,29 @@ export class ManagerDashboardService {
         ? Number(
             ((todayVerifiedTransferSales / totalCollections) * 100).toFixed(1),
           )
-        : 89.2;
+        : 0;
 
     const kpis: ManagerKpiDto = {
-      dailyRevenueFormatted: formatK(finalRevenue || 48200),
-      dailyRevenueValue: finalRevenue || 48200,
+      dailyRevenueFormatted: formatK(finalRevenue),
+      dailyRevenueValue: finalRevenue,
       dailyRevenueTrend: revTrend,
       dailyRevenueTrendLabel: revTrendLabel,
       avgPrepTimeFormatted: `${avgPrepMinutes} min`,
       avgPrepTimeMinutes: avgPrepMinutes,
-      avgPrepTimeTrend: '-12%',
-      avgPrepTimeTrendLabel: 'faster vs last week',
+      avgPrepTimeTrend: prepDurationsSec.length > 0 ? 'Live' : '0%',
+      avgPrepTimeTrendLabel:
+        prepDurationsSec.length > 0
+          ? `${prepDurationsSec.length} tickets completed`
+          : 'no tickets completed today',
       activeTablesFormatted: `${activeTablesCount} / ${totalTablesCount}`,
       activeTablesCount,
       totalTablesCount,
       floorCapacityPercentage: `${occupancyPercent}%`,
       tinaVerifyMixPercentage: `${tinaMixPercent}%`,
       tinaVerifyMixValue: tinaMixPercent,
-      tinaVerifyTrend: '+14%',
-      tinaVerifyTrendLabel: 'digital verified',
+      tinaVerifyTrend: tinaMixPercent > 0 ? `+${tinaMixPercent}%` : '0%',
+      tinaVerifyTrendLabel:
+        totalCollections > 0 ? 'digital transfer share' : 'no collections yet',
     };
 
     // Payment channels breakdown
@@ -246,16 +293,16 @@ export class ManagerDashboardService {
       (a, b) => a + b,
       0,
     );
-    const defaultChannels: PaymentChannelBreakdownItemDto[] = [
+    const paymentChannels: PaymentChannelBreakdownItemDto[] = [
       {
         id: 'telebirr',
         name: 'Telebirr',
         sharePercentage:
           totalChannelVolume > 0
             ? Math.round((channelTotals.telebirr / totalChannelVolume) * 100)
-            : 38,
-        amountFormatted: formatK(channelTotals.telebirr || 18800),
-        amountValue: channelTotals.telebirr || 18800,
+            : 0,
+        amountFormatted: formatK(channelTotals.telebirr),
+        amountValue: channelTotals.telebirr,
         color: '#e85d04',
       },
       {
@@ -264,9 +311,9 @@ export class ManagerDashboardService {
         sharePercentage:
           totalChannelVolume > 0
             ? Math.round((channelTotals.cbe / totalChannelVolume) * 100)
-            : 29,
-        amountFormatted: formatK(channelTotals.cbe || 14300),
-        amountValue: channelTotals.cbe || 14300,
+            : 0,
+        amountFormatted: formatK(channelTotals.cbe),
+        amountValue: channelTotals.cbe,
         color: '#ea580c',
       },
       {
@@ -275,9 +322,9 @@ export class ManagerDashboardService {
         sharePercentage:
           totalChannelVolume > 0
             ? Math.round((channelTotals.transfer / totalChannelVolume) * 100)
-            : 19,
-        amountFormatted: formatK(channelTotals.transfer || 9400),
-        amountValue: channelTotals.transfer || 9400,
+            : 0,
+        amountFormatted: formatK(channelTotals.transfer),
+        amountValue: channelTotals.transfer,
         color: '#f97316',
       },
       {
@@ -286,9 +333,9 @@ export class ManagerDashboardService {
         sharePercentage:
           totalChannelVolume > 0
             ? Math.round((channelTotals.cash / totalChannelVolume) * 100)
-            : 11,
-        amountFormatted: formatK(channelTotals.cash || 5400),
-        amountValue: channelTotals.cash || 5400,
+            : 0,
+        amountFormatted: formatK(channelTotals.cash),
+        amountValue: channelTotals.cash,
         color: '#fb923c',
       },
       {
@@ -297,9 +344,9 @@ export class ManagerDashboardService {
         sharePercentage:
           totalChannelVolume > 0
             ? Math.round((channelTotals.other / totalChannelVolume) * 100)
-            : 3,
-        amountFormatted: formatK(channelTotals.other || 1500),
-        amountValue: channelTotals.other || 1500,
+            : 0,
+        amountFormatted: formatK(channelTotals.other),
+        amountValue: channelTotals.other,
         color: '#fdba74',
       },
     ];
@@ -322,15 +369,7 @@ export class ManagerDashboardService {
       else prepBuckets[4].tickets++;
     }
 
-    if (prepDurationsSec.length === 0) {
-      prepBuckets[0].tickets = 68;
-      prepBuckets[1].tickets = 42;
-      prepBuckets[2].tickets = 28;
-      prepBuckets[3].tickets = 14;
-      prepBuckets[4].tickets = 6;
-    }
-
-    // Top Selling Dishes
+    // Top Selling Dishes from real items
     const dishMap = new Map<
       string,
       { name: string; category: string; revenue: number; orders: number }
@@ -352,10 +391,10 @@ export class ManagerDashboardService {
       dishMap.set(name, existing);
     }
 
-    let topDishes: TopSellingDishDto[] = Array.from(dishMap.values())
+    const topDishes: TopSellingDishDto[] = Array.from(dishMap.values())
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 5)
-      .map((d, i, arr) => {
+      .map((d, _i, arr) => {
         const topRev = arr[0]?.revenue || 1;
         return {
           ...d,
@@ -363,86 +402,65 @@ export class ManagerDashboardService {
         };
       });
 
-    if (topDishes.length === 0) {
-      topDishes = [
-        {
-          name: 'Special Kitfo',
-          category: 'Kitchen',
-          revenue: 18400,
-          orders: 68,
-          percent: 92,
-        },
-        {
-          name: 'Fire Pizza',
-          category: 'Kitchen',
-          revenue: 12800,
-          orders: 40,
-          percent: 64,
-        },
-        {
-          name: 'Tenderloin Steak',
-          category: 'Kitchen',
-          revenue: 9600,
-          orders: 24,
-          percent: 48,
-        },
-        {
-          name: 'Signature Macchiato',
-          category: 'Barista',
-          revenue: 4200,
-          orders: 140,
-          percent: 21,
-        },
-        {
-          name: 'Honey Cheesecake',
-          category: 'Cakes',
-          revenue: 3200,
-          orders: 32,
-          percent: 16,
-        },
-      ];
+    // Sales Trend (7-Day Real Trailing History)
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const salesTrend: RevenueVsCollectionsPointDto[] = [];
+    const weeklyCashMovement: WeeklyCashMovementPointDto[] = [];
+
+    for (let i = 6; i >= 0; i--) {
+      const targetDate = new Date(businessDate);
+      targetDate.setUTCDate(targetDate.getUTCDate() - i);
+      const targetYmd = ymd(targetDate);
+      const dayLabel = dayNames[targetDate.getUTCDay()];
+
+      // Daily bills
+      const dayBills = past7Bills.filter(
+        (b) => ymd(b.businessDate) === targetYmd,
+      );
+      const dayGross = dayBills.reduce(
+        (acc, b) => acc + Number(b.totalAmount),
+        0,
+      );
+
+      // Daily payments
+      const dayPayments = past7Payments.filter(
+        (p) => ymd(p.businessDate) === targetYmd,
+      );
+      const dayCollections = dayPayments.reduce(
+        (acc, p) => acc + Number(p.amount),
+        0,
+      );
+      const dayDigital = dayPayments
+        .filter((p) => p.method === 'TRANSFER')
+        .reduce((acc, p) => acc + Number(p.amount), 0);
+
+      // Daily cash drops
+      const dayCashDrops = past7CashDrops.filter(
+        (c) => ymd(c.businessDate) === targetYmd,
+      );
+      const dayDropAmt = dayCashDrops.reduce(
+        (acc, c) => acc + Number(c.countedAmount ?? c.declaredAmount),
+        0,
+      );
+
+      salesTrend.push({
+        period: dayLabel,
+        grossSales: dayGross,
+        netRevenue: dayGross,
+        collections: dayCollections,
+      });
+
+      weeklyCashMovement.push({
+        day: dayLabel,
+        digitalInflow: dayDigital / 1000,
+        cashDrop: dayDropAmt / 1000,
+      });
     }
-
-    // Sales Trend (Gross vs Net vs Collections)
-    const monthNames = [
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-    ];
-    const salesTrend: RevenueVsCollectionsPointDto[] = monthNames.map(
-      (m, idx) => ({
-        period: m,
-        grossSales: Number((35 + idx * 1.5 + (idx % 3) * 2).toFixed(1)),
-        netRevenue: Number((33 + idx * 1.4 + (idx % 3) * 1.8).toFixed(1)),
-        collections: Number((32 + idx * 1.3 + (idx % 3) * 1.7).toFixed(1)),
-      }),
-    );
-
-    // Weekly Cash Movement
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const weeklyCashMovement: WeeklyCashMovementPointDto[] = days.map(
-      (d, i) => {
-        return {
-          day: d,
-          digitalInflow: Number((6 + i * 0.9 + (i % 2) * 1.2).toFixed(1)),
-          cashDrop: Number((4.5 + i * 0.7 + (i % 2) * 0.8).toFixed(1)),
-        };
-      },
-    );
 
     const data: ManagerDashboardDataDto = {
       kpis,
       salesTrend,
-      paymentChannels: defaultChannels,
+      paymentChannels,
       prepBuckets,
       weeklyCashMovement,
       topDishes,
