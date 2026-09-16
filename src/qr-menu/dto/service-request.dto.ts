@@ -10,7 +10,10 @@ export enum ServiceRequestType {
 }
 
 export class ServiceRequestDto {
-  @ApiProperty({ enum: ServiceRequestType, default: ServiceRequestType.CALL_WAITER })
+  @ApiProperty({
+    enum: ServiceRequestType,
+    default: ServiceRequestType.CALL_WAITER,
+  })
   @IsEnum(ServiceRequestType)
   type: ServiceRequestType;
 

@@ -170,7 +170,10 @@ export class StaffCoverageService {
           )
         : null;
 
-    const password = (dto.pin?.trim() || '1234').slice(0, 72);
+    const rawPin = dto.pin?.trim() || '1234';
+    await this.verifyPinUniqueInTenant(context.tenantId!, rawPin);
+
+    const password = rawPin.slice(0, 72);
     const passwordHash = await bcrypt.hash(password, 10);
 
     const membershipId = await this.prisma.$transaction(async (tx) => {
@@ -373,6 +376,11 @@ export class StaffCoverageService {
       }
 
       if (dto.pin?.trim()) {
+        await this.verifyPinUniqueInTenant(
+          context.tenantId!,
+          dto.pin,
+          existing.userId,
+        );
         const passwordHash = await bcrypt.hash(dto.pin.trim().slice(0, 72), 10);
         if (existing.user.credential) {
           await tx.userCredential.update({
@@ -847,6 +855,46 @@ export class StaffCoverageService {
       });
     }
     return waiter;
+  }
+
+  private async verifyPinUniqueInTenant(
+    tenantId: string,
+    pin: string,
+    excludeUserId?: string,
+  ): Promise<void> {
+    const trimmedPin = pin.trim();
+    if (!trimmedPin) return;
+
+    const memberships = await this.prisma.tenantStaffMembership.findMany({
+      where: {
+        tenantId,
+        status: 'ACTIVE',
+        ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
+      },
+      include: {
+        user: {
+          include: { credential: true },
+        },
+      },
+    });
+
+    for (const membership of memberships) {
+      const hash = membership.user.credential?.passwordHash;
+      if (hash) {
+        const isMatch = await bcrypt.compare(trimmedPin, hash);
+        if (isMatch) {
+          const staffName =
+            membership.employeeDisplayName ||
+            membership.user.displayName ||
+            'another staff member';
+          throw new ConflictException({
+            status: 409,
+            errors: { pin: 'already_exists' },
+            message: `This PIN is already in use by ${staffName} in this restaurant. Please choose a different PIN.`,
+          });
+        }
+      }
+    }
   }
 
   private async requireAdmin(userId: string): Promise<AuthContextDto> {

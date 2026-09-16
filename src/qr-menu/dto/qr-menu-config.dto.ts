@@ -1,13 +1,10 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsArray,
-  IsBoolean,
-  IsOptional,
-  IsString,
-} from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsArray, IsBoolean, IsOptional, IsString } from 'class-validator';
 
 export class QrMenuConfigDto {
-  @ApiPropertyOptional({ example: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4' })
+  @ApiPropertyOptional({
+    example: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4',
+  })
   @IsOptional()
   @IsString()
   coverImageUrl?: string | null;
@@ -17,7 +14,9 @@ export class QrMenuConfigDto {
   @IsString()
   welcomeMessage?: string;
 
-  @ApiPropertyOptional({ example: 'Craft cocktails, specialty Ethiopian buna, and fire-grilled tibs' })
+  @ApiPropertyOptional({
+    example: 'Craft cocktails, specialty Ethiopian buna, and fire-grilled tibs',
+  })
   @IsOptional()
   @IsString()
   subtitle?: string;
@@ -48,7 +47,10 @@ export class QrMenuConfigDto {
   @IsBoolean()
   autoSendToKitchen?: boolean;
 
-  @ApiPropertyOptional({ type: [String], example: ['FASTING', 'VEGETARIAN', 'SPICY', 'CHEF_PICK'] })
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['FASTING', 'VEGETARIAN', 'SPICY', 'CHEF_PICK'],
+  })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })

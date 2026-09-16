@@ -522,7 +522,9 @@ export class BillingService {
 
     const waiterId = bill.tableSession.primaryWaiterMembershipId;
     if (!waiterId) {
-      throw new UnprocessableEntityException('No waiter assigned to this table session.');
+      throw new UnprocessableEntityException(
+        'No waiter assigned to this table session.',
+      );
     }
 
     const tableName = bill.tableSession.table.displayName;

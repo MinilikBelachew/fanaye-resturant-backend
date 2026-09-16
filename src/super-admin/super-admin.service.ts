@@ -1,6 +1,8 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -9,15 +11,18 @@ import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
   CityDistributionItemDto,
+  CreatePlatformStaffDto,
   CreateTenantDto,
   FeatureFlagDto,
   FeatureFlagsResponseDto,
+  ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
   PlatformAuditEventDto,
   PlatformAuditListResponseDto,
   PlatformStaffListResponseDto,
   PlatformStaffMemberDto,
   ResetPlatformStaffPasswordDto,
+  ResetPlatformStaffPinDto,
   SuspendPlatformStaffDto,
   NetworkGmvTrendPointDto,
   PlanDistributionItemDto,
@@ -32,6 +37,22 @@ import {
   UpdateFeatureFlagDto,
   UpdateTenantDto,
 } from './dto/super-admin-dashboard.dto';
+
+const UI_ROLE_MAP: Record<string, string> = {
+  waiter: 'WAITER',
+  manager: 'MANAGER',
+  cashier: 'CASHIER',
+  owner: 'OWNER_ADMIN',
+  kitchen: 'STATION_OPERATOR',
+  barista: 'STATION_OPERATOR',
+  cakes: 'STATION_OPERATOR',
+  soft_drinks: 'STATION_OPERATOR',
+  WAITER: 'WAITER',
+  MANAGER: 'MANAGER',
+  CASHIER: 'CASHIER',
+  OWNER_ADMIN: 'OWNER_ADMIN',
+  STATION_OPERATOR: 'STATION_OPERATOR',
+};
 
 const TENANT_PROFILE_KEY = 'TENANT_PROFILE';
 const PLATFORM_FLAGS_KEY = 'PLATFORM_FEATURE_FLAGS';
@@ -72,8 +93,6 @@ const DEFAULT_FEATURE_FLAGS: Array<
     enabled: false,
   },
 ];
-
-const MANAGER_ROLE_CODES = new Set(['MANAGER', 'OWNER_ADMIN']);
 
 type TenantProfileJson = {
   city?: string;
@@ -1628,15 +1647,88 @@ export class SuperAdminService {
 
   async listPlatformStaff(
     userId: string,
+    query?: ListPlatformStaffQueryDto,
   ): Promise<PlatformStaffListResponseDto> {
-    await this.verifySuperAdminAccess(userId);
+    if (userId !== 'system') {
+      await this.verifySuperAdminAccess(userId);
+    }
+
+    const page = Math.max(Number(query?.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(query?.limit) || 20, 1), 100);
+    const search = query?.search?.trim();
+    const tenantId = query?.tenantId?.trim();
+    const role = query?.role?.trim();
+    const status = query?.status?.trim()?.toUpperCase();
+    const sortOrder = query?.sortOrder === 'asc' ? 'asc' : 'desc';
+
+    const whereClause: Prisma.TenantStaffMembershipWhereInput = {};
+
+    if (tenantId) {
+      whereClause.tenantId = tenantId;
+    }
+
+    if (status) {
+      if (status === 'ACTIVE') {
+        whereClause.status = 'ACTIVE';
+        whereClause.user = { accountStatus: 'ACTIVE' };
+      } else if (status === 'SUSPENDED' || status === 'INACTIVE') {
+        whereClause.OR = [
+          { status: 'INACTIVE' },
+          { user: { accountStatus: 'SUSPENDED' } },
+        ];
+      }
+    }
+
+    if (role) {
+      const normalizedRole =
+        UI_ROLE_MAP[role] ||
+        UI_ROLE_MAP[role.toLowerCase()] ||
+        role.toUpperCase();
+      whereClause.roleAssignments = {
+        some: {
+          status: 'ACTIVE',
+          role: {
+            code: {
+              equals: normalizedRole,
+              mode: 'insensitive',
+            },
+          },
+        },
+      };
+    }
+
+    if (search) {
+      const searchConditions: Prisma.TenantStaffMembershipWhereInput[] = [
+        { employeeDisplayName: { contains: search, mode: 'insensitive' } },
+        { user: { displayName: { contains: search, mode: 'insensitive' } } },
+        { user: { email: { contains: search, mode: 'insensitive' } } },
+        { user: { phone: { contains: search, mode: 'insensitive' } } },
+        { tenant: { displayName: { contains: search, mode: 'insensitive' } } },
+        { tenant: { legalName: { contains: search, mode: 'insensitive' } } },
+      ];
+
+      if (whereClause.OR) {
+        whereClause.AND = [{ OR: whereClause.OR }, { OR: searchConditions }];
+        delete whereClause.OR;
+      } else {
+        whereClause.OR = searchConditions;
+      }
+    }
+
+    const total = await this.prisma.tenantStaffMembership.count({
+      where: whereClause,
+    });
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const skip = (page - 1) * limit;
 
     const memberships = await this.prisma.tenantStaffMembership.findMany({
+      where: whereClause,
       include: {
         tenant: true,
         user: {
           include: {
             credential: true,
+            photo: true,
             sessions: {
               orderBy: { createdAt: 'desc' },
               take: 1,
@@ -1648,47 +1740,344 @@ export class SuperAdminService {
           include: { role: true },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: sortOrder },
+      skip,
+      take: limit,
     });
 
-    const data: PlatformStaffMemberDto[] = memberships
-      .map((m) => {
-        const assignedRoles = m.roleAssignments.map((r) => r.role.code);
-        const roles = [
-          ...new Set(
-            assignedRoles.filter((code) => MANAGER_ROLE_CODES.has(code)),
-          ),
-        ];
+    const data: PlatformStaffMemberDto[] = memberships.map((m) => {
+      const assignedRoles = m.roleAssignments.map((r) => r.role.code);
+      const roles = assignedRoles.length > 0 ? assignedRoles : ['STAFF'];
 
-        return {
-          membershipId: m.id,
-          userId: m.userId,
-          displayName: m.employeeDisplayName || m.user.displayName,
-          email: m.user.email ?? undefined,
-          phone: m.user.phone ?? undefined,
-          tenantId: m.tenantId,
-          tenantName: m.tenant.displayName || m.tenant.legalName || 'Tenant',
-          roles,
-          accountStatus: m.user.accountStatus,
-          membershipStatus: m.status,
-          lastLoginAt: m.user.sessions[0]?.createdAt?.toISOString() ?? null,
-          hasPassword: Boolean(m.user.credential?.passwordHash),
-        };
-      })
-      .filter((row) => row.roles.length > 0);
+      return {
+        membershipId: m.id,
+        userId: m.userId,
+        displayName: m.employeeDisplayName || m.user.displayName,
+        email: m.user.email ?? undefined,
+        phone: m.user.phone ?? undefined,
+        tenantId: m.tenantId,
+        tenantName: m.tenant.displayName || m.tenant.legalName || 'Tenant',
+        roles,
+        accountStatus: m.user.accountStatus,
+        membershipStatus: m.status,
+        lastLoginAt: m.user.sessions[0]?.createdAt?.toISOString() ?? null,
+        hasPassword: Boolean(m.user.credential?.passwordHash),
+        hasPin: Boolean(m.user.credential?.passwordHash),
+        photoUrl: m.user.photo?.path || null,
+      };
+    });
 
-    return { data };
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    };
   }
 
   private async getStaffMemberDto(
     membershipId: string,
   ): Promise<PlatformStaffMemberDto> {
-    const list = await this.listPlatformStaff('system');
-    const found = list.data.find((row) => row.membershipId === membershipId);
-    if (!found) {
+    const membership = await this.prisma.tenantStaffMembership.findUnique({
+      where: { id: membershipId },
+      include: {
+        tenant: true,
+        user: {
+          include: {
+            credential: true,
+            photo: true,
+            sessions: {
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+          },
+        },
+        roleAssignments: {
+          where: { status: 'ACTIVE' },
+          include: { role: true },
+        },
+      },
+    });
+
+    if (!membership) {
       throw new UnauthorizedException('Staff member not found');
     }
-    return found;
+
+    const assignedRoles = membership.roleAssignments.map((r) => r.role.code);
+    const roles = assignedRoles.length > 0 ? assignedRoles : ['STAFF'];
+
+    return {
+      membershipId: membership.id,
+      userId: membership.userId,
+      displayName:
+        membership.employeeDisplayName || membership.user.displayName,
+      email: membership.user.email ?? undefined,
+      phone: membership.user.phone ?? undefined,
+      tenantId: membership.tenantId,
+      tenantName:
+        membership.tenant.displayName ||
+        membership.tenant.legalName ||
+        'Tenant',
+      roles,
+      accountStatus: membership.user.accountStatus,
+      membershipStatus: membership.status,
+      lastLoginAt:
+        membership.user.sessions[0]?.createdAt?.toISOString() ?? null,
+      hasPassword: Boolean(membership.user.credential?.passwordHash),
+      hasPin: Boolean(membership.user.credential?.passwordHash),
+      photoUrl: membership.user.photo?.path || null,
+    };
+  }
+
+  private async verifyPinUniqueInTenant(
+    tenantId: string,
+    pin: string,
+    excludeUserId?: string,
+  ): Promise<void> {
+    const trimmedPin = pin.trim();
+    if (!trimmedPin) return;
+
+    const memberships = await this.prisma.tenantStaffMembership.findMany({
+      where: {
+        tenantId,
+        status: 'ACTIVE',
+        ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
+      },
+      include: {
+        user: {
+          include: { credential: true },
+        },
+      },
+    });
+
+    for (const membership of memberships) {
+      const hash = membership.user.credential?.passwordHash;
+      if (hash) {
+        const isMatch = await bcrypt.compare(trimmedPin, hash);
+        if (isMatch) {
+          const staffName =
+            membership.employeeDisplayName ||
+            membership.user.displayName ||
+            'another staff member';
+          throw new ConflictException({
+            status: 409,
+            message: `This PIN is already in use by ${staffName} in this restaurant. Please choose a different PIN.`,
+          });
+        }
+      }
+    }
+  }
+
+  async createPlatformStaff(
+    userId: string,
+    dto: CreatePlatformStaffDto,
+  ): Promise<PlatformStaffMemberDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: dto.tenantId },
+      include: {
+        branches: { where: { status: 'ACTIVE' }, take: 1 },
+      },
+    });
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+
+    // Verify PIN uniqueness within this restaurant
+    await this.verifyPinUniqueInTenant(dto.tenantId, dto.pin);
+
+    if (dto.email?.trim()) {
+      const existingEmail = await this.prisma.appUser.findFirst({
+        where: { email: dto.email.trim().toLowerCase() },
+      });
+      if (existingEmail) {
+        throw new ConflictException({
+          status: 409,
+          message: 'A user with this email address already exists.',
+        });
+      }
+    }
+
+    if (dto.phone?.trim()) {
+      const existingPhone = await this.prisma.appUser.findFirst({
+        where: { phone: dto.phone.trim() },
+      });
+      if (existingPhone) {
+        throw new ConflictException({
+          status: 409,
+          message: 'A user with this phone number already exists.',
+        });
+      }
+    }
+
+    const roleCode =
+      UI_ROLE_MAP[dto.role] ||
+      UI_ROLE_MAP[dto.role?.toLowerCase()] ||
+      dto.role?.toUpperCase() ||
+      'WAITER';
+
+    const roleRecord = await this.prisma.restaurantRole.findUnique({
+      where: { code: roleCode },
+    });
+    if (!roleRecord) {
+      throw new BadRequestException(`Role ${roleCode} does not exist.`);
+    }
+
+    const branchId = tenant.branches[0]?.id;
+    const passwordHash = await bcrypt.hash(dto.pin.trim().slice(0, 72), 10);
+
+    const createdMembership = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.appUser.create({
+        data: {
+          displayName: dto.name.trim(),
+          email: dto.email?.trim().toLowerCase() || null,
+          phone: dto.phone?.trim() || null,
+          accountStatus: 'ACTIVE',
+        },
+      });
+
+      await tx.userCredential.create({
+        data: {
+          userId: user.id,
+          passwordHash,
+          authProvider: 'email',
+        },
+      });
+
+      const membership = await tx.tenantStaffMembership.create({
+        data: {
+          tenantId: tenant.id,
+          userId: user.id,
+          employeeDisplayName: dto.name.trim(),
+          status: 'ACTIVE',
+        },
+      });
+
+      if (branchId) {
+        await tx.branchStaffAssignment.create({
+          data: {
+            tenantId: tenant.id,
+            branchId,
+            staffMembershipId: membership.id,
+            status: 'ACTIVE',
+          },
+        });
+
+        await tx.staffRoleAssignment.create({
+          data: {
+            tenantId: tenant.id,
+            branchId,
+            staffMembershipId: membership.id,
+            roleId: roleRecord.id,
+            status: 'ACTIVE',
+          },
+        });
+
+        if (dto.stationCode) {
+          const station = await tx.preparationStation.findFirst({
+            where: {
+              branchId,
+              code: dto.stationCode.toUpperCase(),
+              status: 'ACTIVE',
+            },
+          });
+          if (station) {
+            await tx.stationStaffAssignment.create({
+              data: {
+                tenantId: tenant.id,
+                branchId,
+                staffMembershipId: membership.id,
+                stationId: station.id,
+                status: 'ACTIVE',
+              },
+            });
+          }
+        }
+      }
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId: tenant.id,
+          actorUserId: userId,
+          action: 'STAFF_CREATED_BY_SUPER_ADMIN',
+          entityType: 'STAFF_MEMBERSHIP',
+          entityId: membership.id,
+          reason: `Created staff ${dto.name.trim()} (${roleCode}) at ${tenant.displayName}`,
+        },
+      });
+
+      return membership;
+    });
+
+    return this.getStaffMemberDto(createdMembership.id);
+  }
+
+  async resetPlatformStaffPin(
+    userId: string,
+    membershipId: string,
+    dto: ResetPlatformStaffPinDto,
+  ): Promise<PlatformStaffMemberDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const membership = await this.prisma.tenantStaffMembership.findUnique({
+      where: { id: membershipId },
+      include: { tenant: true },
+    });
+    if (!membership) {
+      throw new UnauthorizedException('Staff member not found');
+    }
+
+    // Verify PIN uniqueness within this restaurant, excluding this staff member
+    await this.verifyPinUniqueInTenant(
+      membership.tenantId,
+      dto.pin,
+      membership.userId,
+    );
+
+    const passwordHash = await bcrypt.hash(dto.pin.trim().slice(0, 72), 10);
+
+    await this.prisma.$transaction(async (tx) => {
+      const existingCred = await tx.userCredential.findUnique({
+        where: { userId: membership.userId },
+      });
+
+      if (existingCred) {
+        await tx.userCredential.update({
+          where: { userId: membership.userId },
+          data: { passwordHash },
+        });
+      } else {
+        await tx.userCredential.create({
+          data: {
+            userId: membership.userId,
+            passwordHash,
+            authProvider: 'email',
+          },
+        });
+      }
+
+      await tx.authSession.updateMany({
+        where: { userId: membership.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId: membership.tenantId,
+          actorUserId: userId,
+          action: 'STAFF_PIN_RESET',
+          entityType: 'STAFF_MEMBERSHIP',
+          entityId: membershipId,
+          reason: `PIN reset for ${membership.employeeDisplayName} at ${membership.tenant.displayName}`,
+        },
+      });
+    });
+
+    return this.getStaffMemberDto(membershipId);
   }
 
   async suspendPlatformStaff(

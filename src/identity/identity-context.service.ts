@@ -1,7 +1,21 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import bcrypt from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
 import { AuthContextDto, AuthWorkspaceDto } from './dto/auth-context.dto';
 import { PLATFORM_ROLE_CODE } from './identity.constants';
+
+export interface PinTenantMatch {
+  userId: string;
+  email: string;
+  displayName: string;
+  tenantId: string;
+  tenantName: string;
+  role: string;
+}
 
 @Injectable()
 export class IdentityContextService {
@@ -137,5 +151,166 @@ export class IdentityContextService {
       select: { email: true },
     });
     return user?.email ?? null;
+  }
+
+  async getTerminalStaffList(): Promise<
+    { id: string; name: string; role: string; photoUrl: string | null }[]
+  > {
+    const users = await this.prisma.appUser.findMany({
+      where: {
+        accountStatus: 'ACTIVE',
+        staffMemberships: {
+          some: { status: 'ACTIVE' },
+        },
+      },
+      include: {
+        photo: true,
+        staffMemberships: {
+          where: { status: 'ACTIVE' },
+          include: {
+            roleAssignments: {
+              where: { status: 'ACTIVE', revokedAt: null },
+              include: { role: true },
+            },
+          },
+        },
+      },
+      take: 24,
+    });
+
+    return users.map((u) => {
+      const membership = u.staffMemberships[0];
+      const role = membership?.roleAssignments[0]?.role?.code || 'STAFF';
+      return {
+        id: u.id,
+        name: membership?.employeeDisplayName || u.displayName,
+        role,
+        photoUrl: u.photo?.path || null,
+      };
+    });
+  }
+
+  async findUserByPin(
+    pin: string,
+    staffId?: string,
+    tenantIdentifier?: string,
+  ): Promise<string | null> {
+    const trimmedPin = pin.trim();
+    if (!trimmedPin) return null;
+
+    if (staffId) {
+      const user = await this.prisma.appUser.findUnique({
+        where: { id: staffId },
+        include: { credential: true },
+      });
+      if (
+        !user ||
+        user.accountStatus !== 'ACTIVE' ||
+        !user.credential?.passwordHash
+      ) {
+        return null;
+      }
+      const isMatch = await bcrypt.compare(
+        trimmedPin,
+        user.credential.passwordHash,
+      );
+      return isMatch ? (user.email ?? null) : null;
+    }
+
+    const isUuid =
+      typeof tenantIdentifier === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        tenantIdentifier.trim(),
+      );
+
+    const tenantFilter = tenantIdentifier
+      ? isUuid
+        ? { id: tenantIdentifier.trim() }
+        : {
+            OR: [
+              {
+                displayName: {
+                  equals: tenantIdentifier.trim(),
+                  mode: 'insensitive' as const,
+                },
+              },
+              {
+                legalName: {
+                  equals: tenantIdentifier.trim(),
+                  mode: 'insensitive' as const,
+                },
+              },
+            ],
+          }
+      : undefined;
+
+    const users = await this.prisma.appUser.findMany({
+      where: {
+        accountStatus: 'ACTIVE',
+        staffMemberships: {
+          some: {
+            status: 'ACTIVE',
+            ...(tenantFilter ? { tenant: tenantFilter } : {}),
+          },
+        },
+      },
+      include: {
+        credential: true,
+        staffMemberships: {
+          where: {
+            status: 'ACTIVE',
+            ...(tenantFilter ? { tenant: tenantFilter } : {}),
+          },
+          include: {
+            tenant: true,
+            roleAssignments: {
+              where: { status: 'ACTIVE' },
+              include: { role: true },
+            },
+          },
+        },
+      },
+    });
+
+    const matches: PinTenantMatch[] = [];
+
+    for (const user of users) {
+      const cred = user.credential;
+      if (cred?.passwordHash && user.email) {
+        const isMatch = await bcrypt.compare(trimmedPin, cred.passwordHash);
+        if (isMatch) {
+          const membership = user.staffMemberships[0];
+          const role = membership?.roleAssignments[0]?.role.code || 'WAITER';
+          matches.push({
+            userId: user.id,
+            email: user.email,
+            displayName: membership?.employeeDisplayName || user.displayName,
+            tenantId: membership?.tenantId || '',
+            tenantName:
+              membership?.tenant.displayName ||
+              membership?.tenant.legalName ||
+              'Restaurant',
+            role,
+          });
+        }
+      }
+    }
+
+    if (matches.length === 1) {
+      return matches[0].email;
+    }
+
+    if (matches.length > 1) {
+      // Multiple restaurants match this PIN -> Disambiguation needed!
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'MULTIPLE_TENANTS_FOUND',
+        message:
+          'Multiple restaurants match this PIN. Please select your restaurant.',
+        matches,
+      });
+    }
+
+    return null;
   }
 }

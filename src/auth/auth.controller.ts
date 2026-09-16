@@ -26,6 +26,7 @@ import { NullableType } from '../utils/types/nullable.type';
 import { User } from '../users/domain/user';
 import { RefreshResponseDto } from './dto/refresh-response.dto';
 import { AuthIdentifierLoginDto } from './dto/auth-identifier-login.dto';
+import { AuthPinLoginDto } from './dto/auth-pin-login.dto';
 import { AuthMeResponseDto } from './dto/auth-me-response.dto';
 import { AuthCookiesService, readRefreshCookie } from './auth-cookies.service';
 import { Response } from 'express';
@@ -71,6 +72,28 @@ export class AuthController {
   ): Promise<LoginResponseDto> {
     const result = await this.service.validateIdentifierLogin(loginDto);
     return this.attachRefreshCookie(res, result, loginDto.remember ?? true);
+  }
+
+  @SerializeOptions({
+    groups: ['me'],
+  })
+  @Post('pin-login')
+  @ApiOkResponse({
+    type: LoginResponseDto,
+  })
+  @HttpCode(HttpStatus.OK)
+  public async loginWithPin(
+    @Body() loginDto: AuthPinLoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<LoginResponseDto> {
+    const result = await this.service.validatePinLogin(loginDto);
+    return this.attachRefreshCookie(res, result, loginDto.remember ?? true);
+  }
+
+  @Get('terminal/staff')
+  @HttpCode(HttpStatus.OK)
+  public async getTerminalStaff() {
+    return this.service.getTerminalStaffList();
   }
 
   @Post('email/register')

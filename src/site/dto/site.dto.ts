@@ -46,12 +46,17 @@ export class SiteThemeDto {
   @IsString()
   fontBody?: string;
 
-  @ApiPropertyOptional({ example: 'solid', enum: ['solid', 'gradient', 'image'] })
+  @ApiPropertyOptional({
+    example: 'solid',
+    enum: ['solid', 'gradient', 'image'],
+  })
   @IsOptional()
   @IsString()
   backgroundType?: string | null;
 
-  @ApiPropertyOptional({ example: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)' })
+  @ApiPropertyOptional({
+    example: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
+  })
   @IsOptional()
   @IsString()
   backgroundGradient?: string | null;

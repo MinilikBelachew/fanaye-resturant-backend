@@ -8,6 +8,8 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -602,6 +604,73 @@ export class LiveOpsResponseDto {
   branches: LiveOpsBranchDto[];
 }
 
+export class PaginationMetaDto {
+  @ApiProperty({ example: 1 })
+  page: number;
+
+  @ApiProperty({ example: 20 })
+  limit: number;
+
+  @ApiProperty({ example: 45 })
+  total: number;
+
+  @ApiProperty({ example: 3 })
+  totalPages: number;
+}
+
+export class ListPlatformStaffQueryDto {
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @ApiPropertyOptional({
+    description: 'Search term for name, email, phone, tenant',
+  })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by tenant UUID' })
+  @IsOptional()
+  @IsString()
+  tenantId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Filter by role code (e.g. WAITER, CASHIER, MANAGER)',
+  })
+  @IsOptional()
+  @IsString()
+  role?: string;
+
+  @ApiPropertyOptional({
+    description: 'Filter by account status (e.g. ACTIVE, SUSPENDED)',
+  })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({ example: 'displayName' })
+  @IsOptional()
+  @IsString()
+  sortBy?: string;
+
+  @ApiPropertyOptional({ example: 'asc', enum: ['asc', 'desc'] })
+  @IsOptional()
+  @IsString()
+  sortOrder?: 'asc' | 'desc';
+}
+
 export class PlatformStaffMemberDto {
   @ApiProperty()
   membershipId: string;
@@ -624,7 +693,10 @@ export class PlatformStaffMemberDto {
   @ApiProperty()
   tenantName: string;
 
-  @ApiProperty({ type: [String], example: ['MANAGER'] })
+  @ApiPropertyOptional()
+  tenantSlug?: string;
+
+  @ApiProperty({ type: [String], example: ['WAITER'] })
   roles: string[];
 
   @ApiProperty({ example: 'ACTIVE' })
@@ -638,11 +710,71 @@ export class PlatformStaffMemberDto {
 
   @ApiProperty({ example: true })
   hasPassword: boolean;
+
+  @ApiProperty({ example: true })
+  hasPin: boolean;
+
+  @ApiPropertyOptional()
+  photoUrl?: string | null;
 }
 
 export class PlatformStaffListResponseDto {
   @ApiProperty({ type: () => [PlatformStaffMemberDto] })
   data: PlatformStaffMemberDto[];
+
+  @ApiPropertyOptional({ type: () => PaginationMetaDto })
+  meta?: PaginationMetaDto;
+}
+
+export class CreatePlatformStaffDto {
+  @ApiProperty({ description: 'Tenant UUID where the user will be registered' })
+  @IsUUID()
+  tenantId: string;
+
+  @ApiProperty({ example: 'Karim Tesfaye' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(100)
+  name: string;
+
+  @ApiProperty({
+    example: 'waiter',
+    description:
+      'Role identifier (owner, manager, cashier, waiter, kitchen, barista, cakes, soft_drinks)',
+  })
+  @IsString()
+  role: string;
+
+  @ApiProperty({ example: '1234', description: '4 to 6 numeric digit PIN' })
+  @IsString()
+  @Matches(/^\d{4,6}$/, {
+    message: 'PIN must be between 4 and 6 numeric digits',
+  })
+  pin: string;
+
+  @ApiPropertyOptional({ example: 'karim@fanaye.et' })
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @ApiPropertyOptional({ example: '+251911223344' })
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @ApiPropertyOptional({ description: 'Optional kitchen/barista station code' })
+  @IsOptional()
+  @IsString()
+  stationCode?: string;
+}
+
+export class ResetPlatformStaffPinDto {
+  @ApiProperty({ example: '1234', description: '4 to 6 numeric digit PIN' })
+  @IsString()
+  @Matches(/^\d{4,6}$/, {
+    message: 'PIN must be between 4 and 6 numeric digits',
+  })
+  pin: string;
 }
 
 export class SuspendPlatformStaffDto {

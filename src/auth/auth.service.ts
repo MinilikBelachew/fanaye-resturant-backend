@@ -31,6 +31,7 @@ import { StatusEnum } from '../statuses/statuses.enum';
 import { User } from '../users/domain/user';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthIdentifierLoginDto } from './dto/auth-identifier-login.dto';
+import { AuthPinLoginDto } from './dto/auth-pin-login.dto';
 import { AuthMeResponseDto } from './dto/auth-me-response.dto';
 
 @Injectable()
@@ -149,6 +150,34 @@ export class AuthService {
       password: loginDto.password,
       remember: loginDto.remember,
     });
+  }
+
+  async validatePinLogin(dto: AuthPinLoginDto): Promise<LoginSessionResult> {
+    const email = await this.identityContextService.findUserByPin(
+      dto.pin,
+      dto.staffId,
+      dto.tenantSlug,
+    );
+    if (!email) {
+      throw new UnprocessableEntityException({
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+        errors: {
+          pin: 'invalidPin',
+        },
+        message: 'Invalid staff PIN. Please check your PIN and try again.',
+      });
+    }
+
+    return this.validateLogin({
+      email,
+      password: dto.pin,
+      remember: dto.remember ?? true,
+    });
+  }
+
+  async getTerminalStaffList() {
+    const staff = await this.identityContextService.getTerminalStaffList();
+    return { staff };
   }
 
   async validateSocialLogin(

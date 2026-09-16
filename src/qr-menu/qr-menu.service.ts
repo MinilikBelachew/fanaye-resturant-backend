@@ -17,7 +17,6 @@ import {
   PublicMenuCategoryDto,
   PublicMenuItemDto,
   PublicModifierGroupDto,
-  PublicModifierOptionDto,
   PublicTableInfoDto,
   PublicTableMenuResponseDto,
   PublicTenantInfoDto,
@@ -28,7 +27,9 @@ import {
   ServiceRequestResponseDto,
 } from './dto/service-request.dto';
 
-function money(val: Prisma.Decimal | number | string | null | undefined): string {
+function money(
+  val: Prisma.Decimal | number | string | null | undefined,
+): string {
   if (val == null) return '0.00';
   return Number(val).toFixed(2);
 }
@@ -37,7 +38,8 @@ const DEFAULT_CONFIG: QrMenuConfigDto = {
   coverImageUrl:
     'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=1200&auto=format&fit=crop&q=80',
   welcomeMessage: 'Welcome to Our Dining Room',
-  subtitle: 'Scan to explore chef specials, drinks, and place your order directly',
+  subtitle:
+    'Scan to explore chef specials, drinks, and place your order directly',
   wifiSsid: 'Fanaye_Guest',
   wifiPassword: '',
   featuredItemIds: [],
@@ -78,7 +80,9 @@ export class QrMenuService {
     const tenant = site.tenant;
     const branch = tenant.branches[0];
     if (!branch) {
-      throw new NotFoundException('Restaurant location is not currently available.');
+      throw new NotFoundException(
+        'Restaurant location is not currently available.',
+      );
     }
 
     // Try finding table by UUID or displayNumber
@@ -236,18 +240,14 @@ export class QrMenuService {
         name: oi.itemNameSnapshot,
         quantity: oi.quantity,
         state: oi.state,
-        price: money(
-          new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity),
-        ),
+        price: money(new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity)),
         comment: oi.specialInstruction,
         createdAt: oi.createdAt.toISOString(),
       }));
 
       const total = orderItems.reduce(
         (sum, oi) =>
-          sum.plus(
-            new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity),
-          ),
+          sum.plus(new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity)),
         new Prisma.Decimal(0),
       );
 
@@ -531,7 +531,8 @@ export class QrMenuService {
               currentPreparationStationId: item.station.id,
               stationNameSnapshot: item.station.name,
               expectedPrepMinutesSnapshot: item.expectedPrepMinutes,
-              specialInstruction: line.comment?.trim() || dto.notes?.trim() || null,
+              specialInstruction:
+                line.comment?.trim() || dto.notes?.trim() || null,
               state: autoSendToKitchen ? 'QUEUED' : 'CONFIRMED',
               confirmedAt: now,
               queuedAt: autoSendToKitchen ? now : null,

@@ -46,7 +46,9 @@ export class OrdersController {
   }
 
   @Post('send-to-kitchen')
-  @ApiOkResponse({ description: 'Dispatches confirmed order items to kitchen queues' })
+  @ApiOkResponse({
+    description: 'Dispatches confirmed order items to kitchen queues',
+  })
   @HttpCode(HttpStatus.OK)
   sendToKitchen(
     @Request() request,

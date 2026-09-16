@@ -17,13 +17,16 @@ import {
 } from '@nestjs/swagger';
 import { SuperAdminService } from './super-admin.service';
 import {
+  CreatePlatformStaffDto,
   CreateTenantDto,
   FeatureFlagsResponseDto,
+  ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
   PlatformAuditListResponseDto,
   PlatformStaffListResponseDto,
   PlatformStaffMemberDto,
   ResetPlatformStaffPasswordDto,
+  ResetPlatformStaffPinDto,
   SuspendPlatformStaffDto,
   SuperAdminDashboardResponseDto,
   TenantDetailResponseDto,
@@ -142,9 +145,37 @@ export class SuperAdminController {
 
   @Get('staff')
   @ApiOkResponse({ type: PlatformStaffListResponseDto })
-  listStaff(@Request() request): Promise<PlatformStaffListResponseDto> {
+  listStaff(
+    @Request() request,
+    @Query() query: ListPlatformStaffQueryDto,
+  ): Promise<PlatformStaffListResponseDto> {
     const userId = this.extractUserId(request);
-    return this.superAdminService.listPlatformStaff(userId);
+    return this.superAdminService.listPlatformStaff(userId, query);
+  }
+
+  @Post('staff')
+  @ApiCreatedResponse({ type: PlatformStaffMemberDto })
+  createStaff(
+    @Request() request,
+    @Body() dto: CreatePlatformStaffDto,
+  ): Promise<PlatformStaffMemberDto> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.createPlatformStaff(userId, dto);
+  }
+
+  @Patch('staff/:membershipId/pin')
+  @ApiOkResponse({ type: PlatformStaffMemberDto })
+  resetStaffPin(
+    @Request() request,
+    @Param('membershipId') membershipId: string,
+    @Body() dto: ResetPlatformStaffPinDto,
+  ): Promise<PlatformStaffMemberDto> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.resetPlatformStaffPin(
+      userId,
+      membershipId,
+      dto,
+    );
   }
 
   @Patch('staff/:membershipId/suspend')

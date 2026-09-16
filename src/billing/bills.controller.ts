@@ -84,10 +84,7 @@ export class BillsController {
   @Post(':id/send-to-waiter')
   @ApiOkResponse({ description: 'Sends bill notification to assigned waiter' })
   @HttpCode(HttpStatus.OK)
-  sendToWaiter(
-    @Request() request,
-    @Param('id', ParseUUIDPipe) id: string,
-  ) {
+  sendToWaiter(@Request() request, @Param('id', ParseUUIDPipe) id: string) {
     return this.billingService.sendBillToWaiter(String(request.user.id), id);
   }
 }
