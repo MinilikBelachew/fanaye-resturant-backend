@@ -378,7 +378,10 @@ export class StaffCoverageService {
       }
 
       if (dto.password?.trim()) {
-        const passwordHash = await bcrypt.hash(dto.password.trim().slice(0, 72), 10);
+        const passwordHash = await bcrypt.hash(
+          dto.password.trim().slice(0, 72),
+          10,
+        );
         if (existing.user.credential) {
           await tx.userCredential.update({
             where: { userId: existing.userId },
