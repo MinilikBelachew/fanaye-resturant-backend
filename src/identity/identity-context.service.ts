@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
@@ -264,6 +265,14 @@ export class IdentityContextService {
                   mode: 'insensitive' as const,
                 },
               },
+              {
+                site: {
+                  slug: {
+                    equals: tenantIdentifier.trim(),
+                    mode: 'insensitive' as const,
+                  },
+                },
+              },
             ],
           }
       : undefined;
@@ -336,5 +345,57 @@ export class IdentityContextService {
     }
 
     return null;
+  }
+
+  async verifyTenant(identifier: string) {
+    const trimmed = identifier?.trim();
+    if (!trimmed) {
+      throw new NotFoundException('Please provide a restaurant name or code.');
+    }
+
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        trimmed,
+      );
+
+    const tenant = await this.prisma.tenant.findFirst({
+      where: {
+        status: 'ACTIVE',
+        OR: [
+          ...(isUuid ? [{ id: trimmed }] : []),
+          { displayName: { equals: trimmed, mode: 'insensitive' } },
+          { legalName: { equals: trimmed, mode: 'insensitive' } },
+          { site: { slug: { equals: trimmed, mode: 'insensitive' } } },
+        ],
+      },
+      select: {
+        id: true,
+        displayName: true,
+        legalName: true,
+        site: {
+          select: {
+            slug: true,
+          },
+        },
+      },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException(
+        'Restaurant not found. Please check the exact name or code provided by your administrator.',
+      );
+    }
+
+    return {
+      tenant: {
+        id: tenant.id,
+        name: tenant.displayName || tenant.legalName || 'Restaurant',
+        slug:
+          tenant.site?.slug ||
+          (tenant.displayName
+            ? tenant.displayName.toLowerCase().replace(/\s+/g, '-')
+            : tenant.id),
+      },
+    };
   }
 }

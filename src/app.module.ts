@@ -1,7 +1,12 @@
 import { Module } from '@nestjs/common';
-import { UsersModule } from './users/users.module';
-import { FilesModule } from './files/files.module';
-import { AuthModule } from './auth/auth.module';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { HeaderResolver, I18nModule } from 'nestjs-i18n';
+import path from 'path';
+
+import { PrismaModule } from './database/prisma.module';
+import { AllConfigType } from './config/config.type';
 import databaseConfig from './database/config/database.config';
 import authConfig from './auth/config/auth.config';
 import appConfig from './config/app.config';
@@ -10,18 +15,17 @@ import fileConfig from './files/config/file.config';
 import facebookConfig from './auth-facebook/config/facebook.config';
 import googleConfig from './auth-google/config/google.config';
 import appleConfig from './auth-apple/config/apple.config';
-import path from 'path';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { PrismaModule } from './database/prisma.module';
+
+import { UsersModule } from './users/users.module';
+import { FilesModule } from './files/files.module';
+import { AuthModule } from './auth/auth.module';
 import { AuthAppleModule } from './auth-apple/auth-apple.module';
 import { AuthFacebookModule } from './auth-facebook/auth-facebook.module';
 import { AuthGoogleModule } from './auth-google/auth-google.module';
-import { HeaderResolver, I18nModule } from 'nestjs-i18n';
-import { MailModule } from './mail/mail.module';
-import { HomeModule } from './home/home.module';
-import { AllConfigType } from './config/config.type';
 import { SessionModule } from './session/session.module';
+import { MailModule } from './mail/mail.module';
 import { MailerModule } from './mailer/mailer.module';
+import { HomeModule } from './home/home.module';
 import { IdentityModule } from './identity/identity.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { FloorModule } from './floor/floor.module';
@@ -36,11 +40,13 @@ import { ManagerDashboardModule } from './manager-dashboard/manager-dashboard.mo
 import { CatalogModule } from './catalog/catalog.module';
 import { SuperAdminModule } from './super-admin/super-admin.module';
 import { AuditModule } from './audit/audit.module';
+import { AuditLogsInterceptor } from './audit/audit-logs.interceptor';
 import { SiteModule } from './site/site.module';
 import { QrMenuModule } from './qr-menu/qr-menu.module';
 
 @Module({
   imports: [
+    EventEmitterModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       load: [
@@ -105,6 +111,12 @@ import { QrMenuModule } from './qr-menu/qr-menu.module';
     AuditModule,
     SiteModule,
     QrMenuModule,
+  ],
+  providers: [
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditLogsInterceptor,
+    },
   ],
 })
 export class AppModule {}

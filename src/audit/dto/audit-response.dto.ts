@@ -62,10 +62,27 @@ export class AuditSummaryDto {
   systemToday: number;
 }
 
+export class AuditPaginationDto {
+  @ApiProperty()
+  page: number;
+
+  @ApiProperty()
+  limit: number;
+
+  @ApiProperty()
+  total: number;
+
+  @ApiProperty()
+  totalPages: number;
+}
+
 export class AuditListResponseDto {
   @ApiProperty({ type: () => [AuditEventDto] })
   data: AuditEventDto[];
 
   @ApiProperty({ type: () => AuditSummaryDto })
   summary: AuditSummaryDto;
+
+  @ApiPropertyOptional({ type: () => AuditPaginationDto })
+  pagination?: AuditPaginationDto;
 }

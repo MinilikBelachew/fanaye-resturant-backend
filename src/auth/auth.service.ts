@@ -180,6 +180,10 @@ export class AuthService {
     return { staff };
   }
 
+  async verifyTenant(identifier: string) {
+    return this.identityContextService.verifyTenant(identifier);
+  }
+
   async validateSocialLogin(
     authProvider: string,
     socialData: SocialInterface,

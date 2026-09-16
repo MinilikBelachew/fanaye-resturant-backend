@@ -19,7 +19,16 @@ export class AuditService {
 
   async list(
     userId: string,
-    opts?: { category?: string; q?: string; limit?: number },
+    opts?: {
+      category?: string;
+      q?: string;
+      limit?: number;
+      page?: number;
+      sort?: string;
+      order?: 'asc' | 'desc';
+      startDate?: string;
+      endDate?: string;
+    },
   ): Promise<AuditListResponseDto> {
     const context = await this.identity.getByUserId(userId);
     const role = context.roleCode ?? '';
@@ -40,10 +49,17 @@ export class AuditService {
     }
 
     if (!context.tenantId) {
-      return { data: [], summary: emptySummary() };
+      return {
+        data: [],
+        summary: emptySummary(),
+        pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+      };
     }
 
-    const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 200);
+    const limit = Math.min(Math.max(opts?.limit ?? 25, 1), 200);
+    const page = Math.max(opts?.page ?? 1, 1);
+    const skip = (page - 1) * limit;
+
     const startOfDay = new Date();
     startOfDay.setUTCHours(0, 0, 0, 0);
 
@@ -52,55 +68,188 @@ export class AuditService {
       ...(context.branchId ? { branchId: context.branchId } : {}),
     };
 
-    if (opts?.q?.trim()) {
-      const q = opts.q.trim();
-      where.OR = [
-        { action: { contains: q, mode: 'insensitive' } },
-        { entityType: { contains: q, mode: 'insensitive' } },
-        { reason: { contains: q, mode: 'insensitive' } },
-        {
-          actorStaff: {
-            employeeDisplayName: { contains: q, mode: 'insensitive' },
-          },
-        },
-        {
-          actorUser: {
-            displayName: { contains: q, mode: 'insensitive' },
-          },
-        },
-      ];
+    if (opts?.startDate || opts?.endDate) {
+      where.occurredAt = {};
+      if (opts.startDate) {
+        where.occurredAt.gte = new Date(opts.startDate);
+      }
+      if (opts.endDate) {
+        where.occurredAt.lte = new Date(opts.endDate);
+      }
     }
 
-    const events = await this.prisma.auditEvent.findMany({
-      where,
-      orderBy: { occurredAt: 'desc' },
-      take: limit,
-      include: {
-        actorUser: { select: { displayName: true } },
-        actorStaff: { select: { employeeDisplayName: true } },
-      },
-    });
+    const andConditions: Prisma.AuditEventWhereInput[] = [];
+
+    if (opts?.q?.trim()) {
+      const q = opts.q.trim();
+      andConditions.push({
+        OR: [
+          { action: { contains: q, mode: 'insensitive' } },
+          { entityType: { contains: q, mode: 'insensitive' } },
+          { reason: { contains: q, mode: 'insensitive' } },
+          {
+            actorStaff: {
+              employeeDisplayName: { contains: q, mode: 'insensitive' },
+            },
+          },
+          {
+            actorUser: {
+              displayName: { contains: q, mode: 'insensitive' },
+            },
+          },
+        ],
+      });
+    }
+
+    if (opts?.category && opts.category !== 'all') {
+      const cat = opts.category.toLowerCase();
+      if (cat === 'orders') {
+        andConditions.push({
+          OR: [
+            { entityType: { contains: 'ORDER', mode: 'insensitive' } },
+            { action: { contains: 'ORDER', mode: 'insensitive' } },
+            { action: { contains: 'CANCEL', mode: 'insensitive' } },
+            { action: { contains: 'CHANGE_REQUEST', mode: 'insensitive' } },
+          ],
+        });
+      } else if (cat === 'fulfillment') {
+        andConditions.push({
+          OR: [
+            { entityType: { contains: 'STATION', mode: 'insensitive' } },
+            { entityType: { contains: 'FULFILL', mode: 'insensitive' } },
+            { action: { contains: 'READY', mode: 'insensitive' } },
+            { action: { contains: 'PREPAR', mode: 'insensitive' } },
+            { action: { contains: 'ACKNOWLEDGE', mode: 'insensitive' } },
+          ],
+        });
+      } else if (cat === 'payments') {
+        andConditions.push({
+          OR: [
+            { entityType: { contains: 'PAYMENT', mode: 'insensitive' } },
+            { entityType: { contains: 'CASH', mode: 'insensitive' } },
+            { entityType: { contains: 'BILL', mode: 'insensitive' } },
+            { entityType: { contains: 'RECONCIL', mode: 'insensitive' } },
+            { entityType: { contains: 'TRANSFER', mode: 'insensitive' } },
+            { action: { contains: 'TINA', mode: 'insensitive' } },
+            { action: { contains: 'FISCAL', mode: 'insensitive' } },
+            { action: { contains: 'PAYMENT', mode: 'insensitive' } },
+          ],
+        });
+      } else if (cat === 'system') {
+        andConditions.push({
+          AND: [
+            { entityType: { not: { contains: 'ORDER' } } },
+            { entityType: { not: { contains: 'STATION' } } },
+            { entityType: { not: { contains: 'PAYMENT' } } },
+            { entityType: { not: { contains: 'CASH' } } },
+          ],
+        });
+      }
+    }
+
+    if (andConditions.length > 0) {
+      where.AND = andConditions;
+    }
+
+    const orderDir: Prisma.SortOrder = opts?.order === 'asc' ? 'asc' : 'desc';
+    let orderBy: Prisma.AuditEventOrderByWithRelationInput = {
+      occurredAt: orderDir,
+    };
+    if (opts?.sort === 'action') {
+      orderBy = { action: orderDir };
+    } else if (opts?.sort === 'entityType') {
+      orderBy = { entityType: orderDir };
+    }
+
+    const [
+      total,
+      events,
+      todayCount,
+      fulfillmentToday,
+      paymentToday,
+      orderToday,
+    ] = await Promise.all([
+      this.prisma.auditEvent.count({ where }),
+      this.prisma.auditEvent.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+        include: {
+          actorUser: { select: { displayName: true } },
+          actorStaff: { select: { employeeDisplayName: true } },
+        },
+      }),
+      this.prisma.auditEvent.count({
+        where: {
+          tenantId: context.tenantId,
+          ...(context.branchId ? { branchId: context.branchId } : {}),
+          occurredAt: { gte: startOfDay },
+        },
+      }),
+      this.prisma.auditEvent.count({
+        where: {
+          tenantId: context.tenantId,
+          ...(context.branchId ? { branchId: context.branchId } : {}),
+          occurredAt: { gte: startOfDay },
+          OR: [
+            { entityType: { contains: 'STATION', mode: 'insensitive' } },
+            { entityType: { contains: 'FULFILL', mode: 'insensitive' } },
+            { action: { contains: 'READY', mode: 'insensitive' } },
+            { action: { contains: 'PREPAR', mode: 'insensitive' } },
+          ],
+        },
+      }),
+      this.prisma.auditEvent.count({
+        where: {
+          tenantId: context.tenantId,
+          ...(context.branchId ? { branchId: context.branchId } : {}),
+          occurredAt: { gte: startOfDay },
+          OR: [
+            { entityType: { contains: 'PAYMENT', mode: 'insensitive' } },
+            { entityType: { contains: 'CASH', mode: 'insensitive' } },
+            { entityType: { contains: 'TRANSFER', mode: 'insensitive' } },
+            { action: { contains: 'PAYMENT', mode: 'insensitive' } },
+          ],
+        },
+      }),
+      this.prisma.auditEvent.count({
+        where: {
+          tenantId: context.tenantId,
+          ...(context.branchId ? { branchId: context.branchId } : {}),
+          occurredAt: { gte: startOfDay },
+          OR: [
+            { entityType: { contains: 'ORDER', mode: 'insensitive' } },
+            { action: { contains: 'ORDER', mode: 'insensitive' } },
+          ],
+        },
+      }),
+    ]);
 
     const mapped = events.map((event) => this.toDto(event));
-    const filtered =
-      opts?.category && opts.category !== 'all'
-        ? mapped.filter((row) => row.category === opts.category)
-        : mapped;
-
-    const todayEvents = mapped.filter(
-      (row) => new Date(row.occurredAt) >= startOfDay,
-    );
+    const totalPages = Math.ceil(total / limit);
 
     const summary: AuditSummaryDto = {
-      totalToday: todayEvents.length,
-      fulfillmentToday: todayEvents.filter((e) => e.category === 'fulfillment')
-        .length,
-      paymentToday: todayEvents.filter((e) => e.category === 'payments').length,
-      orderToday: todayEvents.filter((e) => e.category === 'orders').length,
-      systemToday: todayEvents.filter((e) => e.category === 'system').length,
+      totalToday: todayCount,
+      fulfillmentToday,
+      paymentToday,
+      orderToday,
+      systemToday: Math.max(
+        todayCount - (fulfillmentToday + paymentToday + orderToday),
+        0,
+      ),
     };
 
-    return { data: filtered, summary };
+    return {
+      data: mapped,
+      summary,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    };
   }
 
   private toDto(event: {

@@ -433,7 +433,7 @@ export class StaffCoverageService {
         }
         await tx.staffRoleAssignment.updateMany({
           where: { staffMembershipId: membershipId, status: 'ACTIVE' },
-          data: { status: 'REVOKED', revokedAt: new Date() },
+          data: { status: 'INACTIVE', revokedAt: new Date() },
         });
         await tx.staffRoleAssignment.create({
           data: {

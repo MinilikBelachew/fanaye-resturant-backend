@@ -11,6 +11,7 @@ import {
   Delete,
   SerializeOptions,
   Res,
+  Query,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
@@ -94,6 +95,18 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   public async getTerminalStaff() {
     return this.service.getTerminalStaffList();
+  }
+
+  @Post('verify-tenant')
+  @HttpCode(HttpStatus.OK)
+  public async verifyTenant(@Body('identifier') identifier: string) {
+    return this.service.verifyTenant(identifier);
+  }
+
+  @Get('verify-tenant')
+  @HttpCode(HttpStatus.OK)
+  public async verifyTenantGet(@Query('identifier') identifier: string) {
+    return this.service.verifyTenant(identifier);
   }
 
   @Post('email/register')
