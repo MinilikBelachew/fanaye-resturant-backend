@@ -18,6 +18,8 @@ import { StaffCoverageService } from './staff-coverage.service';
 import {
   CreateAdminStaffDto,
   CreateShiftDefinitionDto,
+  ResetAdminStaffPasswordDto,
+  ResetAdminStaffPinDto,
   SetWaiterTableCoverageDto,
   UpdateAdminStaffDto,
   UpdateShiftDefinitionDto,
@@ -65,6 +67,32 @@ export class StaffCoverageController {
     @Body() dto: UpdateAdminStaffDto,
   ): Promise<AdminStaffMemberResponseDto> {
     return this.staff.updateStaff(String(request.user.id), membershipId, dto);
+  }
+
+  @Post('staff/:membershipId/reset-pin')
+  @ApiOkResponse({ type: AdminStaffMemberResponseDto })
+  @HttpCode(HttpStatus.OK)
+  resetStaffPin(
+    @Request() request,
+    @Param('membershipId', ParseUUIDPipe) membershipId: string,
+    @Body() dto: ResetAdminStaffPinDto,
+  ): Promise<AdminStaffMemberResponseDto> {
+    return this.staff.resetStaffPin(String(request.user.id), membershipId, dto);
+  }
+
+  @Post('staff/:membershipId/reset-password')
+  @ApiOkResponse({ type: AdminStaffMemberResponseDto })
+  @HttpCode(HttpStatus.OK)
+  resetStaffPassword(
+    @Request() request,
+    @Param('membershipId', ParseUUIDPipe) membershipId: string,
+    @Body() dto: ResetAdminStaffPasswordDto,
+  ): Promise<AdminStaffMemberResponseDto> {
+    return this.staff.resetStaffPassword(
+      String(request.user.id),
+      membershipId,
+      dto,
+    );
   }
 
   @Get('shift-definitions')

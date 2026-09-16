@@ -105,7 +105,15 @@ export class CreateAdminStaffDto {
   email?: string;
 
   @ApiPropertyOptional({
-    description: 'Login password or PIN (defaults to 1234)',
+    description: 'Login password (minimum 6 characters)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(72)
+  password?: string;
+
+  @ApiPropertyOptional({
+    description: 'Login PIN (4-6 numeric digits)',
   })
   @IsOptional()
   @IsString()
@@ -171,25 +179,53 @@ export class UpdateAdminStaffDto {
   @MaxLength(255)
   email?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Login password (minimum 6 characters)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(72)
+  password?: string;
+
+  @ApiPropertyOptional({
+    description: 'Login PIN (4-6 numeric digits)',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(72)
   pin?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()
   active?: boolean;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Preparation station id when role is a station operator',
+  })
   @IsOptional()
   @IsUUID()
   preparationStationId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Station code: KITCHEN | BARISTA | CAKES | SOFT_DRINKS',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(40)
   stationCode?: string;
+}
+
+export class ResetAdminStaffPinDto {
+  @ApiProperty({ example: '1234', description: '4 to 6 numeric digits' })
+  @IsString()
+  @Matches(/^\d{4,6}$/, { message: 'PIN must be 4 to 6 numeric digits.' })
+  pin: string;
+}
+
+export class ResetAdminStaffPasswordDto {
+  @ApiProperty({ example: 'Password123!', description: 'Minimum 6 characters' })
+  @IsString()
+  @MaxLength(72)
+  password: string;
 }

@@ -73,6 +73,12 @@ export class AdminStaffMemberDto {
   @ApiPropertyOptional()
   email: string | null;
 
+  @ApiPropertyOptional()
+  hasPin?: boolean;
+
+  @ApiPropertyOptional()
+  hasPassword?: boolean;
+
   @ApiProperty({ type: [AdminStaffShiftCoverageDto] })
   shiftCoverages: AdminStaffShiftCoverageDto[];
 }

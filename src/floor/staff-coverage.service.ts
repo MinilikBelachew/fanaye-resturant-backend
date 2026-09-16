@@ -12,6 +12,8 @@ import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import {
   CreateAdminStaffDto,
   CreateShiftDefinitionDto,
+  ResetAdminStaffPasswordDto,
+  ResetAdminStaffPinDto,
   SetWaiterTableCoverageDto,
   UpdateAdminStaffDto,
   UpdateShiftDefinitionDto,
@@ -79,7 +81,7 @@ export class StaffCoverageService {
           },
         },
         include: {
-          user: true,
+          user: { include: { credential: true } },
           roleAssignments: {
             where: { status: 'ACTIVE' },
             include: { role: true },
@@ -373,6 +375,24 @@ export class StaffCoverageService {
               : {}),
           },
         });
+      }
+
+      if (dto.password?.trim()) {
+        const passwordHash = await bcrypt.hash(dto.password.trim().slice(0, 72), 10);
+        if (existing.user.credential) {
+          await tx.userCredential.update({
+            where: { userId: existing.userId },
+            data: { passwordHash },
+          });
+        } else {
+          await tx.userCredential.create({
+            data: {
+              userId: existing.userId,
+              passwordHash,
+              authProvider: 'email',
+            },
+          });
+        }
       }
 
       if (dto.pin?.trim()) {
@@ -718,6 +738,7 @@ export class StaffCoverageService {
       });
     }
 
+    const hasCred = Boolean((member as any).user?.credential?.passwordHash);
     return {
       id: member.id,
       name: member.employeeDisplayName,
@@ -726,10 +747,158 @@ export class StaffCoverageService {
       active: member.status === 'ACTIVE',
       phone: member.user?.phone ?? null,
       email: member.user?.email ?? null,
+      hasPin: hasCred,
+      hasPassword: hasCred,
       shiftCoverages: [...byShift.values()].sort((a, b) =>
         a.startLocalTime.localeCompare(b.startLocalTime),
       ),
     };
+  }
+
+  async resetStaffPin(
+    userId: string,
+    membershipId: string,
+    dto: ResetAdminStaffPinDto,
+  ): Promise<AdminStaffMemberResponseDto> {
+    const context = await this.requireAdmin(userId);
+    const membership = await this.prisma.tenantStaffMembership.findFirst({
+      where: {
+        id: membershipId,
+        tenantId: context.tenantId!,
+        branchAssignments: {
+          some: { branchId: context.branchId!, status: 'ACTIVE' },
+        },
+      },
+      include: { user: true },
+    });
+    if (!membership) {
+      throw new NotFoundException('Staff member not found');
+    }
+
+    await this.verifyPinUniqueInTenant(
+      context.tenantId!,
+      dto.pin,
+      membership.userId,
+    );
+
+    const passwordHash = await bcrypt.hash(dto.pin.trim().slice(0, 72), 10);
+
+    await this.prisma.$transaction(async (tx) => {
+      const existingCred = await tx.userCredential.findUnique({
+        where: { userId: membership.userId },
+      });
+
+      if (existingCred) {
+        await tx.userCredential.update({
+          where: { userId: membership.userId },
+          data: { passwordHash },
+        });
+      } else {
+        await tx.userCredential.create({
+          data: {
+            userId: membership.userId,
+            passwordHash,
+            authProvider: 'email',
+          },
+        });
+      }
+
+      await tx.authSession.updateMany({
+        where: { userId: membership.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          actorUserId: context.userId,
+          actorStaffMembershipId: context.staffMembershipId,
+          actorRestaurantRole: context.roleCode,
+          action: 'STAFF_PIN_RESET',
+          entityType: 'STAFF_MEMBERSHIP',
+          entityId: membershipId,
+          reason: `PIN reset for ${membership.employeeDisplayName}`,
+        },
+      });
+    });
+
+    const member = await this.loadStaffMember(context, membershipId);
+    return { data: this.toStaffDto(member) };
+  }
+
+  async resetStaffPassword(
+    userId: string,
+    membershipId: string,
+    dto: ResetAdminStaffPasswordDto,
+  ): Promise<AdminStaffMemberResponseDto> {
+    const context = await this.requireAdmin(userId);
+    const password = dto.password?.trim();
+    if (!password || password.length < 6) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { password: 'Password must be at least 6 characters.' },
+      });
+    }
+
+    const membership = await this.prisma.tenantStaffMembership.findFirst({
+      where: {
+        id: membershipId,
+        tenantId: context.tenantId!,
+        branchAssignments: {
+          some: { branchId: context.branchId!, status: 'ACTIVE' },
+        },
+      },
+      include: { user: true },
+    });
+    if (!membership) {
+      throw new NotFoundException('Staff member not found');
+    }
+
+    const passwordHash = await bcrypt.hash(password.slice(0, 72), 10);
+
+    await this.prisma.$transaction(async (tx) => {
+      const existingCred = await tx.userCredential.findUnique({
+        where: { userId: membership.userId },
+      });
+
+      if (existingCred) {
+        await tx.userCredential.update({
+          where: { userId: membership.userId },
+          data: { passwordHash },
+        });
+      } else {
+        await tx.userCredential.create({
+          data: {
+            userId: membership.userId,
+            passwordHash,
+            authProvider: 'email',
+          },
+        });
+      }
+
+      await tx.authSession.updateMany({
+        where: { userId: membership.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          actorUserId: context.userId,
+          actorStaffMembershipId: context.staffMembershipId,
+          actorRestaurantRole: context.roleCode,
+          action: 'STAFF_PASSWORD_RESET',
+          entityType: 'STAFF_MEMBERSHIP',
+          entityId: membershipId,
+          reason: `Password reset for ${membership.employeeDisplayName}`,
+        },
+      });
+    });
+
+    const member = await this.loadStaffMember(context, membershipId);
+    return { data: this.toStaffDto(member) };
   }
 
   private toShiftDto(shift: {
@@ -812,7 +981,7 @@ export class StaffCoverageService {
         tenantId: context.tenantId!,
       },
       include: {
-        user: true,
+        user: { include: { credential: true } },
         roleAssignments: {
           where: { status: 'ACTIVE' },
           include: { role: true },
