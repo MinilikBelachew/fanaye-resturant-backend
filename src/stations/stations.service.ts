@@ -15,6 +15,9 @@ import {
   StationQueueItemDto,
   StationQueueResponseDto,
 } from './dto/station-queue-response.dto';
+import { CreateStationDto } from './dto/create-station.dto';
+import { UpdateStationDto } from './dto/update-station.dto';
+import { StationManagementResponseDto } from './dto/station-response.dto';
 
 const DEFAULT_STATES = [
   'QUEUED',
@@ -32,6 +35,221 @@ export class StationsService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
   ) {}
+
+  async listStations(userId: string): Promise<StationManagementResponseDto[]> {
+    const context = await this.requireBranch(userId);
+    const stations = await this.prisma.preparationStation.findMany({
+      where: {
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+      },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    const activeCounts = await this.prisma.orderItem.groupBy({
+      by: ['currentPreparationStationId'],
+      where: {
+        branchId: context.branchId!,
+        state: { in: ACTIVE_COOKING },
+        cancelledAt: null,
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
+    const countMap = new Map<string, number>();
+    for (const c of activeCounts) {
+      countMap.set(c.currentPreparationStationId, c._count._all);
+    }
+
+    return stations.map((s) => ({
+      id: s.id,
+      name: s.name,
+      code: s.code,
+      status: s.status,
+      enabled: s.status === 'ACTIVE',
+      defaultDelayThresholdMinutes: s.defaultDelayThresholdMinutes,
+      avgPrepMin: s.defaultDelayThresholdMinutes ?? 10,
+      sortOrder: s.sortOrder,
+      ticketCount: countMap.get(s.id) ?? 0,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    }));
+  }
+
+  async createStation(
+    userId: string,
+    dto: CreateStationDto,
+  ): Promise<StationManagementResponseDto> {
+    const context = await this.requireManager(userId);
+
+    const baseCode = dto.code?.trim() || slugify(dto.name);
+    let code = baseCode || 'station';
+
+    const existingWithCode = await this.prisma.preparationStation.findFirst({
+      where: { branchId: context.branchId!, code },
+    });
+    if (existingWithCode) {
+      code = `${baseCode}-${Date.now().toString(36).slice(-4)}`;
+    }
+
+    const status =
+      dto.status?.toUpperCase() === 'INACTIVE' ||
+      dto.status?.toUpperCase() === 'DISABLED'
+        ? 'INACTIVE'
+        : 'ACTIVE';
+
+    const station = await this.prisma.preparationStation.create({
+      data: {
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        name: dto.name.trim(),
+        code,
+        status,
+        defaultDelayThresholdMinutes: dto.defaultDelayThresholdMinutes ?? 10,
+        sortOrder: dto.sortOrder ?? 0,
+      },
+    });
+
+    return {
+      id: station.id,
+      name: station.name,
+      code: station.code,
+      status: station.status,
+      enabled: station.status === 'ACTIVE',
+      defaultDelayThresholdMinutes: station.defaultDelayThresholdMinutes,
+      avgPrepMin: station.defaultDelayThresholdMinutes ?? 10,
+      sortOrder: station.sortOrder,
+      ticketCount: 0,
+      createdAt: station.createdAt,
+      updatedAt: station.updatedAt,
+    };
+  }
+
+  async updateStation(
+    userId: string,
+    stationId: string,
+    dto: UpdateStationDto,
+  ): Promise<StationManagementResponseDto> {
+    const context = await this.requireManager(userId);
+
+    const existing = await this.prisma.preparationStation.findFirst({
+      where: { id: stationId, branchId: context.branchId! },
+    });
+    if (!existing) {
+      throw new NotFoundException('Station not found.');
+    }
+
+    let code = existing.code;
+    if (dto.code && dto.code !== existing.code) {
+      const codeConflict = await this.prisma.preparationStation.findFirst({
+        where: {
+          branchId: context.branchId!,
+          code: dto.code,
+          id: { not: stationId },
+        },
+      });
+      if (codeConflict) {
+        throw new ConflictException('A station with this code already exists.');
+      }
+      code = dto.code;
+    }
+
+    let status = existing.status;
+    if (dto.status !== undefined) {
+      status =
+        dto.status.toUpperCase() === 'INACTIVE' ||
+        dto.status.toUpperCase() === 'DISABLED'
+          ? 'INACTIVE'
+          : 'ACTIVE';
+    }
+
+    const updated = await this.prisma.preparationStation.update({
+      where: { id: stationId },
+      data: {
+        name: dto.name?.trim() ?? existing.name,
+        code,
+        status,
+        defaultDelayThresholdMinutes:
+          dto.defaultDelayThresholdMinutes !== undefined
+            ? dto.defaultDelayThresholdMinutes
+            : existing.defaultDelayThresholdMinutes,
+        sortOrder:
+          dto.sortOrder !== undefined ? dto.sortOrder : existing.sortOrder,
+      },
+    });
+
+    const activeCount = await this.prisma.orderItem.count({
+      where: {
+        branchId: context.branchId!,
+        currentPreparationStationId: stationId,
+        state: { in: ACTIVE_COOKING },
+        cancelledAt: null,
+      },
+    });
+
+    return {
+      id: updated.id,
+      name: updated.name,
+      code: updated.code,
+      status: updated.status,
+      enabled: updated.status === 'ACTIVE',
+      defaultDelayThresholdMinutes: updated.defaultDelayThresholdMinutes,
+      avgPrepMin: updated.defaultDelayThresholdMinutes ?? 10,
+      sortOrder: updated.sortOrder,
+      ticketCount: activeCount,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
+  }
+
+  async deleteStation(
+    userId: string,
+    stationId: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const context = await this.requireManager(userId);
+
+    const existing = await this.prisma.preparationStation.findFirst({
+      where: { id: stationId, branchId: context.branchId! },
+      include: {
+        _count: {
+          select: {
+            currentOrderItems: true,
+            menuItems: true,
+          },
+        },
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Station not found.');
+    }
+
+    if (
+      existing._count.currentOrderItems > 0 ||
+      existing._count.menuItems > 0
+    ) {
+      await this.prisma.preparationStation.update({
+        where: { id: stationId },
+        data: { status: 'INACTIVE' },
+      });
+      return {
+        success: true,
+        message:
+          'Station has associated menu items or orders and was deactivated.',
+      };
+    }
+
+    await this.prisma.preparationStation.delete({
+      where: { id: stationId },
+    });
+
+    return {
+      success: true,
+      message: 'Station deleted successfully.',
+    };
+  }
 
   async listQueue(
     userId: string,
@@ -250,6 +468,26 @@ export class StationsService {
     }
     return { context, station };
   }
+
+  private async requireManager(userId: string): Promise<AuthContextDto> {
+    const context = await this.requireBranch(userId);
+    if (context.roleCode !== 'MANAGER' && context.roleCode !== 'OWNER_ADMIN') {
+      throw new ForbiddenException(
+        'Station management is for managers and admins.',
+      );
+    }
+    return context;
+  }
+}
+
+function slugify(text: string): string {
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w-]+/g, '')
+    .replace(/--+/g, '-');
 }
 
 const ticketInclude = {
