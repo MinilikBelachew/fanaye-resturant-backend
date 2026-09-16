@@ -43,11 +43,13 @@ export class AuthCookiesService {
         infer: true,
       },
     );
+    const isProd =
+      this.configService.get('app.nodeEnv', { infer: true }) === 'production';
 
     return {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       path: this.cookiePath(),
       maxAge: remember ? ms(refreshExpires) : undefined,
     };

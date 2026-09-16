@@ -77,6 +77,21 @@ export class IdentityContextService {
       ? PLATFORM_ROLE_CODE
       : (roleAssignment?.role.code ?? 'NONE');
 
+    let branchId = branchAssignment?.branchId ?? null;
+    let branchName =
+      branchAssignment?.branch?.name ?? membership?.tenant.displayName ?? null;
+
+    if (!branchId && membership?.tenantId) {
+      const defaultBranch = await this.prisma.branch.findFirst({
+        where: { tenantId: membership.tenantId, status: 'ACTIVE' },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (defaultBranch) {
+        branchId = defaultBranch.id;
+        branchName = defaultBranch.name;
+      }
+    }
+
     const workspaces: AuthWorkspaceDto[] = [];
     if (isPlatformAdmin) {
       workspaces.push({
@@ -89,11 +104,21 @@ export class IdentityContextService {
     }
     for (const entry of user.staffMemberships) {
       const code = entry.roleAssignments[0]?.role.code ?? 'NONE';
+      let entryBranchId = entry.branchAssignments[0]?.branchId ?? null;
+      if (!entryBranchId && entry.tenantId) {
+        const defaultBranch = await this.prisma.branch.findFirst({
+          where: { tenantId: entry.tenantId, status: 'ACTIVE' },
+          orderBy: { createdAt: 'asc' },
+        });
+        if (defaultBranch) {
+          entryBranchId = defaultBranch.id;
+        }
+      }
       workspaces.push({
         workspace: code,
         roleCode: code,
         tenantId: entry.tenantId,
-        branchId: entry.branchAssignments[0]?.branchId ?? null,
+        branchId: entryBranchId,
         staffMembershipId: entry.id,
       });
     }
@@ -108,9 +133,8 @@ export class IdentityContextService {
       email: user.email,
       phone: user.phone,
       tenantId: membership?.tenantId ?? null,
-      branchId: branchAssignment?.branchId ?? null,
-      branchName:
-        branchAssignment?.branch.name ?? membership?.tenant.displayName ?? null,
+      branchId,
+      branchName,
       staffMembershipId: membership?.id ?? null,
       roleCode,
       stationId: stationAssignment?.stationId ?? null,
