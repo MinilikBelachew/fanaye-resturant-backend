@@ -10,6 +10,9 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { OpsEventType } from '../realtime/ops-events';
+import { OpsNotifyService } from '../realtime/ops-notify.service';
+import { managerRoom, stationRoom } from '../realtime/ops-rooms';
 import { ConfirmOrderDto } from './dto/confirm-order.dto';
 import {
   ConfirmOrderResponseDto,
@@ -29,6 +32,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly opsNotify: OpsNotifyService,
   ) {}
 
   async waiterMenu(
@@ -629,6 +633,37 @@ export class OrdersService {
         },
       });
     });
+
+    const byStation = new Map<string, number>();
+    for (const item of confirmedItems) {
+      const key = item.currentPreparationStationId;
+      byStation.set(key, (byStation.get(key) ?? 0) + 1);
+    }
+
+    const table = await this.prisma.diningTable.findUnique({
+      where: { id: session.tableId },
+      select: { displayName: true, displayNumber: true },
+    });
+    const tableLabel = table?.displayNumber ?? table?.displayName ?? 'Table';
+
+    for (const [stationId, count] of byStation) {
+      this.opsNotify.broadcast({
+        type: OpsEventType.TICKET_QUEUED,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'ATTENTION',
+        title: `New tickets · ${tableLabel}`,
+        body: `${count} item(s) queued for your station.`,
+        rooms: [stationRoom(stationId), managerRoom(context.branchId!)],
+        relatedEntityType: 'TableSession',
+        relatedEntityId: session.id,
+        payload: {
+          tableSessionId: session.id,
+          stationId,
+          count,
+        },
+      });
+    }
 
     return {
       success: true,

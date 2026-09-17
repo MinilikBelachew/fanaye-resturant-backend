@@ -20,6 +20,7 @@ import {
   CreatePlatformStaffDto,
   CreateTenantDto,
   FeatureFlagsResponseDto,
+  ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
   PlatformAuditListResponseDto,
@@ -129,11 +130,10 @@ export class SuperAdminController {
   @ApiOkResponse({ type: PlatformAuditListResponseDto })
   listAudit(
     @Request() request,
-    @Query('limit') limit?: string,
+    @Query() query: ListPlatformAuditQueryDto,
   ): Promise<PlatformAuditListResponseDto> {
     const userId = this.extractUserId(request);
-    const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
-    return this.superAdminService.listAuditEvents(userId, take);
+    return this.superAdminService.listAuditEvents(userId, query);
   }
 
   @Get('live-ops')

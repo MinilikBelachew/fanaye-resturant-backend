@@ -9,6 +9,9 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { OpsEventType } from '../realtime/ops-events';
+import { OpsNotifyService } from '../realtime/ops-notify.service';
+import { managerRoom } from '../realtime/ops-rooms';
 import {
   CancelOrderItemDto,
   CreateChangeRequestDto,
@@ -33,6 +36,7 @@ export class OrderItemMutationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly opsNotify: OpsNotifyService,
   ) {}
 
   async directCancel(
@@ -130,6 +134,24 @@ export class OrderItemMutationsService {
       return { request, updated };
     });
 
+    await this.opsNotify.notify({
+      type: OpsEventType.APPROVAL_REQUESTED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'URGENT',
+      title: `Cancel approval · ${result.updated.itemNameSnapshot}`,
+      body: dto.reason.trim(),
+      rooms: [managerRoom(context.branchId!)],
+      relatedEntityType: 'CancellationRequest',
+      relatedEntityId: result.request.id,
+      payload: {
+        requestType: 'CANCELLATION',
+        requestId: result.request.id,
+        orderItemId: result.updated.id,
+        itemName: result.updated.itemNameSnapshot,
+      },
+    });
+
     return {
       data: {
         orderItemId: result.updated.id,
@@ -213,6 +235,24 @@ export class OrderItemMutationsService {
         },
       });
       return { request, updated };
+    });
+
+    await this.opsNotify.notify({
+      type: OpsEventType.APPROVAL_REQUESTED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'URGENT',
+      title: `Change approval · ${result.updated.itemNameSnapshot}`,
+      body: dto.reason?.trim() || 'Waiter requested an item change.',
+      rooms: [managerRoom(context.branchId!)],
+      relatedEntityType: 'OrderChangeRequest',
+      relatedEntityId: result.request.id,
+      payload: {
+        requestType: 'CHANGE',
+        requestId: result.request.id,
+        orderItemId: result.updated.id,
+        itemName: result.updated.itemNameSnapshot,
+      },
     });
 
     return {
@@ -386,6 +426,26 @@ export class OrderItemMutationsService {
       });
     });
 
+    await this.opsNotify.notify({
+      type: OpsEventType.APPROVAL_DECIDED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'ATTENTION',
+      title: approve
+        ? `Cancel approved · ${result.itemNameSnapshot}`
+        : `Cancel rejected · ${result.itemNameSnapshot}`,
+      body: dto.decisionReason?.trim() || null,
+      recipientMembershipId: request.requestedByMembershipId,
+      relatedEntityType: 'CancellationRequest',
+      relatedEntityId: request.id,
+      payload: {
+        requestType: 'CANCELLATION',
+        requestId: request.id,
+        orderItemId: result.id,
+        status: approve ? 'APPROVED' : 'REJECTED',
+      },
+    });
+
     return {
       data: {
         orderItemId: result.id,
@@ -440,6 +500,23 @@ export class OrderItemMutationsService {
           },
         });
       });
+      await this.opsNotify.notify({
+        type: OpsEventType.APPROVAL_DECIDED,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'ATTENTION',
+        title: `Change rejected · ${updated.itemNameSnapshot}`,
+        body: dto.decisionReason?.trim() || null,
+        recipientMembershipId: request.requestedByMembershipId,
+        relatedEntityType: 'OrderChangeRequest',
+        relatedEntityId: request.id,
+        payload: {
+          requestType: 'CHANGE',
+          requestId: request.id,
+          orderItemId: updated.id,
+          status: 'REJECTED',
+        },
+      });
       return {
         data: {
           orderItemId: updated.id,
@@ -472,6 +549,24 @@ export class OrderItemMutationsService {
         decidedByMembershipId: context.staffMembershipId!,
         decidedAt: now,
         decisionReason: dto.decisionReason?.trim() || null,
+      },
+    });
+
+    await this.opsNotify.notify({
+      type: OpsEventType.APPROVAL_DECIDED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'ATTENTION',
+      title: `Change approved · ${applied.itemName}`,
+      body: dto.decisionReason?.trim() || null,
+      recipientMembershipId: request.requestedByMembershipId,
+      relatedEntityType: 'OrderChangeRequest',
+      relatedEntityId: request.id,
+      payload: {
+        requestType: 'CHANGE',
+        requestId: request.id,
+        orderItemId: applied.orderItemId,
+        status: 'APPLIED',
       },
     });
 

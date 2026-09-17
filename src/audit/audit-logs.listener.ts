@@ -63,7 +63,7 @@ export class AuditLogListener {
           branchId: payload.branchId || undefined,
           actorUserId: payload.userId || undefined,
           actorStaffMembershipId: payload.staffMembershipId || undefined,
-          actorRestaurantRole: payload.role || 'STAFF',
+          actorRestaurantRole: normalizeRoleString(payload.role) || 'STAFF',
           entityType: payload.entity || 'System',
           entityId: payload.entityId || undefined,
           action: payload.action || 'MUTATION',
@@ -86,4 +86,25 @@ export class AuditLogListener {
       this.logger.error('Failed to persist audit log event:', error);
     }
   }
+}
+
+function normalizeRoleString(role: unknown): string | null {
+  if (role == null) return null;
+  if (typeof role === 'string') {
+    const trimmed = role.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 40) : null;
+  }
+  if (typeof role === 'object') {
+    const record = role as { code?: unknown; name?: unknown; id?: unknown };
+    if (typeof record.code === 'string' && record.code.trim()) {
+      return record.code.trim().slice(0, 40);
+    }
+    if (typeof record.name === 'string' && record.name.trim()) {
+      return record.name.trim().slice(0, 40);
+    }
+    if (typeof record.id === 'number' || typeof record.id === 'string') {
+      return String(record.id).slice(0, 40);
+    }
+  }
+  return null;
 }

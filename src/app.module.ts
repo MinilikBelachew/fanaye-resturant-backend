@@ -43,6 +43,7 @@ import { AuditModule } from './audit/audit.module';
 import { AuditLogsInterceptor } from './audit/audit-logs.interceptor';
 import { SiteModule } from './site/site.module';
 import { QrMenuModule } from './qr-menu/qr-menu.module';
+import { RealtimeModule } from './realtime/realtime.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { QrMenuModule } from './qr-menu/qr-menu.module';
     AuditModule,
     SiteModule,
     QrMenuModule,
+    RealtimeModule,
   ],
   providers: [
     {

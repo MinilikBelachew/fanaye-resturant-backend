@@ -10,11 +10,22 @@ import {
   Patch,
   Post,
   Request,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOkResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { memoryStorage } from 'multer';
 import { MenuService } from './menu.service';
+import { MenuScanService } from './menu-scan.service';
 import {
   CreateMenuItemDto,
   CreateModifierGroupDto,
@@ -27,6 +38,11 @@ import {
   AdminModifierGroupListResponseDto,
   AdminModifierGroupResponseDto,
 } from './dto/menu-item-response.dto';
+import {
+  ImportScannedMenuDto,
+  ImportScannedMenuResponseDto,
+  MenuScanPreviewResponseDto,
+} from './dto/menu-scan.dto';
 
 @ApiTags('Menu admin')
 @ApiBearerAuth()
@@ -36,7 +52,10 @@ import {
   version: '1',
 })
 export class MenuAdminController {
-  constructor(private readonly menu: MenuService) {}
+  constructor(
+    private readonly menu: MenuService,
+    private readonly menuScan: MenuScanService,
+  ) {}
 
   @Get('menu-meta')
   @ApiOkResponse({ type: AdminMenuMetaResponseDto })
@@ -66,6 +85,43 @@ export class MenuAdminController {
   @ApiOkResponse({ type: AdminMenuItemListResponseDto })
   list(@Request() request): Promise<AdminMenuItemListResponseDto> {
     return this.menu.list(String(request.user.id));
+  }
+
+  // Static paths must be registered BEFORE :id routes
+  @Post('menu-items/scan-from-image')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiOkResponse({ type: MenuScanPreviewResponseDto })
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 12 * 1024 * 1024 },
+    }),
+  )
+  scanFromImage(
+    @Request() request,
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<MenuScanPreviewResponseDto> {
+    return this.menuScan.scanFromImage(String(request.user.id), file);
+  }
+
+  @Post('menu-items/import-scanned')
+  @ApiOkResponse({ type: ImportScannedMenuResponseDto })
+  @HttpCode(HttpStatus.OK)
+  importScanned(
+    @Request() request,
+    @Body() dto: ImportScannedMenuDto,
+  ): Promise<ImportScannedMenuResponseDto> {
+    return this.menuScan.importScanned(String(request.user.id), dto);
   }
 
   @Get('menu-items/:id')

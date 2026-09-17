@@ -10,6 +10,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { OpsEventType } from '../realtime/ops-events';
+import { OpsNotifyService } from '../realtime/ops-notify.service';
 import { ExpectedTableSessionVersionDto } from './dto/expected-table-session-version.dto';
 import { CashPaymentDto, TransferPaymentDto } from './dto/payment.dto';
 import {
@@ -40,6 +42,7 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly opsNotify: OpsNotifyService,
   ) {}
 
   async requestBill(
@@ -114,7 +117,7 @@ export class BillingService {
     }
 
     const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
+    const payload = await this.prisma.$transaction(async (tx) => {
       const request = await tx.billRequest.create({
         data: {
           tenantId: context.tenantId!,
@@ -134,7 +137,7 @@ export class BillingService {
           version: { increment: 1 },
         },
       });
-      const payload: BillRequestCreatedDto = {
+      const created: BillRequestCreatedDto = {
         billRequestId: request.id,
         status: request.status,
         requestedAt: request.requestedAt,
@@ -149,11 +152,35 @@ export class BillingService {
         REQUEST_COMMAND,
         key,
         { tableSessionId, ...dto },
-        payload,
+        created,
         request.id,
       );
-      return payload;
+      return created;
     });
+
+    const table = await this.prisma.diningTable.findUnique({
+      where: { id: session.tableId },
+      select: { displayName: true, displayNumber: true },
+    });
+    const tableLabel = table?.displayNumber ?? table?.displayName ?? 'Table';
+
+    await this.opsNotify.notifyCashiers({
+      type: OpsEventType.BILL_REQUEST_CREATED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'URGENT',
+      title: `Bill request · ${tableLabel}`,
+      body: 'Waiter requested a bill at cashier.',
+      relatedEntityType: 'BillRequest',
+      relatedEntityId: payload.billRequestId,
+      payload: {
+        billRequestId: payload.billRequestId,
+        tableSessionId: session.id,
+        tableId: session.tableId,
+      },
+    });
+
+    return payload;
   }
 
   async cancelBillRequest(
@@ -528,14 +555,14 @@ export class BillingService {
     }
 
     const tableName = bill.tableSession.table.displayName;
-    await this.prisma.notification.create({
+    const created = await this.prisma.notification.create({
       data: {
         tenantId: context.tenantId!,
         branchId: context.branchId!,
         recipientStaffMembershipId: waiterId,
         type: 'BILL_READY',
         severity: 'URGENT',
-        title: `🧾 Bill Ready · ${tableName}`,
+        title: `Bill Ready · ${tableName}`,
         body: `Bill #${bill.billNumber} for ${money(bill.totalAmount)} ETB is ready at the cashier. Please deliver to guest.`,
         payloadJson: {
           billId: bill.id,
@@ -543,6 +570,25 @@ export class BillingService {
           tableSessionId: bill.tableSessionId,
           total: money(bill.totalAmount),
         },
+      },
+    });
+
+    await this.opsNotify.notify({
+      type: OpsEventType.BILL_READY,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'URGENT',
+      title: `Bill Ready · ${tableName}`,
+      body: `Bill #${bill.billNumber} for ${money(bill.totalAmount)} ETB is ready at the cashier.`,
+      recipientMembershipId: waiterId,
+      notificationId: created.id,
+      relatedEntityType: 'Bill',
+      relatedEntityId: bill.id,
+      payload: {
+        billId: bill.id,
+        billNumber: bill.billNumber,
+        tableSessionId: bill.tableSessionId,
+        total: money(bill.totalAmount),
       },
     });
 

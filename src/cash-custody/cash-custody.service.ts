@@ -10,6 +10,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { OpsEventType } from '../realtime/ops-events';
+import { OpsNotifyService } from '../realtime/ops-notify.service';
 import {
   InitiateCashDropDto,
   ReceiveCashDropDto,
@@ -32,6 +34,7 @@ export class CashCustodyService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly opsNotify: OpsNotifyService,
   ) {}
 
   async waiterCashSummary(userId: string): Promise<WaiterCashSummaryDto> {
@@ -89,7 +92,7 @@ export class CashCustodyService {
     if (!shift) throw new NotFoundException('Shift not found.');
 
     const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
+    const payload = await this.prisma.$transaction(async (tx) => {
       const drop = await tx.cashDrop.create({
         data: {
           tenantId: context.tenantId!,
@@ -103,18 +106,36 @@ export class CashCustodyService {
           initiatedAt: now,
         },
       });
-      const payload = toDropDto(drop);
+      const created = toDropDto(drop);
       await this.storeIdempotent(
         tx,
         context,
         INITIATE_COMMAND,
         key,
         dto,
-        payload,
+        created,
         drop.id,
       );
-      return payload;
+      return created;
     });
+
+    await this.opsNotify.notifyCashiers({
+      type: OpsEventType.CASH_DROP_PENDING,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'ATTENTION',
+      title: 'Cash drop pending',
+      body: `${payload.declaredAmount} ETB from waiter awaiting count.`,
+      relatedEntityType: 'CashDrop',
+      relatedEntityId: payload.cashDropId,
+      payload: {
+        cashDropId: payload.cashDropId,
+        declaredAmount: payload.declaredAmount,
+        waiterMembershipId: context.staffMembershipId,
+      },
+    });
+
+    return payload;
   }
 
   async listCashierDrops(
@@ -244,7 +265,7 @@ export class CashCustodyService {
     const now = new Date();
     const matches = counted.equals(drop.declaredAmount);
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       if (matches) {
         const updated = await tx.cashDrop.update({
           where: { id: drop.id },
@@ -334,6 +355,31 @@ export class CashCustodyService {
       );
       return payload;
     });
+
+    await this.opsNotify.notify({
+      type: OpsEventType.CASH_DROP_RESOLVED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: result.status === 'DISPUTED' ? 'URGENT' : 'INFO',
+      title:
+        result.status === 'DISPUTED'
+          ? 'Cash drop disputed'
+          : 'Cash drop received',
+      body:
+        result.status === 'DISPUTED'
+          ? `Variance ${result.variance} ETB on your drop.`
+          : `Cashier accepted ${result.countedAmount} ETB.`,
+      recipientMembershipId: drop.waiterMembershipId,
+      relatedEntityType: 'CashDrop',
+      relatedEntityId: result.cashDropId,
+      payload: {
+        cashDropId: result.cashDropId,
+        status: result.status,
+        variance: result.variance,
+      },
+    });
+
+    return result;
   }
 
   async resolveDispute(

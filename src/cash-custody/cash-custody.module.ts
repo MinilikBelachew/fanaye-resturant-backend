@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
+import { RealtimeModule } from '../realtime/realtime.module';
 import { CashCustodyService } from './cash-custody.service';
 import {
   CashDropDisputesController,
@@ -9,7 +10,7 @@ import {
 } from './cash-custody.controller';
 
 @Module({
-  imports: [IdentityModule],
+  imports: [IdentityModule, RealtimeModule],
   controllers: [
     WaiterCashController,
     CashDropsController,

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
+import { RealtimeModule } from '../realtime/realtime.module';
 import { OrderItemsServedController } from './order-items-served.controller';
 import {
   CancellationRequestsController,
@@ -14,7 +15,7 @@ import { TableSessionOrdersController } from './table-session-orders.controller'
 import { WaiterMenuController } from './waiter-menu.controller';
 
 @Module({
-  imports: [IdentityModule],
+  imports: [IdentityModule, RealtimeModule],
   controllers: [
     WaiterMenuController,
     OrdersController,

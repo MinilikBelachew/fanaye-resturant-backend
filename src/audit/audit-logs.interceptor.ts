@@ -98,7 +98,7 @@ export class AuditLogsInterceptor implements NestInterceptor {
             tenantId: user?.tenantId ?? request['tenantId'] ?? null,
             branchId: user?.branchId ?? request['branchId'] ?? null,
             staffMembershipId: user?.staffMembershipId ?? null,
-            role: user?.role ?? user?.roleCode ?? null,
+            role: normalizeAuditRole(user?.role ?? user?.roleCode ?? null),
             ip:
               request.ip ||
               request.headers['x-forwarded-for'] ||
@@ -154,4 +154,25 @@ function sanitizePayload(data: any): any {
   }
 
   return clone;
+}
+
+function normalizeAuditRole(role: unknown): string | null {
+  if (role == null) return null;
+  if (typeof role === 'string') {
+    const trimmed = role.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 40) : null;
+  }
+  if (typeof role === 'object') {
+    const record = role as { code?: unknown; name?: unknown; id?: unknown };
+    if (typeof record.code === 'string' && record.code.trim()) {
+      return record.code.trim().slice(0, 40);
+    }
+    if (typeof record.name === 'string' && record.name.trim()) {
+      return record.name.trim().slice(0, 40);
+    }
+    if (typeof record.id === 'number' || typeof record.id === 'string') {
+      return String(record.id).slice(0, 40);
+    }
+  }
+  return null;
 }

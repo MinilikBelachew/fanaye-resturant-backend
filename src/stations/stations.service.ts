@@ -9,6 +9,9 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { OpsEventType } from '../realtime/ops-events';
+import { OpsNotifyService } from '../realtime/ops-notify.service';
+import { managerRoom, stationRoom } from '../realtime/ops-rooms';
 import { ExpectedVersionDto } from './dto/expected-version.dto';
 import { ReportCannotPrepareDto } from './dto/report-cannot-prepare.dto';
 import {
@@ -34,6 +37,7 @@ export class StationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly opsNotify: OpsNotifyService,
   ) {}
 
   async listStations(userId: string): Promise<StationManagementResponseDto[]> {
@@ -370,6 +374,32 @@ export class StationsService {
         include: ticketInclude,
       });
     });
+
+    const tableName =
+      updated.tableSession.table.displayNumber ??
+      updated.tableSession.table.displayName;
+    await this.opsNotify.notify({
+      type: OpsEventType.PRODUCTION_EXCEPTION,
+      tenantId: loaded.context.tenantId!,
+      branchId: loaded.context.branchId!,
+      severity: 'URGENT',
+      title: `Cannot prepare · ${tableName}`,
+      body: `${updated.quantity}× ${updated.itemNameSnapshot} at ${updated.stationNameSnapshot}`,
+      recipientMembershipId: updated.tableSession.primaryWaiterMembershipId,
+      rooms: [
+        managerRoom(loaded.context.branchId!),
+        stationRoom(updated.currentPreparationStationId),
+      ],
+      relatedEntityType: 'OrderItem',
+      relatedEntityId: updated.id,
+      payload: {
+        orderItemId: updated.id,
+        tableSessionId: updated.tableSessionId,
+        stationId: updated.currentPreparationStationId,
+        reason: dto.reasonDetail?.trim() || dto.reasonCode || 'CANNOT_PREPARE',
+      },
+    });
+
     return toTicketDto(updated);
   }
 
@@ -404,7 +434,77 @@ export class StationsService {
       },
       include: ticketInclude,
     });
+
+    await this.emitTicketTransition(loaded.context, updated, spec.to);
+
     return toTicketDto(updated);
+  }
+
+  private async emitTicketTransition(
+    context: AuthContextDto,
+    item: TicketRecord,
+    toState: string,
+  ) {
+    const tableName =
+      item.tableSession.table.displayNumber ??
+      item.tableSession.table.displayName;
+    const stationId = item.currentPreparationStationId;
+    const tableId = item.tableSession.tableId;
+    const waiterMembershipId = item.tableSession.primaryWaiterMembershipId;
+    const basePayload = {
+      orderItemId: item.id,
+      tableSessionId: item.tableSessionId,
+      tableId,
+      stationId,
+      state: toState,
+      itemName: item.itemNameSnapshot,
+      quantity: item.quantity,
+      tableDisplayName: tableName,
+    };
+
+    // READY is a waiter pickup alert — never fan out to the station that
+    // just marked it (that was the old bug: kitchen notified itself).
+    if (toState === 'READY') {
+      this.opsNotify.broadcast({
+        type: OpsEventType.TICKET_UPDATED,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'INFO',
+        title: `${item.itemNameSnapshot} → READY`,
+        body: `Table ${tableName}`,
+        rooms: [managerRoom(context.branchId!)],
+        relatedEntityType: 'OrderItem',
+        relatedEntityId: item.id,
+        payload: basePayload,
+      });
+
+      await this.opsNotify.notify({
+        type: OpsEventType.ITEM_READY,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'ATTENTION',
+        title: `Ready · Table ${tableName}`,
+        body: `${item.quantity}× ${item.itemNameSnapshot} from ${item.stationNameSnapshot}`,
+        recipientMembershipId: waiterMembershipId,
+        relatedEntityType: 'OrderItem',
+        relatedEntityId: item.id,
+        payload: basePayload,
+      });
+      return;
+    }
+
+    this.opsNotify.broadcast({
+      type: OpsEventType.TICKET_UPDATED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'INFO',
+      title: `${item.itemNameSnapshot} → ${toState}`,
+      body: `Table ${tableName}`,
+      rooms: [stationRoom(stationId), managerRoom(context.branchId!)],
+      relatedEntityType: 'OrderItem',
+      relatedEntityId: item.id,
+      payload: basePayload,
+    });
   }
 
   private async loadForMutation(

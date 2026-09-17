@@ -166,8 +166,29 @@ export class PlatformAuditEventDto {
   @ApiProperty({ example: 'TENANT_PROVISIONED' })
   action: string;
 
+  @ApiPropertyOptional({ example: 'orders' })
+  category?: string;
+
   @ApiProperty({ example: 'Bole Habesha Lounge' })
   entityName: string;
+
+  @ApiPropertyOptional({ example: 'TENANT' })
+  entityType?: string;
+
+  @ApiPropertyOptional({ example: 'uuid-entity' })
+  entityId?: string | null;
+
+  @ApiPropertyOptional({ example: 'uuid-tenant' })
+  tenantId?: string | null;
+
+  @ApiPropertyOptional({ example: 'Fanaye Restaurant' })
+  tenantName?: string;
+
+  @ApiPropertyOptional({ example: 'Hana Tadesse' })
+  actorName?: string;
+
+  @ApiPropertyOptional({ example: 'MANAGER' })
+  actorRole?: string;
 
   @ApiProperty({ example: 'New tenant onboarded on Pro Plan' })
   description: string;
@@ -177,6 +198,9 @@ export class PlatformAuditEventDto {
 
   @ApiProperty({ example: 'info' })
   severity: string;
+
+  @ApiPropertyOptional()
+  metadataJson?: any;
 }
 
 export class SuperAdminDashboardDataDto {
@@ -542,9 +566,90 @@ export class UpdateTenantDto {
   hours?: string;
 }
 
+export class PaginationMetaDto {
+  @ApiProperty({ example: 1 })
+  page: number;
+
+  @ApiProperty({ example: 25 })
+  limit: number;
+
+  @ApiProperty({ example: 120 })
+  total: number;
+
+  @ApiProperty({ example: 5 })
+  totalPages: number;
+}
+
+export class PlatformAuditSummaryDto {
+  @ApiProperty({ example: 120 })
+  totalToday: number;
+
+  @ApiProperty({ example: 24 })
+  securityToday: number;
+
+  @ApiProperty({ example: 78 })
+  operationsToday: number;
+
+  @ApiProperty({ example: 18 })
+  systemToday: number;
+}
+
 export class PlatformAuditListResponseDto {
   @ApiProperty({ type: () => [PlatformAuditEventDto] })
   data: PlatformAuditEventDto[];
+
+  @ApiPropertyOptional({ type: () => PaginationMetaDto })
+  meta?: PaginationMetaDto;
+
+  @ApiPropertyOptional({ type: () => PlatformAuditSummaryDto })
+  summary?: PlatformAuditSummaryDto;
+}
+
+export class ListPlatformAuditQueryDto {
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ example: 25 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @ApiPropertyOptional({ example: 'TENANT_PROVISIONED' })
+  @IsOptional()
+  @IsString()
+  action?: string;
+
+  @ApiPropertyOptional({ example: 'uuid-tenant' })
+  @IsOptional()
+  @IsString()
+  tenantId?: string;
+
+  @ApiPropertyOptional({ example: 'orders' })
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @ApiPropertyOptional({ example: 'Fanaye' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-17T00:00:00.000Z' })
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ example: '2026-09-17T23:59:59.999Z' })
+  @IsOptional()
+  @IsString()
+  endDate?: string;
 }
 
 export class LiveOpsBranchDto {
@@ -602,20 +707,6 @@ export class LiveOpsResponseDto {
 
   @ApiProperty({ type: () => [LiveOpsBranchDto] })
   branches: LiveOpsBranchDto[];
-}
-
-export class PaginationMetaDto {
-  @ApiProperty({ example: 1 })
-  page: number;
-
-  @ApiProperty({ example: 20 })
-  limit: number;
-
-  @ApiProperty({ example: 45 })
-  total: number;
-
-  @ApiProperty({ example: 3 })
-  totalPages: number;
 }
 
 export class ListPlatformStaffQueryDto {

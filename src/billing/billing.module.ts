@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
+import { RealtimeModule } from '../realtime/realtime.module';
 import { BillingService } from './billing.service';
 import {
   BillRequestsController,
@@ -11,7 +12,7 @@ import { TableSessionBillController } from './table-session-bill.controller';
 import { TableSessionBillingController } from './table-session-billing.controller';
 
 @Module({
-  imports: [IdentityModule],
+  imports: [IdentityModule, RealtimeModule],
   controllers: [
     TableSessionBillingController,
     TableSessionBillController,

@@ -7,6 +7,9 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
+import { OpsEventType } from '../realtime/ops-events';
+import { OpsNotifyService } from '../realtime/ops-notify.service';
+import { stationRoom } from '../realtime/ops-rooms';
 import {
   QrMenuConfigDto,
   UpdateQrMenuConfigDto,
@@ -53,6 +56,7 @@ export class QrMenuService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly opsNotify: OpsNotifyService,
   ) {}
 
   async getPublicTableMenu(
@@ -570,7 +574,7 @@ export class QrMenuService {
           ? `Guest ordered ${dto.items.length} item(s) from table QR code (Sent to kitchen).`
           : `Guest ordered ${dto.items.length} item(s) from table QR code. Please review and send to kitchen.`;
 
-        await tx.notification.create({
+        const notif = await tx.notification.create({
           data: {
             tenantId: tenant.id,
             branchId: branch.id,
@@ -587,15 +591,69 @@ export class QrMenuService {
             },
           },
         });
+        return { order, notificationId: notif.id };
       }
 
-      return order;
+      return { order, notificationId: null as string | null };
     });
 
+    if (waiterMembershipId && createdOrder.notificationId) {
+      await this.opsNotify.notify({
+        type: OpsEventType.GUEST_ORDER_PLACED,
+        tenantId: tenant.id,
+        branchId: branch.id,
+        severity: autoSendToKitchen ? 'INFO' : 'ATTENTION',
+        title: autoSendToKitchen
+          ? `QR Order at ${table.displayName}`
+          : `Guest QR Order · ${table.displayName}`,
+        body: autoSendToKitchen
+          ? `Guest ordered ${dto.items.length} item(s) from table QR code (Sent to kitchen).`
+          : `Guest ordered ${dto.items.length} item(s) from table QR code. Please review and send to kitchen.`,
+        recipientMembershipId: waiterMembershipId,
+        relatedEntityType: 'Order',
+        relatedEntityId: createdOrder.order.id,
+        notificationId: createdOrder.notificationId,
+        payload: {
+          tableId: table.id,
+          orderId: createdOrder.order.id,
+          sessionId: session.id,
+          autoSendToKitchen,
+        },
+      });
+    }
+
+    if (autoSendToKitchen) {
+      const queued = await this.prisma.orderItem.findMany({
+        where: { orderId: createdOrder.order.id, state: 'QUEUED' },
+        select: { currentPreparationStationId: true },
+      });
+      const stations = new Set(
+        queued.map((item) => item.currentPreparationStationId),
+      );
+      for (const stationId of stations) {
+        this.opsNotify.broadcast({
+          type: OpsEventType.TICKET_QUEUED,
+          tenantId: tenant.id,
+          branchId: branch.id,
+          severity: 'ATTENTION',
+          title: `QR tickets · ${table.displayName}`,
+          body: 'New guest order items queued.',
+          rooms: [stationRoom(stationId)],
+          relatedEntityType: 'Order',
+          relatedEntityId: createdOrder.order.id,
+          payload: {
+            tableSessionId: session.id,
+            stationId,
+            orderId: createdOrder.order.id,
+          },
+        });
+      }
+    }
+
     return {
-      orderId: createdOrder.id,
+      orderId: createdOrder.order.id,
       tableSessionId: session.id,
-      status: createdOrder.status,
+      status: createdOrder.order.status,
       itemCount: dto.items.reduce((s, i) => s + i.quantity, 0),
       estimatedWaitMinutes: maxPrepMin,
       message: autoSendToKitchen
@@ -669,7 +727,7 @@ export class QrMenuService {
           ? `Requested payment via ${dto.paymentMethod}`
           : `Guest requested assistance at ${table.displayName}`;
 
-      await this.prisma.notification.create({
+      const notif = await this.prisma.notification.create({
         data: {
           tenantId: tenant.id,
           branchId: branch.id,
@@ -683,6 +741,24 @@ export class QrMenuService {
             requestType: dto.type,
             paymentMethod: dto.paymentMethod,
           },
+        },
+      });
+
+      await this.opsNotify.notify({
+        type: OpsEventType.GUEST_SERVICE_REQUEST,
+        tenantId: tenant.id,
+        branchId: branch.id,
+        severity: dto.type === 'REQUEST_BILL' ? 'URGENT' : 'ATTENTION',
+        title: titleMap[dto.type] ?? `Service Alert · ${table.displayName}`,
+        body,
+        recipientMembershipId: waiterId,
+        notificationId: notif.id,
+        relatedEntityType: 'DiningTable',
+        relatedEntityId: table.id,
+        payload: {
+          tableId: table.id,
+          requestType: dto.type,
+          paymentMethod: dto.paymentMethod,
         },
       });
     }
