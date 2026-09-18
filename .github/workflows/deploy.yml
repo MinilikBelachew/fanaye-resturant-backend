@@ -27,6 +27,7 @@ jobs:
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
       image_name: ${{ steps.meta.outputs.image_name }}
+      commit_sha: ${{ steps.meta.outputs.commit_sha }}
 
     steps:
       - name: Checkout Code
@@ -34,15 +35,24 @@ jobs:
         with:
           ref: ${{ github.event.inputs.git_ref }}
 
-      - name: Resolve Docker Image Name
+      - name: Resolve Docker Image Name & Dual Tags
         id: meta
         run: |
-          IMAGE_TAG="${{ github.event.inputs.environment }}"
-          IMAGE_NAME="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-          IMAGE_NAME_LOWER=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          ENV_NAME="${{ github.event.inputs.environment }}"
+          IMAGE_BASE="ghcr.io/${{ github.repository }}"
+          IMAGE_BASE_LOWER=$(echo "$IMAGE_BASE" | tr '[:upper:]' '[:lower:]')
+          
+          IMAGE_TAG="${ENV_NAME}-${COMMIT_SHA}"
+          IMAGE_NAME="${IMAGE_BASE_LOWER}:${IMAGE_TAG}"
+          TAGS="${IMAGE_NAME},${IMAGE_BASE_LOWER}:${ENV_NAME}"
+          
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "image_name=$IMAGE_NAME_LOWER" >> $GITHUB_OUTPUT
-          echo "Resolved target image: $IMAGE_NAME_LOWER"
+          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "Resolved target immutable image: $IMAGE_NAME"
+          echo "Resolved dual tags: $TAGS"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -60,7 +70,7 @@ jobs:
           context: .
           file: Dockerfile.prod
           push: true
-          tags: ${{ steps.meta.outputs.image_name }}
+          tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -88,7 +98,7 @@ jobs:
           command_timeout: 10m
           script: |
             set -e
-            echo "Starting 15-second backend deployment on VPS for environment: $TARGET_ENV..."
+            echo "Starting backend deployment on VPS for environment: $TARGET_ENV (Image: $IMAGE_NAME)..."
 
             # 1. Set environment variables, folder paths, and project names
             if [ "$TARGET_ENV" = "production" ]; then
@@ -109,7 +119,7 @@ jobs:
 
             cd "$SERVICE_DIR"
 
-            # 2. Write standardized docker-compose.prod.yml
+            # 2. Write standardized docker-compose.prod.yml with fallback
             cat << 'EOF' > docker-compose.prod.yml
             services:
               postgres:
@@ -153,7 +163,7 @@ jobs:
                   - restaurant-backend-network
 
               api:
-                image: ${DOCKER_IMAGE}
+                image: ${DOCKER_IMAGE:-ghcr.io/minilikbelachew/fanaye-resturant-backend:production}
                 container_name: ${CONTAINER_PREFIX:-restaurant}-api
                 restart: always
                 ports:
@@ -235,6 +245,12 @@ jobs:
                 fs.writeFileSync(path, newLines.join("\n").trim() + "\n", { mode: 0o600 });
                 console.log("Successfully merged " + incomingMap.size + " environment variable(s) into " + path);
               ' "$SERVICE_DIR/.env"
+            fi
+
+            # Persist running DOCKER_IMAGE in .env for instant visibility & docker compose fallback
+            if [ -f "$SERVICE_DIR/.env" ]; then
+              sed -i '/^DOCKER_IMAGE=/d' "$SERVICE_DIR/.env" 2>/dev/null || true
+              echo "DOCKER_IMAGE=$IMAGE_NAME" >> "$SERVICE_DIR/.env"
             fi
 
             # 4. Pull pre-built image from GHCR and start containers
