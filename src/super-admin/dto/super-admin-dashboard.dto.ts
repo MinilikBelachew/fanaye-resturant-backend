@@ -96,6 +96,50 @@ export class PlatformHealthRadarPointDto {
   benchmark: number;
 }
 
+export class OpsHealthDto {
+  @ApiProperty()
+  dailyCloseCompliancePct: number;
+
+  @ApiProperty()
+  branchesClosedToday: number;
+
+  @ApiProperty()
+  activeBranches: number;
+
+  @ApiProperty()
+  offlineStations: number;
+
+  @ApiProperty()
+  totalStations: number;
+
+  @ApiProperty()
+  stationAvailabilityPct: number;
+
+  @ApiProperty()
+  pendingCashDrops: number;
+
+  @ApiProperty()
+  openProductionExceptions: number;
+
+  @ApiProperty()
+  unpaidBills: number;
+
+  @ApiProperty()
+  openSessions: number;
+
+  @ApiProperty()
+  cashVarianceAbsTotal: number;
+
+  @ApiProperty()
+  cashVarianceBranches: number;
+
+  @ApiProperty()
+  cashHealthPct: number;
+
+  @ApiProperty()
+  digitalSettlementPct: number;
+}
+
 export class PlanDistributionItemDto {
   @ApiProperty({ example: 'PRO' })
   planCode: string;
@@ -212,6 +256,9 @@ export class SuperAdminDashboardDataDto {
 
   @ApiProperty({ type: () => [PlatformHealthRadarPointDto] })
   healthRadar: PlatformHealthRadarPointDto[];
+
+  @ApiProperty({ type: () => OpsHealthDto })
+  opsHealth: OpsHealthDto;
 
   @ApiProperty({ type: () => [PlanDistributionItemDto] })
   planDistribution: PlanDistributionItemDto[];
@@ -880,29 +927,4 @@ export class ResetPlatformStaffPasswordDto {
   @MinLength(6)
   @MaxLength(72)
   password: string;
-}
-
-export class FeatureFlagDto {
-  @ApiProperty({ example: 'qr_guest' })
-  key: string;
-
-  @ApiProperty({ example: 'Guest QR ordering' })
-  name: string;
-
-  @ApiProperty({ example: 'Deferred' })
-  scope: string;
-
-  @ApiProperty({ example: false })
-  enabled: boolean;
-}
-
-export class FeatureFlagsResponseDto {
-  @ApiProperty({ type: () => [FeatureFlagDto] })
-  data: FeatureFlagDto[];
-}
-
-export class UpdateFeatureFlagDto {
-  @ApiProperty({ example: true })
-  @IsBoolean()
-  enabled: boolean;
 }

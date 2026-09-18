@@ -106,6 +106,10 @@ export class StationQueueResponseDto {
   @Expose()
   stationCode: string | null;
 
+  @ApiPropertyOptional({ example: false })
+  @Expose()
+  stationOffline?: boolean;
+
   @ApiProperty({ type: () => [StationQueueItemDto] })
   @Expose()
   @Type(() => StationQueueItemDto)

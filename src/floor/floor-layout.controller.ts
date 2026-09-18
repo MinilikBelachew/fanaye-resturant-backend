@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -62,6 +63,15 @@ export class FloorLayoutController {
     return this.layout.updateLocation(String(request.user.id), id, dto);
   }
 
+  @Delete('table-locations/:id')
+  @HttpCode(HttpStatus.OK)
+  deleteLocation(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<{ success: boolean; message: string }> {
+    return this.layout.deleteLocation(String(request.user.id), id);
+  }
+
   @Post('dining-tables')
   @ApiOkResponse({ type: AdminDiningTableResponseDto })
   @HttpCode(HttpStatus.OK)
@@ -80,5 +90,14 @@ export class FloorLayoutController {
     @Body() dto: UpdateDiningTableDto,
   ): Promise<AdminDiningTableResponseDto> {
     return this.layout.updateTable(String(request.user.id), id, dto);
+  }
+
+  @Delete('dining-tables/:id')
+  @HttpCode(HttpStatus.OK)
+  deleteTable(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<{ success: boolean; message: string }> {
+    return this.layout.deleteTable(String(request.user.id), id);
   }
 }

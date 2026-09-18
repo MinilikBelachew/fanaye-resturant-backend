@@ -251,6 +251,134 @@ export class FloorLayoutService {
     return { data: this.toTableDto(updated) };
   }
 
+  async deleteTable(
+    userId: string,
+    tableId: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const context = await this.requireAdmin(userId);
+    const existing = await this.prisma.diningTable.findFirst({
+      where: {
+        id: tableId,
+        branchId: context.branchId!,
+        archivedAt: null,
+      },
+    });
+    if (!existing) {
+      throw new NotFoundException('Table not found.');
+    }
+
+    const openSession = await this.prisma.tableSession.findFirst({
+      where: {
+        tableId: existing.id,
+        status: { not: 'CLOSED' },
+        closedAt: null,
+      },
+    });
+    if (openSession) {
+      throw new ConflictException({
+        status: 409,
+        code: 'TABLE_HAS_OPEN_SESSION',
+        message: 'Close the open table session before deleting this table.',
+      });
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.diningTableShiftCoverage.deleteMany({
+        where: { diningTableId: existing.id },
+      });
+      await tx.diningTable.update({
+        where: { id: existing.id },
+        data: {
+          archivedAt: now,
+          status: 'INACTIVE',
+          assignedWaiterMembershipId: null,
+          version: { increment: 1 },
+        },
+      });
+    });
+
+    return {
+      success: true,
+      message: `"${existing.displayName}" removed from the floor.`,
+    };
+  }
+
+  async deleteLocation(
+    userId: string,
+    locationId: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const context = await this.requireAdmin(userId);
+    const existing = await this.prisma.tableLocation.findFirst({
+      where: {
+        id: locationId,
+        branchId: context.branchId!,
+        archivedAt: null,
+      },
+      include: {
+        tables: {
+          where: { archivedAt: null },
+          select: { id: true, displayName: true },
+        },
+      },
+    });
+    if (!existing) {
+      throw new NotFoundException('Place not found.');
+    }
+
+    const tableIds = existing.tables.map((t) => t.id);
+    if (tableIds.length > 0) {
+      const openSession = await this.prisma.tableSession.findFirst({
+        where: {
+          tableId: { in: tableIds },
+          status: { not: 'CLOSED' },
+          closedAt: null,
+        },
+      });
+      if (openSession) {
+        throw new ConflictException({
+          status: 409,
+          code: 'PLACE_HAS_OPEN_SESSION',
+          message:
+            'Close all open table sessions in this place before deleting it.',
+        });
+      }
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      if (tableIds.length > 0) {
+        await tx.diningTableShiftCoverage.deleteMany({
+          where: { diningTableId: { in: tableIds } },
+        });
+        await tx.diningTable.updateMany({
+          where: { id: { in: tableIds } },
+          data: {
+            archivedAt: now,
+            status: 'INACTIVE',
+            assignedWaiterMembershipId: null,
+          },
+        });
+      }
+      await tx.tableLocation.update({
+        where: { id: existing.id },
+        data: {
+          archivedAt: now,
+          status: 'INACTIVE',
+        },
+      });
+    });
+
+    const tableCount = existing.tables.length;
+    return {
+      success: true,
+      message:
+        tableCount > 0
+          ? `"${existing.name}" and ${tableCount} table${tableCount === 1 ? '' : 's'} removed.`
+          : `"${existing.name}" removed.`,
+    };
+  }
+
   /** Keep shift coverage in sync when manager assigns a permanent waiter. */
   private async syncPermanentAssignmentToShifts(
     context: AuthContextDto,

@@ -7,7 +7,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { ManagerDashboardService } from './manager-dashboard.service';
-import { ManagerDashboardResponseDto } from './dto/manager-dashboard-response.dto';
+import {
+  BranchRevenueResponseDto,
+  ManagerDashboardResponseDto,
+} from './dto/manager-dashboard-response.dto';
 
 @ApiTags('Manager dashboard')
 @ApiBearerAuth()
@@ -31,6 +34,23 @@ export class ManagerDashboardController {
     return this.managerDashboardService.getDashboard(
       String(request.user.id),
       businessDate,
+    );
+  }
+
+  @Get('branch-revenue')
+  @ApiQuery({
+    name: 'period',
+    required: false,
+    enum: ['month', 'quarter', 'year'],
+  })
+  @ApiOkResponse({ type: BranchRevenueResponseDto })
+  getBranchRevenue(
+    @Request() request,
+    @Query('period') period?: string,
+  ): Promise<BranchRevenueResponseDto> {
+    return this.managerDashboardService.getBranchRevenue(
+      String(request.user.id),
+      period,
     );
   }
 }

@@ -12,7 +12,7 @@ import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
-import { managerRoom, stationRoom } from '../realtime/ops-rooms';
+import { managerRoom, stationRoom, branchRoom } from '../realtime/ops-rooms';
 import { ConfirmOrderDto } from './dto/confirm-order.dto';
 import {
   ConfirmOrderResponseDto,
@@ -146,6 +146,7 @@ export class OrdersService {
       where: {
         menuId: menu.id,
         status: 'ACTIVE',
+        station: { status: 'ACTIVE' },
         ...(query.categoryId ? { menuCategoryId: query.categoryId } : {}),
         ...(query.search
           ? {
@@ -460,6 +461,50 @@ export class OrdersService {
       return payload;
     });
 
+    // Waiter confirm already queues items — notify stations immediately
+    // (sendToKitchen only handles legacy CONFIRMED items).
+    const byStation = new Map<string, number>();
+    for (const item of created.items) {
+      byStation.set(item.stationId, (byStation.get(item.stationId) ?? 0) + 1);
+    }
+
+    const sessionMeta = await this.prisma.tableSession.findUnique({
+      where: { id: created.tableSessionId },
+      select: {
+        table: {
+          select: { displayName: true, displayNumber: true },
+        },
+      },
+    });
+    const tableLabel =
+      sessionMeta?.table.displayNumber ??
+      sessionMeta?.table.displayName ??
+      'Table';
+
+    for (const [stationId, count] of byStation) {
+      this.opsNotify.broadcast({
+        type: OpsEventType.TICKET_QUEUED,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'ATTENTION',
+        title: `New tickets · ${tableLabel}`,
+        body: `${count} item(s) queued for your station.`,
+        rooms: [
+          stationRoom(stationId),
+          branchRoom(context.branchId!),
+          managerRoom(context.branchId!),
+        ],
+        relatedEntityType: 'TableSession',
+        relatedEntityId: created.tableSessionId,
+        payload: {
+          tableSessionId: created.tableSessionId,
+          stationId,
+          orderId: created.orderId,
+          count,
+        },
+      });
+    }
+
     return created;
   }
 
@@ -654,7 +699,11 @@ export class OrdersService {
         severity: 'ATTENTION',
         title: `New tickets · ${tableLabel}`,
         body: `${count} item(s) queued for your station.`,
-        rooms: [stationRoom(stationId), managerRoom(context.branchId!)],
+        rooms: [
+          stationRoom(stationId),
+          branchRoom(context.branchId!),
+          managerRoom(context.branchId!),
+        ],
         relatedEntityType: 'TableSession',
         relatedEntityId: session.id,
         payload: {

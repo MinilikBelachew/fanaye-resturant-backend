@@ -56,6 +56,17 @@ export class AuditService {
       };
     }
 
+    // Managers/owners are always locked to their restaurant tenant.
+    // Prefer their assigned branch; otherwise first active branch in that tenant.
+    let branchId = context.branchId ?? null;
+    if (!branchId && (role === 'MANAGER' || role === 'OWNER_ADMIN')) {
+      const branch = await this.prisma.branch.findFirst({
+        where: { tenantId: context.tenantId, status: 'ACTIVE' },
+        select: { id: true },
+      });
+      branchId = branch?.id ?? null;
+    }
+
     const limit = Math.min(Math.max(opts?.limit ?? 25, 1), 200);
     const page = Math.max(opts?.page ?? 1, 1);
     const skip = (page - 1) * limit;
@@ -65,7 +76,7 @@ export class AuditService {
 
     const where: Prisma.AuditEventWhereInput = {
       tenantId: context.tenantId,
-      ...(context.branchId ? { branchId: context.branchId } : {}),
+      ...(branchId ? { branchId } : {}),
     };
 
     if (opts?.startDate || opts?.endDate) {

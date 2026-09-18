@@ -62,9 +62,24 @@ export class StationsService {
       },
     });
 
+    const menuCounts = await this.prisma.menuItem.groupBy({
+      by: ['preparationStationId'],
+      where: {
+        tenantId: context.tenantId!,
+        status: { in: ['ACTIVE', 'DRAFT'] },
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
     const countMap = new Map<string, number>();
     for (const c of activeCounts) {
       countMap.set(c.currentPreparationStationId, c._count._all);
+    }
+    const menuCountMap = new Map<string, number>();
+    for (const c of menuCounts) {
+      menuCountMap.set(c.preparationStationId, c._count._all);
     }
 
     return stations.map((s) => ({
@@ -77,6 +92,7 @@ export class StationsService {
       avgPrepMin: s.defaultDelayThresholdMinutes ?? 10,
       sortOrder: s.sortOrder,
       ticketCount: countMap.get(s.id) ?? 0,
+      menuItemCount: menuCountMap.get(s.id) ?? 0,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
     }));
@@ -126,6 +142,7 @@ export class StationsService {
       avgPrepMin: station.defaultDelayThresholdMinutes ?? 10,
       sortOrder: station.sortOrder,
       ticketCount: 0,
+      menuItemCount: 0,
       createdAt: station.createdAt,
       updatedAt: station.updatedAt,
     };
@@ -184,12 +201,43 @@ export class StationsService {
       },
     });
 
+    if (existing.status !== updated.status) {
+      this.opsNotify.broadcast({
+        type: OpsEventType.STATION_STATUS_CHANGED,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'INFO',
+        title:
+          updated.status === 'ACTIVE'
+            ? `${updated.name} is online`
+            : `${updated.name} is offline`,
+        body:
+          updated.status === 'ACTIVE'
+            ? 'Station can accept tickets again.'
+            : 'Station tickets and menu items are paused.',
+        rooms: [stationRoom(updated.id), managerRoom(context.branchId!)],
+        relatedEntityType: 'PreparationStation',
+        relatedEntityId: updated.id,
+        payload: {
+          stationId: updated.id,
+          status: updated.status,
+          enabled: updated.status === 'ACTIVE',
+        },
+      });
+    }
+
     const activeCount = await this.prisma.orderItem.count({
       where: {
         branchId: context.branchId!,
         currentPreparationStationId: stationId,
         state: { in: ACTIVE_COOKING },
         cancelledAt: null,
+      },
+    });
+    const menuItemCount = await this.prisma.menuItem.count({
+      where: {
+        preparationStationId: stationId,
+        status: { in: ['ACTIVE', 'DRAFT'] },
       },
     });
 
@@ -203,6 +251,7 @@ export class StationsService {
       avgPrepMin: updated.defaultDelayThresholdMinutes ?? 10,
       sortOrder: updated.sortOrder,
       ticketCount: activeCount,
+      menuItemCount,
       createdAt: updated.createdAt,
       updatedAt: updated.updatedAt,
     };
@@ -260,7 +309,37 @@ export class StationsService {
     stationId: string,
     stateQuery?: string,
   ): Promise<StationQueueResponseDto> {
-    const { context, station } = await this.requireStation(userId, stationId);
+    const context = await this.requireBranch(userId);
+    const station = await this.prisma.preparationStation.findFirst({
+      where: {
+        id: stationId,
+        branchId: context.branchId!,
+      },
+    });
+    if (!station) {
+      throw new NotFoundException('Station not found.');
+    }
+    if (context.roleCode === 'STATION_OPERATOR') {
+      if (context.stationId !== station.id) {
+        throw new ForbiddenException('This is not your station.');
+      }
+    } else if (
+      context.roleCode !== 'MANAGER' &&
+      context.roleCode !== 'OWNER_ADMIN'
+    ) {
+      throw new ForbiddenException('Station queue is for station staff.');
+    }
+
+    if (station.status !== 'ACTIVE') {
+      return {
+        stationId: station.id,
+        stationName: station.name,
+        stationCode: station.code,
+        stationOffline: true,
+        data: [],
+      };
+    }
+
     const states = parseStates(stateQuery);
 
     const items = await this.prisma.orderItem.findMany({
@@ -278,6 +357,7 @@ export class StationsService {
       stationId: station.id,
       stationName: station.name,
       stationCode: station.code,
+      stationOffline: false,
       data: items.map(toTicketDto),
     };
   }
@@ -550,11 +630,18 @@ export class StationsService {
       where: {
         id: stationId,
         branchId: context.branchId!,
-        status: 'ACTIVE',
       },
     });
     if (!station) {
       throw new NotFoundException('Station not found.');
+    }
+    if (station.status !== 'ACTIVE') {
+      throw new ForbiddenException({
+        status: 403,
+        code: 'STATION_OFFLINE',
+        message:
+          'This station is offline. A manager must turn it back on before tickets can be worked.',
+      });
     }
     if (context.roleCode === 'STATION_OPERATOR') {
       if (context.stationId !== station.id) {

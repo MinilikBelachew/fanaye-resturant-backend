@@ -83,15 +83,8 @@ export class OpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.data = data;
 
       if (context.branchId) {
-        // Branch-wide live board is for managers/owners/cashiers — not stations.
-        if (
-          context.roleCode === 'MANAGER' ||
-          context.roleCode === 'OWNER_ADMIN' ||
-          context.roleCode === 'CASHIER' ||
-          context.roleCode === 'WAITER'
-        ) {
-          await client.join(branchRoom(context.branchId));
-        }
+        // Managers/cashiers/waiters + station tablets all need live board events.
+        await client.join(branchRoom(context.branchId));
       }
       if (context.staffMembershipId) {
         await client.join(staffRoom(context.staffMembershipId));
@@ -106,12 +99,7 @@ export class OpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         await client.join(managerRoom(context.branchId));
         await client.join(cashierRoom(context.branchId));
       }
-      if (
-        context.stationId &&
-        (context.roleCode === 'STATION_OPERATOR' ||
-          context.roleCode === 'MANAGER' ||
-          context.roleCode === 'OWNER_ADMIN')
-      ) {
+      if (context.stationId) {
         await client.join(stationRoom(context.stationId));
       }
 

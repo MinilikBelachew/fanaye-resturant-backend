@@ -303,6 +303,14 @@ export class SiteService {
       nextSlug = await this.uniqueSlug(dto.slug.trim(), context.tenantId);
     }
 
+    const nextTenantName = dto.tenantName?.trim();
+    if (nextTenantName && nextTenantName !== site.tenant.displayName) {
+      await this.prisma.tenant.update({
+        where: { id: context.tenantId },
+        data: { displayName: nextTenantName },
+      });
+    }
+
     const updated = await this.prisma.tenantSite.update({
       where: { id: site.id },
       data: {

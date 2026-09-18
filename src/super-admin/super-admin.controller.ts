@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   Patch,
   Post,
@@ -19,7 +20,6 @@ import { SuperAdminService } from './super-admin.service';
 import {
   CreatePlatformStaffDto,
   CreateTenantDto,
-  FeatureFlagsResponseDto,
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
@@ -32,7 +32,6 @@ import {
   SuperAdminDashboardResponseDto,
   TenantDetailResponseDto,
   TenantListResponseDto,
-  UpdateFeatureFlagDto,
   UpdateTenantDto,
 } from './dto/super-admin-dashboard.dto';
 
@@ -126,6 +125,17 @@ export class SuperAdminController {
     return this.superAdminService.updateTenant(userId, id, dto);
   }
 
+  @Get('audit/export')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  @Header('Content-Disposition', 'attachment; filename="platform-audit.csv"')
+  exportAudit(
+    @Request() request,
+    @Query() query: ListPlatformAuditQueryDto,
+  ): Promise<string> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.exportAuditCsv(userId, query);
+  }
+
   @Get('audit')
   @ApiOkResponse({ type: PlatformAuditListResponseDto })
   listAudit(
@@ -206,23 +216,5 @@ export class SuperAdminController {
       membershipId,
       dto,
     );
-  }
-
-  @Get('flags')
-  @ApiOkResponse({ type: FeatureFlagsResponseDto })
-  listFlags(@Request() request): Promise<FeatureFlagsResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.listFeatureFlags(userId);
-  }
-
-  @Patch('flags/:key')
-  @ApiOkResponse({ type: FeatureFlagsResponseDto })
-  updateFlag(
-    @Request() request,
-    @Param('key') key: string,
-    @Body() dto: UpdateFeatureFlagDto,
-  ): Promise<FeatureFlagsResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.updateFeatureFlag(userId, key, dto);
   }
 }

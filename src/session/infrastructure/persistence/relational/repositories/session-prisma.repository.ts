@@ -55,7 +55,7 @@ export class SessionPrismaRepository implements SessionRepository {
     });
 
     if (!entity) {
-      throw new Error('Session not found');
+      return null;
     }
 
     const updatedEntity = await this.prisma.authSession.update({
@@ -85,7 +85,7 @@ export class SessionPrismaRepository implements SessionRepository {
     });
 
     if (!entity) {
-      throw new Error('Session not found');
+      return null;
     }
 
     const updatedEntity = await this.prisma.authSession.update({

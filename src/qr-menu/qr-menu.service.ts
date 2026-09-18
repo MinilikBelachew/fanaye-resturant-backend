@@ -9,7 +9,7 @@ import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
-import { stationRoom } from '../realtime/ops-rooms';
+import { branchRoom, managerRoom, stationRoom } from '../realtime/ops-rooms';
 import {
   QrMenuConfigDto,
   UpdateQrMenuConfigDto,
@@ -139,6 +139,8 @@ export class QrMenuService {
         tenantId: tenant.id,
         status: 'ACTIVE',
         showOnQrMenu: true,
+        soldOut: false,
+        station: { status: 'ACTIVE' },
       },
       include: {
         category: true,
@@ -470,6 +472,11 @@ export class QrMenuService {
       if (item.soldOut) {
         throw new BadRequestException(`"${item.name}" is currently sold out.`);
       }
+      if (!item.station || item.station.status !== 'ACTIVE') {
+        throw new BadRequestException(
+          `"${item.name}" is unavailable — its prep station is offline.`,
+        );
+      }
       if (item.expectedPrepMinutes && item.expectedPrepMinutes > maxPrepMin) {
         maxPrepMin = item.expectedPrepMinutes;
       }
@@ -628,7 +635,9 @@ export class QrMenuService {
         select: { currentPreparationStationId: true },
       });
       const stations = new Set(
-        queued.map((item) => item.currentPreparationStationId),
+        queued
+          .map((item) => item.currentPreparationStationId)
+          .filter((id): id is string => Boolean(id)),
       );
       for (const stationId of stations) {
         this.opsNotify.broadcast({
@@ -638,7 +647,11 @@ export class QrMenuService {
           severity: 'ATTENTION',
           title: `QR tickets · ${table.displayName}`,
           body: 'New guest order items queued.',
-          rooms: [stationRoom(stationId)],
+          rooms: [
+            stationRoom(stationId),
+            branchRoom(branch.id),
+            managerRoom(branch.id),
+          ],
           relatedEntityType: 'Order',
           relatedEntityId: createdOrder.order.id,
           payload: {

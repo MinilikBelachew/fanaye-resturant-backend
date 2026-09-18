@@ -76,7 +76,81 @@ export class SiteThemeDto {
   borderRadius?: string | null;
 }
 
+export class UpdateSiteThemeDto {
+  @ApiPropertyOptional({ example: '#e85d04' })
+  @IsOptional()
+  @IsString()
+  primaryColor?: string;
+
+  @ApiPropertyOptional({ example: '#0f172a' })
+  @IsOptional()
+  @IsString()
+  accentColor?: string;
+
+  @ApiPropertyOptional({ example: '#fffaf5' })
+  @IsOptional()
+  @IsString()
+  backgroundColor?: string;
+
+  @ApiPropertyOptional({ example: '#0f172a' })
+  @IsOptional()
+  @IsString()
+  textColor?: string;
+
+  @ApiPropertyOptional({ example: 'https://...' })
+  @IsOptional()
+  @IsString()
+  logoUrl?: string | null;
+
+  @ApiPropertyOptional({ example: 'Fraunces' })
+  @IsOptional()
+  @IsString()
+  fontDisplay?: string;
+
+  @ApiPropertyOptional({ example: 'DM Sans' })
+  @IsOptional()
+  @IsString()
+  fontBody?: string;
+
+  @ApiPropertyOptional({
+    example: 'solid',
+    enum: ['solid', 'gradient', 'image'],
+  })
+  @IsOptional()
+  @IsString()
+  backgroundType?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
+  })
+  @IsOptional()
+  @IsString()
+  backgroundGradient?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://...' })
+  @IsOptional()
+  @IsString()
+  backgroundImageUrl?: string | null;
+
+  @ApiPropertyOptional({ example: 0.85 })
+  @IsOptional()
+  backgroundOverlayOpacity?: number | null;
+
+  @ApiPropertyOptional({ example: 'md', enum: ['none', 'md', 'xl', 'full'] })
+  @IsOptional()
+  @IsString()
+  borderRadius?: string | null;
+}
+
 export class UpdateSiteDto {
+  @ApiPropertyOptional({ example: 'Abyssinia Grill' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(180)
+  tenantName?: string;
+
   @ApiPropertyOptional({ example: 'abyssinia-grill' })
   @Transform(emptyToUndefined)
   @IsOptional()
@@ -88,10 +162,10 @@ export class UpdateSiteDto {
   })
   slug?: string;
 
-  @ApiPropertyOptional({ type: () => SiteThemeDto })
+  @ApiPropertyOptional({ type: () => UpdateSiteThemeDto })
   @IsOptional()
-  @Type(() => SiteThemeDto)
-  theme?: SiteThemeDto;
+  @Type(() => UpdateSiteThemeDto)
+  theme?: UpdateSiteThemeDto;
 
   @ApiPropertyOptional({ description: 'Puck editor draft data JSON' })
   @IsOptional()

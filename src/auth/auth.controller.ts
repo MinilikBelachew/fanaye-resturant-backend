@@ -175,16 +175,22 @@ export class AuthController {
     @Request() request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<RefreshResponseDto> {
-    const result = await this.service.refreshToken({
-      sessionId: request.user.sessionId,
-      hash: request.user.hash,
-      remember: request.user.remember,
-    });
-    this.cookies.setRefreshCookie(res, result.refreshToken, result.remember);
-    return {
-      token: result.token,
-      tokenExpires: result.tokenExpires,
-    };
+    try {
+      const result = await this.service.refreshToken({
+        sessionId: request.user.sessionId,
+        hash: request.user.hash,
+        remember: request.user.remember,
+      });
+      this.cookies.setRefreshCookie(res, result.refreshToken, result.remember);
+      return {
+        token: result.token,
+        tokenExpires: result.tokenExpires,
+      };
+    } catch (error) {
+      // Stale/revoked refresh cookie — clear it so the client stops retrying.
+      this.cookies.clearRefreshCookie(res);
+      throw error;
+    }
   }
 
   @Post('logout')

@@ -14,6 +14,7 @@ export const OpsEventType = {
   GUEST_ORDER_PLACED: 'guest.order_placed',
   GUEST_SERVICE_REQUEST: 'guest.service_request',
   FLOOR_UPDATED: 'floor.updated',
+  STATION_STATUS_CHANGED: 'station.status.changed',
 } as const;
 
 export type OpsEventTypeName = (typeof OpsEventType)[keyof typeof OpsEventType];

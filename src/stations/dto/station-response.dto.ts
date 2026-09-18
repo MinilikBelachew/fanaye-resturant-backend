@@ -28,6 +28,9 @@ export class StationManagementResponseDto {
   @ApiProperty({ example: 5 })
   ticketCount: number;
 
+  @ApiProperty({ example: 12 })
+  menuItemCount: number;
+
   @ApiProperty()
   createdAt: Date;
 
