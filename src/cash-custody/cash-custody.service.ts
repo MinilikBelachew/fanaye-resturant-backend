@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -35,6 +36,7 @@ export class CashCustodyService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
+    private readonly dailyClose: DailyCloseService,
   ) {}
 
   async waiterCashSummary(userId: string): Promise<WaiterCashSummaryDto> {
@@ -90,6 +92,11 @@ export class CashCustodyService {
       where: { id: context.shiftSessionId! },
     });
     if (!shift) throw new NotFoundException('Shift not found.');
+
+    await this.dailyClose.assertBusinessDayNotLocked(
+      context.branchId!,
+      shift.businessDate,
+    );
 
     const now = new Date();
     const payload = await this.prisma.$transaction(async (tx) => {
@@ -237,6 +244,10 @@ export class CashCustodyService {
       include: { dispute: true },
     });
     if (!drop) throw new NotFoundException('Cash drop not found.');
+    await this.dailyClose.assertBusinessDayNotLocked(
+      context.branchId!,
+      drop.businessDate,
+    );
     if (drop.status !== 'INITIATED') {
       throw new UnprocessableEntityException({
         status: 422,
@@ -562,9 +573,10 @@ export class CashCustodyService {
     });
     if (existing) {
       if (existing.status !== 'OPEN') {
-        return this.prisma.cashierFinancialSession.update({
-          where: { id: existing.id },
-          data: { status: 'OPEN' },
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'CASHIER_DRAWER_CLOSED',
+          errors: { status: existing.status },
         });
       }
       return existing;
@@ -598,7 +610,16 @@ export class CashCustodyService {
         const found = await this.prisma.cashierFinancialSession.findFirst({
           where: { shiftSessionId: context.shiftSessionId! },
         });
-        if (found) return found;
+        if (found) {
+          if (found.status !== 'OPEN') {
+            throw new UnprocessableEntityException({
+              status: 422,
+              code: 'CASHIER_DRAWER_CLOSED',
+              errors: { status: found.status },
+            });
+          }
+          return found;
+        }
       }
       throw err;
     }

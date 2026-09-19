@@ -33,6 +33,16 @@ export class ReconciliationPreviewDto {
 
   @ApiPropertyOptional()
   existingVariance?: string | null;
+
+  @ApiPropertyOptional()
+  existingExpectedCash?: string | null;
+
+  @ApiPropertyOptional()
+  sessionStatus?: string | null;
+
+  /** True when more cash arrived after the last submit — cashier must count again. */
+  @ApiPropertyOptional()
+  needsResubmit?: boolean;
 }
 
 export class ReconciliationPreviewResponseDto {

@@ -34,7 +34,7 @@ export class ReconciliationService {
 
   async preview(userId: string): Promise<ReconciliationPreviewResponseDto> {
     const context = await this.requireCashierOnShift(userId);
-    const session = await this.ensureOpenSession(context);
+    let session = await this.ensureOpenSession(context);
     const totals = await this.computeExpected(
       session.id,
       session.openingFloatAmount,
@@ -42,6 +42,28 @@ export class ReconciliationService {
     const existing = await this.prisma.cashierReconciliation.findUnique({
       where: { cashierFinancialSessionId: session.id },
     });
+
+    // More cash arrived after a closed recon — reopen so cashier can recount.
+    if (
+      existing &&
+      !totals.expectedCash.equals(existing.expectedCashAmount) &&
+      (session.status === 'RECONCILED' || session.status === 'CLOSED')
+    ) {
+      session = await this.prisma.cashierFinancialSession.update({
+        where: { id: session.id },
+        data: {
+          status: 'OPEN',
+          closedAt: null,
+          version: { increment: 1 },
+        },
+      });
+    }
+
+    const needsResubmit = Boolean(
+      existing &&
+      !totals.expectedCash.equals(existing.expectedCashAmount) &&
+      ['OPEN', 'RECONCILIATION_PENDING'].includes(session.status),
+    );
 
     return {
       data: {
@@ -58,6 +80,11 @@ export class ReconciliationService {
           ? money(existing.countedCashAmount)
           : null,
         existingVariance: existing ? money(existing.varianceAmount) : null,
+        existingExpectedCash: existing
+          ? money(existing.expectedCashAmount)
+          : null,
+        sessionStatus: session.status,
+        needsResubmit,
       },
     };
   }
@@ -98,13 +125,6 @@ export class ReconciliationService {
     const already = await this.prisma.cashierReconciliation.findUnique({
       where: { cashierFinancialSessionId: session.id },
     });
-    if (already) {
-      throw new ConflictException({
-        status: 409,
-        code: 'RECONCILIATION_ALREADY_SUBMITTED',
-        errors: { reconciliationId: already.id },
-      });
-    }
 
     const totals = await this.computeExpected(
       session.id,
@@ -128,25 +148,54 @@ export class ReconciliationService {
       });
     }
 
+    const stale =
+      already &&
+      !totals.expectedCash.equals(already.expectedCashAmount) &&
+      ['OPEN', 'RECONCILIATION_PENDING'].includes(session.status);
+
+    if (already && !stale) {
+      throw new ConflictException({
+        status: 409,
+        code: 'RECONCILIATION_ALREADY_SUBMITTED',
+        errors: { reconciliationId: already.id },
+      });
+    }
+
     const sessionStatus = variance.equals(0)
       ? 'RECONCILED'
       : 'RECONCILIATION_PENDING';
 
     const payload = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.cashierReconciliation.create({
-        data: {
-          tenantId: context.tenantId!,
-          branchId: context.branchId!,
-          businessDate: session.businessDate,
-          cashierFinancialSessionId: session.id,
-          currencyCode: session.currencyCode,
-          expectedCashAmount: totals.expectedCash,
-          countedCashAmount: counted,
-          varianceAmount: variance,
-          cashierComment: comment,
-          status: 'SUBMITTED',
-        },
-      });
+      const row = already
+        ? await tx.cashierReconciliation.update({
+            where: { id: already.id },
+            data: {
+              expectedCashAmount: totals.expectedCash,
+              countedCashAmount: counted,
+              varianceAmount: variance,
+              cashierComment: comment,
+              status: 'SUBMITTED',
+              submittedAt: new Date(),
+              reviewedAt: null,
+              reviewedByMembershipId: null,
+              reviewComment: null,
+              version: { increment: 1 },
+            },
+          })
+        : await tx.cashierReconciliation.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: context.branchId!,
+              businessDate: session.businessDate,
+              cashierFinancialSessionId: session.id,
+              currencyCode: session.currencyCode,
+              expectedCashAmount: totals.expectedCash,
+              countedCashAmount: counted,
+              varianceAmount: variance,
+              cashierComment: comment,
+              status: 'SUBMITTED',
+            },
+          });
       await tx.cashierFinancialSession.update({
         where: { id: session.id },
         data: {

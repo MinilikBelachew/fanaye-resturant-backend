@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -33,6 +34,7 @@ export class OrdersService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
+    private readonly dailyClose: DailyCloseService,
   ) {}
 
   async waiterMenu(
@@ -284,6 +286,10 @@ export class OrdersService {
         errors: { session: 'SESSION_CLOSED' },
       });
     }
+    await this.dailyClose.assertBusinessDayNotLocked(
+      context.branchId!,
+      session.businessDate,
+    );
     if (!ORDERABLE.includes(session.status)) {
       throw new UnprocessableEntityException({
         status: 422,
@@ -638,6 +644,11 @@ export class OrdersService {
     if (session.closedAt || session.status === 'CLOSED') {
       throw new UnprocessableEntityException('Table session is closed.');
     }
+
+    await this.dailyClose.assertBusinessDayNotLocked(
+      context.branchId!,
+      session.businessDate,
+    );
 
     const filter: Prisma.OrderItemWhereInput = {
       tableSessionId,

@@ -960,6 +960,31 @@ export class DailyCloseService {
     };
   }
 
+  /**
+   * Blocks new orders, payments, and cash drops once the business day is locked.
+   */
+  async assertBusinessDayNotLocked(
+    branchId: string,
+    businessDate: Date,
+  ): Promise<void> {
+    const close = await this.prisma.operationalDailyClose.findUnique({
+      where: {
+        branchId_businessDate: {
+          branchId,
+          businessDate,
+        },
+      },
+      select: { status: true },
+    });
+    if (close?.status === 'LOCKED') {
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'BUSINESS_DAY_LOCKED',
+        errors: { businessDate: 'BUSINESS_DAY_LOCKED' },
+      });
+    }
+  }
+
   private async requireClose(context: AuthContextDto, dailyCloseId: string) {
     const close = await this.prisma.operationalDailyClose.findFirst({
       where: { id: dailyCloseId, branchId: context.branchId! },

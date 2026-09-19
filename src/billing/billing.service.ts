@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -43,6 +44,7 @@ export class BillingService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
+    private readonly dailyClose: DailyCloseService,
   ) {}
 
   async requestBill(
@@ -614,6 +616,10 @@ export class BillingService {
 
     const bill = await this.loadPayableBill(context, billId);
     this.assertCollectorForBill(context, bill);
+    await this.dailyClose.assertBusinessDayNotLocked(
+      context.branchId!,
+      bill.businessDate,
+    );
     if (bill.version !== dto.expectedBillVersion) {
       throw new ConflictException({
         status: 409,
@@ -720,6 +726,10 @@ export class BillingService {
 
     const bill = await this.loadPayableBill(context, billId);
     this.assertCollectorForBill(context, bill);
+    await this.dailyClose.assertBusinessDayNotLocked(
+      context.branchId!,
+      bill.businessDate,
+    );
     if (bill.version !== dto.expectedBillVersion) {
       throw new ConflictException({
         status: 409,
