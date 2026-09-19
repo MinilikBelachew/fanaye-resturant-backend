@@ -88,6 +88,16 @@ export class StaffCoverageService {
             orderBy: { grantedAt: 'desc' },
             take: 1,
           },
+          stationAssignments: {
+            where: {
+              status: 'ACTIVE',
+              branchId: context.branchId!,
+              releasedAt: null,
+            },
+            include: { station: true },
+            orderBy: { assignedAt: 'desc' },
+            take: 1,
+          },
           shiftTableCoverages: {
             where: { branchId: context.branchId! },
             include: {
@@ -699,6 +709,10 @@ export class StaffCoverageService {
     status: string;
     user: { phone: string | null; email: string | null } | null;
     roleAssignments: Array<{ role: { code: string; name: string } }>;
+    stationAssignments?: Array<{
+      stationId: string;
+      station: { id: string; name: string };
+    }>;
     shiftTableCoverages: Array<{
       shiftDefinitionId: string;
       shiftDefinition: {
@@ -717,6 +731,7 @@ export class StaffCoverageService {
   }): AdminStaffMemberDto {
     const role = member.roleAssignments[0]?.role;
     const roleCode = role?.code ?? 'WAITER';
+    const station = member.stationAssignments?.[0]?.station ?? null;
     const byShift = new Map<
       string,
       AdminStaffMemberDto['shiftCoverages'][number]
@@ -742,16 +757,23 @@ export class StaffCoverageService {
     }
 
     const hasCred = Boolean((member as any).user?.credential?.passwordHash);
+    const roleLabel =
+      roleCode === 'STATION_OPERATOR' && station
+        ? `${station.name} Station`
+        : (ROLE_LABELS[roleCode] ?? role?.name ?? roleCode);
+
     return {
       id: member.id,
       name: member.employeeDisplayName,
       roleCode,
-      roleLabel: ROLE_LABELS[roleCode] ?? role?.name ?? roleCode,
+      roleLabel,
       active: member.status === 'ACTIVE',
       phone: member.user?.phone ?? null,
       email: member.user?.email ?? null,
       hasPin: hasCred,
       hasPassword: hasCred,
+      stationId: station?.id ?? null,
+      stationName: station?.name ?? null,
       shiftCoverages: [...byShift.values()].sort((a, b) =>
         a.startLocalTime.localeCompare(b.startLocalTime),
       ),
@@ -989,6 +1011,16 @@ export class StaffCoverageService {
           where: { status: 'ACTIVE' },
           include: { role: true },
           orderBy: { grantedAt: 'desc' },
+          take: 1,
+        },
+        stationAssignments: {
+          where: {
+            status: 'ACTIVE',
+            branchId: context.branchId!,
+            releasedAt: null,
+          },
+          include: { station: true },
+          orderBy: { assignedAt: 'desc' },
           take: 1,
         },
         shiftTableCoverages: {

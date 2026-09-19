@@ -7,6 +7,8 @@ import { FloorService } from './floor.service';
 import { StaffCoverageController } from './staff-coverage.controller';
 import { StaffCoverageService } from './staff-coverage.service';
 import { TableSessionsController } from './table-sessions.controller';
+import { WaiterPerformanceController } from './waiter-performance.controller';
+import { WaiterPerformanceService } from './waiter-performance.service';
 import { WaiterTablesController } from './waiter-tables.controller';
 
 @Module({
@@ -17,8 +19,19 @@ import { WaiterTablesController } from './waiter-tables.controller';
     StaffCoverageController,
     WaiterTablesController,
     TableSessionsController,
+    WaiterPerformanceController,
   ],
-  providers: [FloorService, FloorLayoutService, StaffCoverageService],
-  exports: [FloorService, FloorLayoutService, StaffCoverageService],
+  providers: [
+    FloorService,
+    FloorLayoutService,
+    StaffCoverageService,
+    WaiterPerformanceService,
+  ],
+  exports: [
+    FloorService,
+    FloorLayoutService,
+    StaffCoverageService,
+    WaiterPerformanceService,
+  ],
 })
 export class FloorModule {}
