@@ -30,10 +30,12 @@ model AppUser {
   accountStatus String    @default("ACTIVE") @map("account_status") @db.VarChar(24)
   authProvider  String?   @map("auth_provider") @db.VarChar(40)
   photoId       String?   @unique @map("photo_id") @db.Uuid
+  preferredBranchId String? @map("preferred_branch_id") @db.Uuid
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   photo          File?              @relation(fields: [photoId], references: [id])
+  preferredBranch Branch?           @relation("UserPreferredBranch", fields: [preferredBranchId], references: [id], onDelete: SetNull)
   credential     UserCredential?
   sessions       AuthSession[]
   platformRoles      PlatformUserRole[]
@@ -336,6 +338,7 @@ model Branch {
   orderChangeRequests OrderChangeRequest[]
   cancellationRequests CancellationRequest[]
   productionExceptions ProductionException[]
+  preferredByUsers AppUser[] @relation("UserPreferredBranch")
 
   @@unique([tenantId, displayCode], map: "uq_branches__tenant_display_code")
   @@index([tenantId, status], map: "ix_branches__tenant_status")

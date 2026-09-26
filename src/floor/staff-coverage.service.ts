@@ -126,6 +126,7 @@ export class StaffCoverageService {
   ): Promise<AdminStaffMemberResponseDto> {
     const context = await this.requireAdmin(userId);
     const roleCode = this.resolveRoleCode(dto.role);
+    this.assertCanAssignRole(context.roleCode, roleCode);
     const role = await this.prisma.restaurantRole.findUnique({
       where: { code: roleCode },
     });
@@ -343,6 +344,7 @@ export class StaffCoverageService {
     let nextRoleCode = existing.roleAssignments[0]?.role.code ?? 'WAITER';
     if (dto.role) {
       nextRoleCode = this.resolveRoleCode(dto.role);
+      this.assertCanAssignRole(context.roleCode, nextRoleCode);
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -1098,6 +1100,25 @@ export class StaffCoverageService {
           });
         }
       }
+    }
+  }
+
+  private assertCanAssignRole(actorRole: string, targetRole: string): void {
+    if (actorRole === 'MANAGER' && targetRole === 'OWNER_ADMIN') {
+      throw new ForbiddenException({
+        status: 403,
+        errors: { role: 'owner_forbidden' },
+        message:
+          'Managers cannot create or promote staff to Owner. Owners are created by platform super-admin only.',
+      });
+    }
+    if (actorRole === 'MANAGER' && targetRole === 'MANAGER') {
+      throw new ForbiddenException({
+        status: 403,
+        errors: { role: 'manager_forbidden' },
+        message:
+          'Managers cannot create other managers. Branch managers are created when a branch is set up.',
+      });
     }
   }
 

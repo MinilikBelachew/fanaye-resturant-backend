@@ -338,6 +338,12 @@ export class TenantDetailDto {
   @ApiProperty({ example: 'Hiwot Bekele' })
   manager: string;
 
+  @ApiPropertyOptional({ example: 'manager@fanaye.et' })
+  managerEmail?: string;
+
+  @ApiPropertyOptional({ example: '+251 91 123 4567' })
+  managerPhone?: string;
+
   @ApiProperty({ example: '10:00 – 23:00' })
   hours: string;
 
@@ -380,6 +386,14 @@ export class TenantListResponseDto {
 export class TenantDetailResponseDto {
   @ApiProperty({ type: () => TenantDetailDto })
   data: TenantDetailDto;
+}
+
+export class DeleteTenantResponseDto {
+  @ApiProperty({ example: true })
+  ok: boolean;
+
+  @ApiProperty({ example: 'uuid-tenant' })
+  deletedTenantId: string;
 }
 
 export class CreateTenantDto {
@@ -435,6 +449,32 @@ export class CreateTenantDto {
   @IsEmail()
   @MaxLength(255)
   email: string;
+
+  @ApiProperty({ example: 'Sara Bekele' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(160)
+  ownerName: string;
+
+  @ApiPropertyOptional({ example: 'owner@abyssinia.et' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
+  ownerEmail?: string;
+
+  @ApiPropertyOptional({ example: '+251 91 987 6543' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  ownerPhone?: string;
+
+  @ApiPropertyOptional({ example: 'Password123!' })
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  @MaxLength(72)
+  ownerPassword?: string;
 
   @ApiProperty({ example: 'Dawit Haile' })
   @IsString()

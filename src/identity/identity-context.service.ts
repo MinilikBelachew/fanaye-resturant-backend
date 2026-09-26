@@ -27,6 +27,7 @@ export class IdentityContextService {
       where: { id: String(userId) },
       include: {
         platformRoles: { where: { status: 'ACTIVE' } },
+        preferredBranch: true,
         staffMemberships: {
           where: { status: 'ACTIVE' },
           include: {
@@ -81,6 +82,21 @@ export class IdentityContextService {
     let branchId = branchAssignment?.branchId ?? null;
     let branchName =
       branchAssignment?.branch?.name ?? membership?.tenant.displayName ?? null;
+
+    const preferredId = user.preferredBranchId;
+    if (preferredId && membership?.tenantId) {
+      const preferredOk =
+        roleCode === 'OWNER_ADMIN'
+          ? user.preferredBranch?.tenantId === membership.tenantId &&
+            user.preferredBranch?.status === 'ACTIVE'
+          : membership.branchAssignments.some(
+              (a) => a.branchId === preferredId,
+            );
+      if (preferredOk && user.preferredBranch) {
+        branchId = user.preferredBranch.id;
+        branchName = user.preferredBranch.name;
+      }
+    }
 
     if (!branchId && membership?.tenantId) {
       const defaultBranch = await this.prisma.branch.findFirst({
