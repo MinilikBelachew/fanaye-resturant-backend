@@ -1391,7 +1391,8 @@ export class SuperAdminService {
                 await tx.tenantSubscription.update({
                   where: { id: activeSub.id },
                   data: {
-                    subscriptionStatus: 'ENDED',
+                    // DB check allows: TRIAL | ACTIVE | PAST_DUE | SUSPENDED | CANCELLED
+                    subscriptionStatus: 'CANCELLED',
                     effectiveTo: new Date(),
                   },
                 });
