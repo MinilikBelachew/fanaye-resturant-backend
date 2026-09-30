@@ -67,6 +67,12 @@ export class AdminStaffMemberDto {
   @ApiProperty()
   active: boolean;
 
+  @ApiProperty({
+    type: [String],
+    example: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+  })
+  workingDays: string[];
+
   @ApiPropertyOptional()
   phone: string | null;
 

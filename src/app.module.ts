@@ -44,6 +44,8 @@ import { AuditLogsInterceptor } from './audit/audit-logs.interceptor';
 import { SiteModule } from './site/site.module';
 import { QrMenuModule } from './qr-menu/qr-menu.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { BranchesModule } from './branches/branches.module';
+import { InventoryModule } from './inventory/inventory.module';
 
 @Module({
   imports: [
@@ -113,6 +115,8 @@ import { RealtimeModule } from './realtime/realtime.module';
     SiteModule,
     QrMenuModule,
     RealtimeModule,
+    BranchesModule,
+    InventoryModule,
   ],
   providers: [
     {

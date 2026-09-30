@@ -30,10 +30,12 @@ model AppUser {
   accountStatus String    @default("ACTIVE") @map("account_status") @db.VarChar(24)
   authProvider  String?   @map("auth_provider") @db.VarChar(40)
   photoId       String?   @unique @map("photo_id") @db.Uuid
+  preferredBranchId String? @map("preferred_branch_id") @db.Uuid
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   photo          File?              @relation(fields: [photoId], references: [id])
+  preferredBranch Branch?           @relation("UserPreferredBranch", fields: [preferredBranchId], references: [id], onDelete: SetNull)
   credential     UserCredential?
   sessions       AuthSession[]
   platformRoles      PlatformUserRole[]
@@ -211,6 +213,12 @@ model Tenant {
   cancellationRequests CancellationRequest[]
   productionExceptions ProductionException[]
   site                   TenantSite?
+  inventoryIngredients   InventoryIngredient[]
+  inventoryStockBalances InventoryStockBalance[]
+  menuItemRecipeLines    MenuItemRecipeLine[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  inventoryCountSessions InventoryCountSession[]
+  inventoryCountLines    InventoryCountLine[]
 
   @@index([status], map: "ix_tenants__status")
   @@map("tenants")
@@ -336,6 +344,11 @@ model Branch {
   orderChangeRequests OrderChangeRequest[]
   cancellationRequests CancellationRequest[]
   productionExceptions ProductionException[]
+  preferredByUsers AppUser[] @relation("UserPreferredBranch")
+  inventoryIngredients InventoryIngredient[]
+  inventoryStockBalances InventoryStockBalance[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  inventoryCountSessions InventoryCountSession[]
 
   @@unique([tenantId, displayCode], map: "uq_branches__tenant_display_code")
   @@index([tenantId, status], map: "ix_branches__tenant_status")
@@ -408,6 +421,8 @@ model TenantStaffMembership {
   userId              String    @map("user_id") @db.Uuid
   employeeDisplayName String    @map("employee_display_name") @db.VarChar(160)
   status              String    @default("ACTIVE") @db.VarChar(20)
+  /// Weekday codes: Mon Tue Wed Thu Fri Sat Sun
+  workingDays         String[]  @default([]) @map("working_days")
   joinedAt            DateTime? @map("joined_at") @db.Timestamptz(6)
   deactivatedAt       DateTime? @map("deactivated_at") @db.Timestamptz(6)
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -459,6 +474,8 @@ model TenantStaffMembership {
   resolvedExceptions      ProductionException[] @relation("ProductionExceptionResolvedBy")
   updatedTenantSettings TenantSettings[]
   updatedBranchSettings BranchSettings[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
+  inventoryCountSessions InventoryCountSession[]
 
   @@unique([tenantId, userId], map: "uq_tenant_staff_memberships__tenant_user")
   @@index([tenantId, status], map: "ix_tenant_staff_memberships__tenant_status")
@@ -746,6 +763,7 @@ model MenuItem {
   modifiers  MenuItemModifierAssignment[]
   overrides  ItemAvailabilityOverride[]
   orderItems OrderItem[]
+  recipeLines MenuItemRecipeLine[]
 
   @@index([tenantId, menuId, status, soldOut, sortOrder], map: "ix_menu_items__menu_active")
   @@map("menu_items")
@@ -767,8 +785,11 @@ model ItemAvailabilityOverride {
   tenantId            String    @map("tenant_id") @db.Uuid
   branchId            String    @map("branch_id") @db.Uuid
   menuItemId          String    @map("menu_item_id") @db.Uuid
+  /// SOLD_OUT | TEMPORARILY_DISABLED | LIMITED
   state               String    @db.VarChar(32)
   reason              String    @db.Text
+  remainingQty        Int?      @map("remaining_qty")
+  initialQty          Int?      @map("initial_qty")
   setByMembershipId   String    @map("set_by_membership_id") @db.Uuid
   startsAt            DateTime  @map("starts_at") @db.Timestamptz(6)
   endsAt              DateTime? @map("ends_at") @db.Timestamptz(6)
@@ -1043,6 +1064,7 @@ model OrderItem {
   changeRequests  OrderChangeRequest[]
   cancellationRequests CancellationRequest[]
   productionExceptions ProductionException[]
+  inventoryLedgerEntries InventoryLedgerEntry[]
 
   @@index([tenantId, tableSessionId, state, confirmedAt], map: "ix_order_items__table_live")
   @@map("order_items")
@@ -1615,4 +1637,131 @@ model IdempotencyCommand {
 
   @@unique([tenantId, actorUserId, commandType, idempotencyKey], map: "uq_idempotency_commands__actor_key")
   @@map("idempotency_commands")
+}
+// =============================================================================
+// Inventory — recipe-based stock (ingredients, balances, ledger, counts)
+// =============================================================================
+
+model InventoryIngredient {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  name      String   @db.VarChar(180)
+  unit      String   @db.VarChar(20)
+  unitCost  Decimal  @default(0) @map("unit_cost") @db.Decimal(19, 4)
+  parLevel  Decimal  @default(0) @map("par_level") @db.Decimal(19, 4)
+  status    String   @default("ACTIVE") @db.VarChar(20)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant        Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  branch        Branch                   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  balance       InventoryStockBalance?
+  recipeLines   MenuItemRecipeLine[]
+  ledgerEntries InventoryLedgerEntry[]
+  countLines    InventoryCountLine[]
+
+  @@unique([branchId, name], map: "uq_inventory_ingredients__branch_name")
+  @@index([tenantId, branchId, status], map: "ix_inventory_ingredients__branch_status")
+  @@map("inventory_ingredients")
+}
+
+model InventoryStockBalance {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  branchId     String   @map("branch_id") @db.Uuid
+  ingredientId String   @unique @map("ingredient_id") @db.Uuid
+  onHandQty    Decimal  @default(0) @map("on_hand_qty") @db.Decimal(19, 4)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  branch     Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ingredient InventoryIngredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, branchId], map: "ix_inventory_stock_balances__branch")
+  @@map("inventory_stock_balances")
+}
+
+model MenuItemRecipeLine {
+  id                 String  @id @default(uuid()) @db.Uuid
+  tenantId           String  @map("tenant_id") @db.Uuid
+  menuItemId         String  @map("menu_item_id") @db.Uuid
+  ingredientId       String  @map("ingredient_id") @db.Uuid
+  quantityPerServing Decimal @map("quantity_per_serving") @db.Decimal(19, 4)
+  sortOrder          Int     @default(0) @map("sort_order")
+
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  menuItem   MenuItem            @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredient InventoryIngredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([menuItemId, ingredientId], map: "uq_menu_item_recipe_lines__item_ingredient")
+  @@index([tenantId, menuItemId], map: "ix_menu_item_recipe_lines__item")
+  @@map("menu_item_recipe_lines")
+}
+
+model InventoryLedgerEntry {
+  id                    String   @id @default(uuid()) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  branchId              String   @map("branch_id") @db.Uuid
+  ingredientId          String   @map("ingredient_id") @db.Uuid
+  entryType             String   @map("entry_type") @db.VarChar(40)
+  quantityDelta         Decimal  @map("quantity_delta") @db.Decimal(19, 4)
+  unitCostSnapshot      Decimal? @map("unit_cost_snapshot") @db.Decimal(19, 4)
+  note                  String?  @db.VarChar(255)
+  supplierNote          String?  @map("supplier_note") @db.VarChar(180)
+  invoiceRef            String?  @map("invoice_ref") @db.VarChar(80)
+  orderItemId           String?  @map("order_item_id") @db.Uuid
+  countSessionId        String?  @map("count_session_id") @db.Uuid
+  createdByMembershipId String?  @map("created_by_membership_id") @db.Uuid
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  branch       Branch                 @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ingredient   InventoryIngredient    @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+  orderItem    OrderItem?             @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+  countSession InventoryCountSession? @relation(fields: [countSessionId], references: [id], onDelete: SetNull)
+  createdBy    TenantStaffMembership? @relation(fields: [createdByMembershipId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, branchId, createdAt], map: "ix_inventory_ledger__branch_created")
+  @@index([ingredientId, createdAt], map: "ix_inventory_ledger__ingredient_created")
+  @@index([orderItemId], map: "ix_inventory_ledger__order_item")
+  @@index([entryType], map: "ix_inventory_ledger__type")
+  @@map("inventory_ledger_entries")
+}
+
+model InventoryCountSession {
+  id                    String    @id @default(uuid()) @db.Uuid
+  tenantId              String    @map("tenant_id") @db.Uuid
+  branchId              String    @map("branch_id") @db.Uuid
+  status                String    @default("DRAFT") @db.VarChar(20)
+  notes                 String?   @db.VarChar(255)
+  createdByMembershipId String?   @map("created_by_membership_id") @db.Uuid
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  postedAt              DateTime? @map("posted_at") @db.Timestamptz(6)
+
+  tenant        Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  branch        Branch                 @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  createdBy     TenantStaffMembership? @relation(fields: [createdByMembershipId], references: [id], onDelete: SetNull)
+  lines         InventoryCountLine[]
+  ledgerEntries InventoryLedgerEntry[]
+
+  @@index([tenantId, branchId, status], map: "ix_inventory_count_sessions__branch_status")
+  @@map("inventory_count_sessions")
+}
+
+model InventoryCountLine {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  countSessionId  String   @map("count_session_id") @db.Uuid
+  ingredientId    String   @map("ingredient_id") @db.Uuid
+  bookQtySnapshot Decimal  @map("book_qty_snapshot") @db.Decimal(19, 4)
+  countedQty      Decimal? @map("counted_qty") @db.Decimal(19, 4)
+
+  tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  countSession InventoryCountSession @relation(fields: [countSessionId], references: [id], onDelete: Cascade)
+  ingredient   InventoryIngredient   @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([countSessionId, ingredientId], map: "uq_inventory_count_lines__session_ingredient")
+  @@index([tenantId, countSessionId], map: "ix_inventory_count_lines__session")
+  @@map("inventory_count_lines")
 }

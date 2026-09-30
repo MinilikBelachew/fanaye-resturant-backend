@@ -37,6 +37,20 @@ export class AdminModifierGroupDto {
   options: AdminModifierOptionDto[];
 }
 
+export class AdminRecipeLineDto {
+  @ApiProperty()
+  ingredientId: string;
+
+  @ApiPropertyOptional()
+  ingredientName?: string;
+
+  @ApiPropertyOptional()
+  unit?: string;
+
+  @ApiProperty()
+  quantityPerServing: number;
+}
+
 export class AdminMenuItemDto {
   @ApiProperty()
   id: string;
@@ -94,6 +108,12 @@ export class AdminMenuItemDto {
 
   @ApiProperty({ type: [AdminModifierGroupDto] })
   modifierGroups: AdminModifierGroupDto[];
+
+  @ApiProperty({ type: [AdminRecipeLineDto] })
+  recipeLines: AdminRecipeLineDto[];
+
+  @ApiProperty()
+  hasRecipe: boolean;
 }
 
 export class AdminMenuItemListResponseDto {

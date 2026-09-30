@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { InventoryService } from '../inventory/inventory.service';
 import {
   CreateMenuItemDto,
   CreateModifierGroupDto,
@@ -32,6 +33,7 @@ export class MenuService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly inventory: InventoryService,
   ) {}
 
   async meta(userId: string): Promise<AdminMenuMetaResponseDto> {
@@ -247,7 +249,21 @@ export class MenuService {
         },
         include: this.itemInclude(),
       });
-      return item;
+      if (dto.recipeLines !== undefined) {
+        await this.inventory.replaceRecipeLines(
+          tx,
+          context.tenantId!,
+          item.id,
+          dto.recipeLines.map((l) => ({
+            ingredientId: l.ingredientId,
+            quantityPerServing: l.quantityPerServing,
+          })),
+        );
+      }
+      return tx.menuItem.findUniqueOrThrow({
+        where: { id: item.id },
+        include: this.itemInclude(),
+      });
     });
 
     return { data: this.toDto(created) };
@@ -337,7 +353,7 @@ export class MenuService {
               }
             : {};
 
-      return tx.menuItem.update({
+      const item = await tx.menuItem.update({
         where: { id: existing.id },
         data: {
           ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
@@ -358,6 +374,21 @@ export class MenuService {
           ...imagePatch,
           version: { increment: 1 },
         },
+        include: this.itemInclude(),
+      });
+      if (dto.recipeLines !== undefined) {
+        await this.inventory.replaceRecipeLines(
+          tx,
+          context.tenantId!,
+          item.id,
+          dto.recipeLines.map((l) => ({
+            ingredientId: l.ingredientId,
+            quantityPerServing: l.quantityPerServing,
+          })),
+        );
+      }
+      return tx.menuItem.findUniqueOrThrow({
+        where: { id: item.id },
         include: this.itemInclude(),
       });
     });
@@ -609,6 +640,10 @@ export class MenuService {
       category: true,
       station: true,
       imageFile: true,
+      recipeLines: {
+        include: { ingredient: true },
+        orderBy: { sortOrder: 'asc' as const },
+      },
       modifiers: {
         include: {
           group: {
@@ -672,7 +707,18 @@ export class MenuService {
         }>;
       };
     }>;
+    recipeLines?: Array<{
+      ingredientId: string;
+      quantityPerServing: Prisma.Decimal;
+      ingredient?: { name: string; unit: string };
+    }>;
   }): AdminMenuItemDto {
+    const recipeLines = (item.recipeLines ?? []).map((line) => ({
+      ingredientId: line.ingredientId,
+      ingredientName: line.ingredient?.name,
+      unit: line.ingredient?.unit,
+      quantityPerServing: Number(line.quantityPerServing),
+    }));
     return {
       id: item.id,
       menuId: item.menuId,
@@ -697,6 +743,8 @@ export class MenuService {
       modifierGroups: item.modifiers
         .filter((assignment) => assignment.group.status === 'ACTIVE')
         .map((assignment) => toModifierGroupDto(assignment)),
+      recipeLines,
+      hasRecipe: recipeLines.length > 0,
     };
   }
 

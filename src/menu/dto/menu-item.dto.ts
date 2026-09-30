@@ -5,6 +5,7 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsNumberString,
   IsOptional,
   IsString,
@@ -42,6 +43,18 @@ export class ModifierGroupInputDto {
   @ValidateNested({ each: true })
   @Type(() => ModifierOptionInputDto)
   options: ModifierOptionInputDto[];
+}
+
+export class RecipeLineInputDto {
+  @ApiProperty()
+  @IsUUID()
+  ingredientId: string;
+
+  @ApiProperty({ example: 0.25 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  quantityPerServing: number;
 }
 
 export class CreateMenuItemDto {
@@ -135,6 +148,13 @@ export class CreateMenuItemDto {
   @IsOptional()
   @IsUUID()
   imageFileId?: string;
+
+  @ApiPropertyOptional({ type: [RecipeLineInputDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RecipeLineInputDto)
+  recipeLines?: RecipeLineInputDto[];
 }
 
 export class UpdateMenuItemDto {
@@ -213,6 +233,13 @@ export class UpdateMenuItemDto {
   @IsOptional()
   @IsUUID()
   imageFileId?: string | null;
+
+  @ApiPropertyOptional({ type: [RecipeLineInputDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RecipeLineInputDto)
+  recipeLines?: RecipeLineInputDto[];
 }
 
 export class CreateModifierGroupDto extends ModifierGroupInputDto {}

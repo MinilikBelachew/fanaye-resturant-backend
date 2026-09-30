@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 import { ExpectedVersionDto } from './expected-version.dto';
 
 export class ReportCannotPrepareDto extends ExpectedVersionDto {
@@ -14,4 +14,12 @@ export class ReportCannotPrepareDto extends ExpectedVersionDto {
   @IsString()
   @MaxLength(240)
   reasonDetail?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Also mark the menu item sold out so waiters cannot re-order it',
+  })
+  @IsOptional()
+  @IsBoolean()
+  markSoldOut?: boolean;
 }

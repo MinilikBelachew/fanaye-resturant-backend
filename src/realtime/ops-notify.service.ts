@@ -69,6 +69,54 @@ export class OpsNotifyService {
   }
 
   /**
+   * Fan-out to every active waiter (DB inbox + staff socket).
+   * Also pings manager room once for live oversight.
+   */
+  async notifyWaiters(
+    input: Omit<OpsNotifyPayload, 'recipientMembershipId' | 'rooms'>,
+  ): Promise<void> {
+    const waiters = await this.prisma.tenantStaffMembership.findMany({
+      where: {
+        tenantId: input.tenantId,
+        status: 'ACTIVE',
+        branchAssignments: {
+          some: { branchId: input.branchId, status: 'ACTIVE' },
+        },
+        roleAssignments: {
+          some: {
+            status: 'ACTIVE',
+            revokedAt: null,
+            role: { code: 'WAITER' },
+          },
+        },
+      },
+      select: { id: true },
+      take: 80,
+    });
+
+    if (waiters.length === 0) {
+      this.broadcast({
+        ...input,
+        rooms: [managerRoom(input.branchId)],
+      });
+      return;
+    }
+
+    for (const waiter of waiters) {
+      await this.notify({
+        ...input,
+        recipientMembershipId: waiter.id,
+      });
+    }
+
+    this.broadcast({
+      ...input,
+      severity: 'INFO',
+      rooms: [managerRoom(input.branchId)],
+    });
+  }
+
+  /**
    * Fan-out to every active cashier (DB inbox + staff socket).
    * Also pings manager room once for live oversight (no duplicate cashier toast).
    */

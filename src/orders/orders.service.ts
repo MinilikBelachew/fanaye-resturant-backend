@@ -11,6 +11,7 @@ import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { InventoryService } from '../inventory/inventory.service';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
 import { managerRoom, stationRoom, branchRoom } from '../realtime/ops-rooms';
@@ -35,6 +36,7 @@ export class OrdersService {
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
     private readonly dailyClose: DailyCloseService,
+    private readonly inventory: InventoryService,
   ) {}
 
   async waiterMenu(
@@ -171,6 +173,14 @@ export class OrdersService {
         station: true,
         periods: true,
         imageFile: true,
+        overrides: {
+          where: {
+            branchId: context.branchId!,
+            OR: [{ endsAt: null }, { endsAt: { gt: new Date() } }],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
         modifiers: {
           orderBy: { sortOrder: 'asc' },
           include: {
@@ -206,47 +216,57 @@ export class OrdersService {
         name: category.name,
         sortOrder: category.sortOrder,
       })),
-      items: visible.map((item) => ({
-        id: item.id,
-        name: item.name,
-        description: item.description,
-        price: money(item.currentPrice),
-        currencyCode: item.currencyCode,
-        soldOut: item.soldOut,
-        categoryId: item.menuCategoryId,
-        categoryName: item.category?.name ?? item.station.name,
-        station: { id: item.station.id, name: item.station.name },
-        expectedPrepMinutes: item.expectedPrepMinutes,
-        imageKey: item.imageKey,
-        imageFileId: item.imageFileId,
-        imageUrl: item.imageFile?.path
-          ? item.imageFile.path.replace(/\\/g, '/')
-          : null,
-        modifierGroups: item.modifiers
-          .filter((assignment) => assignment.group.status === 'ACTIVE')
-          .map((assignment) => {
-            const min =
-              assignment.minSelectionsOverride ??
-              assignment.group.minSelections;
-            const required =
-              assignment.requiredOverride ?? assignment.group.requiredDefault;
-            return {
-              id: assignment.group.id,
-              name: assignment.group.name,
-              required,
-              minSelections: min,
-              maxSelections:
-                assignment.maxSelectionsOverride ??
-                assignment.group.maxSelections,
-              options: assignment.group.options.map((option) => ({
-                id: option.id,
-                name: option.name,
-                priceDelta: money(option.priceDelta),
-                currencyCode: option.currencyCode,
-              })),
-            };
-          }),
-      })),
+      items: visible.map((item) => {
+        const override = item.overrides[0] ?? null;
+        const remainingQty =
+          override?.state === 'LIMITED' && override.remainingQty != null
+            ? override.remainingQty
+            : null;
+        const soldOut =
+          item.soldOut || remainingQty === 0 || override?.state === 'SOLD_OUT';
+        return {
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          price: money(item.currentPrice),
+          currencyCode: item.currencyCode,
+          soldOut,
+          remainingQty,
+          categoryId: item.menuCategoryId,
+          categoryName: item.category?.name ?? item.station.name,
+          station: { id: item.station.id, name: item.station.name },
+          expectedPrepMinutes: item.expectedPrepMinutes,
+          imageKey: item.imageKey,
+          imageFileId: item.imageFileId,
+          imageUrl: item.imageFile?.path
+            ? item.imageFile.path.replace(/\\/g, '/')
+            : null,
+          modifierGroups: item.modifiers
+            .filter((assignment) => assignment.group.status === 'ACTIVE')
+            .map((assignment) => {
+              const min =
+                assignment.minSelectionsOverride ??
+                assignment.group.minSelections;
+              const required =
+                assignment.requiredOverride ?? assignment.group.requiredDefault;
+              return {
+                id: assignment.group.id,
+                name: assignment.group.name,
+                required,
+                minSelections: min,
+                maxSelections:
+                  assignment.maxSelectionsOverride ??
+                  assignment.group.maxSelections,
+                options: assignment.group.options.map((option) => ({
+                  id: option.id,
+                  name: option.name,
+                  priceDelta: money(option.priceDelta),
+                  currencyCode: option.currencyCode,
+                })),
+              };
+            }),
+        };
+      }),
     };
   }
 
@@ -314,17 +334,49 @@ export class OrdersService {
       include: {
         station: true,
         modifiers: { include: { group: { include: { options: true } } } },
+        overrides: {
+          where: {
+            branchId: context.branchId!,
+            OR: [{ endsAt: null }, { endsAt: { gt: new Date() } }],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
       },
     });
     const menuById = new Map(menuItems.map((item) => [item.id, item]));
+
+    // Aggregate requested qty per menu item for limit checks.
+    const requestedByItem = new Map<string, number>();
+    for (const line of dto.items) {
+      requestedByItem.set(
+        line.menuItemId,
+        (requestedByItem.get(line.menuItemId) ?? 0) + line.quantity,
+      );
+    }
 
     const prepared = dto.items.map((line, index) => {
       const item = menuById.get(line.menuItemId);
       if (!item || item.status !== 'ACTIVE') {
         throw itemError(index, 'MENU_ITEM_NOT_FOUND');
       }
-      if (item.soldOut) {
+      const override = item.overrides[0] ?? null;
+      const remainingQty =
+        override?.state === 'LIMITED' && override.remainingQty != null
+          ? override.remainingQty
+          : null;
+      if (
+        item.soldOut ||
+        override?.state === 'SOLD_OUT' ||
+        remainingQty === 0
+      ) {
         throw itemError(index, 'MENU_ITEM_SOLD_OUT');
+      }
+      if (
+        remainingQty != null &&
+        (requestedByItem.get(item.id) ?? 0) > remainingQty
+      ) {
+        throw itemError(index, 'MENU_ITEM_LIMIT_EXCEEDED');
       }
       if (!item.station || item.station.status !== 'ACTIVE') {
         throw itemError(index, 'MENU_ITEM_STATION_MISSING');
@@ -433,6 +485,56 @@ export class OrdersService {
         },
       });
 
+      for (const item of order.items) {
+        await this.inventory.depleteForOrderItem(
+          tx,
+          {
+            id: item.id,
+            tenantId: item.tenantId,
+            branchId: item.branchId,
+            menuItemId: item.menuItemId,
+            quantity: item.quantity,
+          },
+          context.staffMembershipId,
+        );
+      }
+
+      // Decrement LIMITED remaining qty once per menu item.
+      const soldOutByLimit: Array<{
+        menuItemId: string;
+        name: string;
+        stationId: string;
+        stationName: string;
+      }> = [];
+      for (const [menuItemId, qty] of requestedByItem) {
+        const menuItem = menuById.get(menuItemId);
+        const override = menuItem?.overrides[0];
+        if (
+          !override ||
+          override.state !== 'LIMITED' ||
+          override.remainingQty == null
+        ) {
+          continue;
+        }
+        const next = Math.max(0, override.remainingQty - qty);
+        await tx.itemAvailabilityOverride.update({
+          where: { id: override.id },
+          data: { remainingQty: next },
+        });
+        if (next === 0) {
+          await tx.menuItem.update({
+            where: { id: menuItemId },
+            data: { soldOut: true, version: { increment: 1 } },
+          });
+          soldOutByLimit.push({
+            menuItemId,
+            name: menuItem.name,
+            stationId: menuItem.station.id,
+            stationName: menuItem.station.name,
+          });
+        }
+      }
+
       const updatedSession = await tx.tableSession.update({
         where: { id: session.id },
         data: {
@@ -464,18 +566,40 @@ export class OrdersService {
         payload,
         order.id,
       );
-      return payload;
+      return { payload, soldOutByLimit };
     });
+
+    for (const row of created.soldOutByLimit) {
+      await this.opsNotify.notifyWaiters({
+        type: OpsEventType.MENU_ITEM_AVAILABILITY,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'ATTENTION',
+        title: `Sold out · ${row.name}`,
+        body: `${row.stationName}: remaining limit reached — do not order ${row.name}`,
+        relatedEntityType: 'MenuItem',
+        relatedEntityId: row.menuItemId,
+        payload: {
+          menuItemId: row.menuItemId,
+          menuItemName: row.name,
+          stationId: row.stationId,
+          stationName: row.stationName,
+          soldOut: true,
+          remainingQty: 0,
+          state: 'SOLD_OUT',
+        },
+      });
+    }
 
     // Waiter confirm already queues items — notify stations immediately
     // (sendToKitchen only handles legacy CONFIRMED items).
     const byStation = new Map<string, number>();
-    for (const item of created.items) {
+    for (const item of created.payload.items) {
       byStation.set(item.stationId, (byStation.get(item.stationId) ?? 0) + 1);
     }
 
     const sessionMeta = await this.prisma.tableSession.findUnique({
-      where: { id: created.tableSessionId },
+      where: { id: created.payload.tableSessionId },
       select: {
         table: {
           select: { displayName: true, displayNumber: true },
@@ -501,17 +625,17 @@ export class OrdersService {
           managerRoom(context.branchId!),
         ],
         relatedEntityType: 'TableSession',
-        relatedEntityId: created.tableSessionId,
+        relatedEntityId: created.payload.tableSessionId,
         payload: {
-          tableSessionId: created.tableSessionId,
+          tableSessionId: created.payload.tableSessionId,
           stationId,
-          orderId: created.orderId,
+          orderId: created.payload.orderId,
           count,
         },
       });
     }
 
-    return created;
+    return created.payload;
   }
 
   async listSessionOrders(

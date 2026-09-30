@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Request,
   UseGuards,
@@ -23,6 +24,12 @@ import { StationQueueResponseDto } from './dto/station-queue-response.dto';
 import { CreateStationDto } from './dto/create-station.dto';
 import { UpdateStationDto } from './dto/update-station.dto';
 import { StationManagementResponseDto } from './dto/station-response.dto';
+import {
+  SetStationItemLimitDto,
+  SetStationItemSoldOutDto,
+  StationMenuItemDto,
+  StationMenuResponseDto,
+} from './dto/station-menu.dto';
 
 @ApiTags('Stations')
 @ApiBearerAuth()
@@ -92,6 +99,80 @@ export class StationsController {
       String(request.user.id),
       stationId,
       state,
+    );
+  }
+
+  @Get(':stationId/menu')
+  @ApiOkResponse({ type: StationMenuResponseDto })
+  stationMenu(
+    @Request() request,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+  ): Promise<StationMenuResponseDto> {
+    return this.stationsService.listStationMenu(
+      String(request.user.id),
+      stationId,
+    );
+  }
+
+  @Post(':stationId/menu/:menuItemId/sold-out')
+  @ApiOkResponse({ type: StationMenuItemDto })
+  markSoldOut(
+    @Request() request,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+    @Param('menuItemId', ParseUUIDPipe) menuItemId: string,
+    @Body() dto: SetStationItemSoldOutDto,
+  ): Promise<StationMenuItemDto> {
+    return this.stationsService.markStationItemSoldOut(
+      String(request.user.id),
+      stationId,
+      menuItemId,
+      true,
+      dto.reason,
+    );
+  }
+
+  @Delete(':stationId/menu/:menuItemId/sold-out')
+  @ApiOkResponse({ type: StationMenuItemDto })
+  clearSoldOut(
+    @Request() request,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+    @Param('menuItemId', ParseUUIDPipe) menuItemId: string,
+  ): Promise<StationMenuItemDto> {
+    return this.stationsService.markStationItemSoldOut(
+      String(request.user.id),
+      stationId,
+      menuItemId,
+      false,
+    );
+  }
+
+  @Put(':stationId/menu/:menuItemId/limit')
+  @ApiOkResponse({ type: StationMenuItemDto })
+  setLimit(
+    @Request() request,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+    @Param('menuItemId', ParseUUIDPipe) menuItemId: string,
+    @Body() dto: SetStationItemLimitDto,
+  ): Promise<StationMenuItemDto> {
+    return this.stationsService.setStationItemLimit(
+      String(request.user.id),
+      stationId,
+      menuItemId,
+      dto,
+    );
+  }
+
+  @Delete(':stationId/menu/:menuItemId/limit')
+  @ApiOkResponse({ type: StationMenuItemDto })
+  clearLimit(
+    @Request() request,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+    @Param('menuItemId', ParseUUIDPipe) menuItemId: string,
+  ): Promise<StationMenuItemDto> {
+    return this.stationsService.clearStationItemLimit(
+      String(request.user.id),
+      stationId,
+      menuItemId,
     );
   }
 }

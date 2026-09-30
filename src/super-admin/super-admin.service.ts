@@ -13,6 +13,7 @@ import {
   CityDistributionItemDto,
   CreatePlatformStaffDto,
   CreateTenantDto,
+  DeleteTenantResponseDto,
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
@@ -215,6 +216,61 @@ export class SuperAdminService {
       data: {
         tenantId,
         branchId,
+        staffMembershipId: membershipId,
+        roleId: role.id,
+        status: 'ACTIVE',
+      },
+    });
+  }
+
+  private pickManagerMembership<
+    T extends {
+      roleAssignments?: { role?: { code: string } | null }[] | null;
+      user?: {
+        displayName?: string | null;
+        email?: string | null;
+        phone?: string | null;
+      } | null;
+      employeeDisplayName?: string | null;
+      userId?: string;
+    },
+  >(memberships: T[]): T | undefined {
+    return (
+      memberships.find((m) =>
+        m.roleAssignments?.some((r) => r.role?.code === 'MANAGER'),
+      ) ||
+      memberships.find(
+        (m) => !m.roleAssignments?.some((r) => r.role?.code === 'OWNER_ADMIN'),
+      ) ||
+      memberships.find((m) => m.user?.displayName) ||
+      memberships[0]
+    );
+  }
+
+  private async ensureOwnerRole(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    membershipId: string,
+  ): Promise<void> {
+    const role = await tx.restaurantRole.findUnique({
+      where: { code: 'OWNER_ADMIN' },
+    });
+    if (!role) return;
+
+    const existing = await tx.staffRoleAssignment.findFirst({
+      where: {
+        tenantId,
+        staffMembershipId: membershipId,
+        roleId: role.id,
+        status: 'ACTIVE',
+      },
+    });
+    if (existing) return;
+
+    await tx.staffRoleAssignment.create({
+      data: {
+        tenantId,
+        branchId: null,
         staffMembershipId: membershipId,
         roleId: role.id,
         status: 'ACTIVE',
@@ -631,7 +687,13 @@ export class SuperAdminService {
               include: { plan: true },
             },
             staffMemberships: {
-              include: { user: true },
+              include: {
+                user: true,
+                roleAssignments: {
+                  where: { status: 'ACTIVE' },
+                  include: { role: true },
+                },
+              },
             },
             diningTables: true,
             entitlements: {
@@ -661,14 +723,13 @@ export class SuperAdminService {
       const gmv = tenantGmvMap.get(t.id) || 0;
       const primaryBranch = t.branches?.[0];
       const planName = t.subscriptions?.[0]?.plan?.name || '—';
-      const managerMembership = t.staffMemberships?.find(
-        (m: any) =>
-          m.roleAssignments?.some(
-            (r: any) =>
-              r.role?.code === 'MANAGER' || r.role?.code === 'OWNER_ADMIN',
-          ) || m.user?.displayName,
+      const managerMembership = this.pickManagerMembership(
+        t.staffMemberships || [],
       );
-      const managerName = managerMembership?.user?.displayName || '—';
+      const managerName =
+        managerMembership?.employeeDisplayName ||
+        managerMembership?.user?.displayName ||
+        '—';
       const managerEmail = managerMembership?.user?.email || '';
       const managerPhone = managerMembership?.user?.phone || '';
 
@@ -700,6 +761,8 @@ export class SuperAdminService {
         phone: profile.contactPhone || managerPhone || '—',
         email: profile.contactEmail || managerEmail || '—',
         manager: managerName,
+        managerEmail: managerEmail || undefined,
+        managerPhone: managerPhone || undefined,
         hours: profile.hours || '—',
         concept: profile.concept || '—',
         branches: t.branches?.length || 0,
@@ -750,7 +813,13 @@ export class SuperAdminService {
             include: { plan: true },
           },
           staffMemberships: {
-            include: { user: true },
+            include: {
+              user: true,
+              roleAssignments: {
+                where: { status: 'ACTIVE' },
+                include: { role: true },
+              },
+            },
           },
           diningTables: true,
           entitlements: {
@@ -768,8 +837,8 @@ export class SuperAdminService {
 
       const profile = this.readProfile(dbTenant.entitlements);
       const planName = dbTenant.subscriptions[0]?.plan?.name || '—';
-      const managerMembership = dbTenant.staffMemberships.find(
-        (m) => m.user?.displayName,
+      const managerMembership = this.pickManagerMembership(
+        dbTenant.staffMemberships,
       );
       const today = new Date(new Date().setUTCHours(0, 0, 0, 0));
       const todayBills = await this.prisma.bill.findMany({
@@ -781,6 +850,8 @@ export class SuperAdminService {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '');
+      const managerEmail = managerMembership?.user?.email || '';
+      const managerPhone = managerMembership?.user?.phone || '';
       const detail: TenantDetailDto = {
         id: dbTenant.id,
         name: dbTenant.displayName || dbTenant.legalName || 'Restaurant',
@@ -790,9 +861,14 @@ export class SuperAdminService {
         city: profile.city || '—',
         area: profile.area || '—',
         address: profile.address || '—',
-        phone: profile.contactPhone || managerMembership?.user?.phone || '—',
-        email: profile.contactEmail || managerMembership?.user?.email || '—',
-        manager: managerMembership?.user?.displayName || '—',
+        phone: profile.contactPhone || managerPhone || '—',
+        email: profile.contactEmail || managerEmail || '—',
+        manager:
+          managerMembership?.employeeDisplayName ||
+          managerMembership?.user?.displayName ||
+          '—',
+        managerEmail: managerEmail || undefined,
+        managerPhone: managerPhone || undefined,
         hours: profile.hours || '—',
         concept: profile.concept || '—',
         branches: dbTenant.branches.length,
@@ -898,13 +974,22 @@ export class SuperAdminService {
         });
       }
 
-      // 4. Create Preparation Stations
-      const stationConfigs = [
+      // 4. Create Preparation Stations (only those selected in the wizard)
+      const allStationConfigs = [
         { name: 'Kitchen Station', code: 'KITCHEN', sortOrder: 0 },
         { name: 'Barista Station', code: 'BARISTA', sortOrder: 1 },
         { name: 'Cakes & Pastry', code: 'CAKES', sortOrder: 2 },
         { name: 'Soft Drinks & Bar', code: 'SOFT_DRINKS', sortOrder: 3 },
       ];
+      const selectedCodes = new Set(
+        (dto.activeStations?.length
+          ? dto.activeStations
+          : allStationConfigs.map((s) => s.code)
+        ).map((code) => code.toUpperCase()),
+      );
+      const stationConfigs = allStationConfigs.filter((st) =>
+        selectedCodes.has(st.code),
+      );
 
       for (const st of stationConfigs) {
         await tx.preparationStation.create({
@@ -946,7 +1031,63 @@ export class SuperAdminService {
         });
       }
 
-      // 6. Create Manager AppUser & Staff Membership if email or managerName is provided
+      // 6. Create Owner AppUser & Staff Membership if ownerName is provided
+      if (dto.ownerName?.trim()) {
+        const ownerEmail = dto.ownerEmail?.trim() || undefined;
+        const ownerPhone = dto.ownerPhone?.trim() || undefined;
+
+        let ownerUser =
+          (ownerEmail
+            ? await tx.appUser.findFirst({ where: { email: ownerEmail } })
+            : null) ||
+          (ownerPhone
+            ? await tx.appUser.findFirst({ where: { phone: ownerPhone } })
+            : null);
+
+        if (!ownerUser) {
+          ownerUser = await tx.appUser.create({
+            data: {
+              displayName: dto.ownerName.trim(),
+              email: ownerEmail || null,
+              phone: ownerPhone || null,
+              accountStatus: 'ACTIVE',
+              preferredBranchId: branch.id,
+            },
+          });
+        } else {
+          ownerUser = await tx.appUser.update({
+            where: { id: ownerUser.id },
+            data: {
+              displayName: dto.ownerName.trim(),
+              ...(ownerEmail ? { email: ownerEmail } : {}),
+              ...(ownerPhone ? { phone: ownerPhone } : {}),
+              preferredBranchId: ownerUser.preferredBranchId ?? branch.id,
+            },
+          });
+        }
+
+        if (dto.ownerPassword?.trim()) {
+          await this.upsertUserPassword(
+            tx,
+            ownerUser.id,
+            dto.ownerPassword.trim(),
+          );
+        }
+
+        const ownerMembership = await tx.tenantStaffMembership.create({
+          data: {
+            tenantId: tenant.id,
+            userId: ownerUser.id,
+            employeeDisplayName: dto.ownerName.trim(),
+            status: 'ACTIVE',
+            joinedAt: new Date(),
+          },
+        });
+
+        await this.ensureOwnerRole(tx, tenant.id, ownerMembership.id);
+      }
+
+      // 7. Create Manager AppUser & Staff Membership if email or managerName is provided
       if (dto.managerEmail || dto.managerName) {
         const email =
           dto.managerEmail?.trim() ||
@@ -1021,7 +1162,7 @@ export class SuperAdminService {
         contactEmail: dto.email,
       });
 
-      // 7. Log audit event
+      // 8. Log audit event
       await tx.auditEvent.create({
         data: {
           tenantId: tenant.id,
@@ -1040,6 +1181,138 @@ export class SuperAdminService {
     return this.getTenantById(userId, createdTenant.id);
   }
 
+  async deleteTenant(
+    userId: string,
+    tenantId: string,
+  ): Promise<DeleteTenantResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, displayName: true },
+    });
+    if (!tenant) {
+      throw new NotFoundException(`Tenant ${tenantId} not found`);
+    }
+
+    const tenantName = tenant.displayName;
+
+    await this.prisma.$transaction(
+      async (tx) => {
+        const memberships = await tx.tenantStaffMembership.findMany({
+          where: { tenantId },
+          select: { userId: true },
+        });
+        const staffUserIds = [...new Set(memberships.map((m) => m.userId))];
+
+        await tx.appUser.updateMany({
+          where: {
+            preferredBranch: { tenantId },
+          },
+          data: { preferredBranchId: null },
+        });
+
+        const byTenant = { tenantId };
+
+        await tx.orderItemModifier.deleteMany({ where: byTenant });
+        await tx.productionException.deleteMany({ where: byTenant });
+        await tx.orderChangeRequest.deleteMany({ where: byTenant });
+        await tx.cancellationRequest.deleteMany({ where: byTenant });
+        await tx.orderItem.deleteMany({ where: byTenant });
+        await tx.order.deleteMany({ where: byTenant });
+        await tx.billLine.deleteMany({ where: byTenant });
+        await tx.billReopenRequest.deleteMany({ where: byTenant });
+        await tx.payment.deleteMany({ where: byTenant });
+        await tx.transferReceipt.deleteMany({ where: byTenant });
+        await tx.bill.deleteMany({ where: byTenant });
+        await tx.billRequest.deleteMany({ where: byTenant });
+        await tx.cashDropDispute.deleteMany({ where: byTenant });
+        await tx.cashLedgerEntry.deleteMany({ where: byTenant });
+        await tx.cashDrop.deleteMany({ where: byTenant });
+        await tx.cashierReconciliation.deleteMany({ where: byTenant });
+        await tx.cashierFinancialSession.deleteMany({ where: byTenant });
+        await tx.tableAssignment.deleteMany({ where: byTenant });
+        await tx.tableSession.deleteMany({ where: byTenant });
+        await tx.diningTableShiftCoverage.deleteMany({ where: byTenant });
+        await tx.diningTable.deleteMany({ where: byTenant });
+        await tx.tableLocation.deleteMany({ where: byTenant });
+        await tx.notification.deleteMany({ where: byTenant });
+        await tx.auditEvent.deleteMany({ where: byTenant });
+        await tx.dailyCloseWaiterLine.deleteMany({ where: byTenant });
+        await tx.dailyCloseStationLine.deleteMany({ where: byTenant });
+        await tx.operationalDailyClose.deleteMany({ where: byTenant });
+        await tx.stationStaffAssignment.deleteMany({ where: byTenant });
+        await tx.stationFallbackConfiguration.deleteMany({ where: byTenant });
+        await tx.preparationStation.deleteMany({ where: byTenant });
+        await tx.itemAvailabilityOverride.deleteMany({ where: byTenant });
+        await tx.menuItemModifierAssignment.deleteMany({ where: byTenant });
+        await tx.menuItem.deleteMany({ where: byTenant });
+        await tx.menuCategory.deleteMany({ where: byTenant });
+        await tx.menuPeriod.deleteMany({ where: byTenant });
+        await tx.menu.deleteMany({ where: byTenant });
+        await tx.modifierOption.deleteMany({ where: byTenant });
+        await tx.modifierGroup.deleteMany({ where: byTenant });
+        await tx.shiftSession.deleteMany({ where: byTenant });
+        await tx.shiftAssignment.deleteMany({ where: byTenant });
+        await tx.shiftDefinition.deleteMany({ where: byTenant });
+        await tx.branchStaffAssignment.deleteMany({ where: byTenant });
+        await tx.staffRoleAssignment.deleteMany({ where: byTenant });
+        await tx.branchSettings.deleteMany({ where: byTenant });
+        await tx.branch.deleteMany({ where: byTenant });
+        await tx.tenantStaffMembership.deleteMany({ where: byTenant });
+        await tx.tenantSite.deleteMany({ where: byTenant });
+        await tx.tenantSettings.deleteMany({ where: byTenant });
+        await tx.tenantSubscription.deleteMany({ where: byTenant });
+        await tx.tenantEntitlement.deleteMany({ where: byTenant });
+        await tx.platformSupportSession.deleteMany({ where: byTenant });
+        await tx.idempotencyCommand.deleteMany({ where: byTenant });
+
+        if (staffUserIds.length > 0) {
+          const remaining = await tx.tenantStaffMembership.findMany({
+            where: { userId: { in: staffUserIds } },
+            select: { userId: true },
+          });
+          const stillMember = new Set(remaining.map((r) => r.userId));
+
+          const platformAdmins = await tx.platformUserRole.findMany({
+            where: {
+              userId: { in: staffUserIds },
+              status: 'ACTIVE',
+            },
+            select: { userId: true },
+          });
+          const isPlatformAdmin = new Set(platformAdmins.map((r) => r.userId));
+
+          const orphanUserIds = staffUserIds.filter(
+            (id) => !stillMember.has(id) && !isPlatformAdmin.has(id),
+          );
+
+          if (orphanUserIds.length > 0) {
+            await tx.appUser.deleteMany({
+              where: { id: { in: orphanUserIds } },
+            });
+          }
+        }
+
+        await tx.tenant.delete({ where: { id: tenantId } });
+
+        await tx.auditEvent.create({
+          data: {
+            tenantId: null,
+            actorUserId: userId,
+            action: 'TENANT_DELETED',
+            entityType: 'TENANT',
+            entityId: tenantId,
+            reason: `Deleted tenant ${tenantName}`,
+          },
+        });
+      },
+      { timeout: 120_000, maxWait: 15_000 },
+    );
+
+    return { ok: true, deletedTenantId: tenantId };
+  }
+
   async updateTenant(
     userId: string,
     tenantId: string,
@@ -1056,7 +1329,13 @@ export class SuperAdminService {
           include: { plan: true },
         },
         staffMemberships: {
-          include: { user: true },
+          include: {
+            user: true,
+            roleAssignments: {
+              where: { status: 'ACTIVE' },
+              include: { role: true },
+            },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -1071,48 +1350,61 @@ export class SuperAdminService {
       throw new BadRequestException('Restaurant brand name is required.');
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      if (displayName || dto.legalName !== undefined) {
-        await tx.tenant.update({
-          where: { id: tenantId },
-          data: {
-            ...(displayName ? { displayName } : {}),
-            ...(dto.legalName !== undefined
-              ? { legalName: dto.legalName?.trim() || null }
-              : {}),
-          },
-        });
-      }
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        if (displayName || dto.legalName !== undefined) {
+          await tx.tenant.update({
+            where: { id: tenantId },
+            data: {
+              ...(displayName ? { displayName } : {}),
+              ...(dto.legalName !== undefined
+                ? { legalName: dto.legalName?.trim() || null }
+                : {}),
+            },
+          });
+        }
 
-      const primaryBranch = existing.branches[0];
-      if (primaryBranch && (dto.branchName || dto.branchCode !== undefined)) {
-        await tx.branch.update({
-          where: { id: primaryBranch.id },
-          data: {
-            ...(dto.branchName?.trim() ? { name: dto.branchName.trim() } : {}),
-            ...(dto.branchCode !== undefined
-              ? { displayCode: dto.branchCode?.trim() || null }
-              : {}),
-          },
-        });
-      }
+        const primaryBranch = existing.branches[0];
+        if (primaryBranch && (dto.branchName || dto.branchCode !== undefined)) {
+          await tx.branch.update({
+            where: { id: primaryBranch.id },
+            data: {
+              ...(dto.branchName?.trim()
+                ? { name: dto.branchName.trim() }
+                : {}),
+              ...(dto.branchCode !== undefined
+                ? { displayCode: dto.branchCode?.trim() || null }
+                : {}),
+            },
+          });
+        }
 
-      if (dto.planCode?.trim()) {
-        const planCode = dto.planCode.trim().toUpperCase();
-        const plan = await tx.subscriptionPlan.findFirst({
-          where: { code: planCode },
-        });
-        if (plan) {
-          const activeSub = existing.subscriptions[0];
-          if (activeSub) {
-            if (activeSub.planId !== plan.id) {
-              await tx.tenantSubscription.update({
-                where: { id: activeSub.id },
-                data: {
-                  subscriptionStatus: 'ENDED',
-                  effectiveTo: new Date(),
-                },
-              });
+        if (dto.planCode?.trim()) {
+          const planCode = dto.planCode.trim().toUpperCase();
+          const plan = await tx.subscriptionPlan.findFirst({
+            where: { code: planCode },
+          });
+          if (plan) {
+            const activeSub = existing.subscriptions[0];
+            if (activeSub) {
+              if (activeSub.planId !== plan.id) {
+                await tx.tenantSubscription.update({
+                  where: { id: activeSub.id },
+                  data: {
+                    subscriptionStatus: 'ENDED',
+                    effectiveTo: new Date(),
+                  },
+                });
+                await tx.tenantSubscription.create({
+                  data: {
+                    tenantId,
+                    planId: plan.id,
+                    subscriptionStatus: 'ACTIVE',
+                    effectiveFrom: new Date(),
+                  },
+                });
+              }
+            } else {
               await tx.tenantSubscription.create({
                 data: {
                   tenantId,
@@ -1122,160 +1414,193 @@ export class SuperAdminService {
                 },
               });
             }
-          } else {
-            await tx.tenantSubscription.create({
-              data: {
-                tenantId,
-                planId: plan.id,
-                subscriptionStatus: 'ACTIVE',
-                effectiveFrom: new Date(),
-              },
-            });
           }
         }
-      }
 
-      await this.upsertTenantProfile(tx, tenantId, userId, {
-        city: dto.city,
-        area: dto.area,
-        address: dto.address,
-        hours: dto.hours,
-        concept: dto.concept,
-        contactPhone: dto.phone,
-        contactEmail: dto.email,
-      });
+        await this.upsertTenantProfile(tx, tenantId, userId, {
+          city: dto.city,
+          area: dto.area,
+          address: dto.address,
+          hours: dto.hours,
+          concept: dto.concept,
+          contactPhone: dto.phone,
+          contactEmail: dto.email,
+        });
 
-      const wantsManagerUpdate =
-        dto.managerName ||
-        dto.managerEmail ||
-        dto.managerPhone ||
-        dto.managerPassword ||
-        dto.phone ||
-        dto.email;
+        const wantsManagerUpdate =
+          dto.managerName ||
+          dto.managerEmail ||
+          dto.managerPhone ||
+          dto.managerPassword;
 
-      if (wantsManagerUpdate) {
-        const membership = existing.staffMemberships[0];
-        const managerName =
-          dto.managerName?.trim() ||
-          membership?.employeeDisplayName ||
-          membership?.user?.displayName ||
-          'Restaurant Manager';
-        const managerEmail =
-          dto.managerEmail?.trim() ||
-          membership?.user?.email ||
-          dto.email?.trim() ||
-          `manager.${tenantId.slice(0, 6)}@restaurant.et`;
-        const managerPhone =
-          dto.managerPhone?.trim() ||
-          dto.phone?.trim() ||
-          membership?.user?.phone ||
-          undefined;
+        if (wantsManagerUpdate) {
+          const membership = this.pickManagerMembership(
+            existing.staffMemberships,
+          );
+          const managerName =
+            dto.managerName?.trim() ||
+            membership?.employeeDisplayName ||
+            membership?.user?.displayName ||
+            'Restaurant Manager';
+          const managerEmail =
+            dto.managerEmail?.trim() ||
+            membership?.user?.email ||
+            `manager.${tenantId.slice(0, 6)}@restaurant.et`;
+          const managerPhone =
+            dto.managerPhone?.trim() || membership?.user?.phone || undefined;
 
-        if (!membership) {
-          let managerUser = await tx.appUser.findFirst({
-            where: { email: managerEmail },
-          });
-          if (!managerUser) {
-            managerUser = await tx.appUser.create({
-              data: {
-                displayName: managerName,
-                email: managerEmail,
+          if (dto.managerEmail?.trim()) {
+            const emailTaken = await tx.appUser.findFirst({
+              where: {
+                email: dto.managerEmail.trim(),
+                NOT: membership?.userId ? { id: membership.userId } : undefined,
+              },
+            });
+            if (emailTaken) {
+              throw new ConflictException({
+                message:
+                  'That manager email is already used by another account.',
+                field: 'managerEmail',
+              });
+            }
+          }
+
+          if (managerPhone) {
+            const phoneTaken = await tx.appUser.findFirst({
+              where: {
                 phone: managerPhone,
-                accountStatus: 'ACTIVE',
+                NOT: membership?.userId ? { id: membership.userId } : undefined,
               },
             });
-          } else {
-            managerUser = await tx.appUser.update({
-              where: { id: managerUser.id },
-              data: {
-                displayName: managerName,
-                phone: managerPhone || managerUser.phone,
-              },
-            });
+            if (phoneTaken) {
+              throw new ConflictException({
+                message:
+                  'That manager phone is already used by another account.',
+                field: 'managerPhone',
+              });
+            }
           }
 
-          const createdMembership = await tx.tenantStaffMembership.create({
-            data: {
-              tenantId,
-              userId: managerUser.id,
-              employeeDisplayName: managerName,
-              status: 'ACTIVE',
-              joinedAt: new Date(),
-            },
-          });
+          if (!membership) {
+            let managerUser = await tx.appUser.findFirst({
+              where: { email: managerEmail },
+            });
+            if (!managerUser) {
+              managerUser = await tx.appUser.create({
+                data: {
+                  displayName: managerName,
+                  email: managerEmail,
+                  phone: managerPhone,
+                  accountStatus: 'ACTIVE',
+                },
+              });
+            } else {
+              managerUser = await tx.appUser.update({
+                where: { id: managerUser.id },
+                data: {
+                  displayName: managerName,
+                  phone: managerPhone || managerUser.phone,
+                },
+              });
+            }
 
-          if (primaryBranch) {
-            await tx.branchStaffAssignment.create({
+            const createdMembership = await tx.tenantStaffMembership.create({
               data: {
                 tenantId,
-                branchId: primaryBranch.id,
-                staffMembershipId: createdMembership.id,
+                userId: managerUser.id,
+                employeeDisplayName: managerName,
                 status: 'ACTIVE',
+                joinedAt: new Date(),
               },
             });
-            await this.ensureManagerRole(
-              tx,
-              tenantId,
-              primaryBranch.id,
-              createdMembership.id,
-            );
-          }
 
-          if (dto.managerPassword?.trim()) {
-            await this.upsertUserPassword(
-              tx,
-              managerUser.id,
-              dto.managerPassword.trim(),
-            );
-          }
-        } else {
-          await tx.appUser.update({
-            where: { id: membership.userId },
-            data: {
-              displayName: managerName,
-              ...(dto.managerEmail?.trim()
-                ? { email: dto.managerEmail.trim() }
-                : {}),
-              ...(managerPhone ? { phone: managerPhone } : {}),
-            },
-          });
+            if (primaryBranch) {
+              await tx.branchStaffAssignment.create({
+                data: {
+                  tenantId,
+                  branchId: primaryBranch.id,
+                  staffMembershipId: createdMembership.id,
+                  status: 'ACTIVE',
+                },
+              });
+              await this.ensureManagerRole(
+                tx,
+                tenantId,
+                primaryBranch.id,
+                createdMembership.id,
+              );
+            }
 
-          await tx.tenantStaffMembership.update({
-            where: { id: membership.id },
-            data: { employeeDisplayName: managerName },
-          });
+            if (dto.managerPassword?.trim()) {
+              await this.upsertUserPassword(
+                tx,
+                managerUser.id,
+                dto.managerPassword.trim(),
+              );
+            }
+          } else {
+            await tx.appUser.update({
+              where: { id: membership.userId },
+              data: {
+                displayName: managerName,
+                ...(dto.managerEmail?.trim()
+                  ? { email: dto.managerEmail.trim() }
+                  : {}),
+                ...(managerPhone ? { phone: managerPhone } : {}),
+              },
+            });
 
-          if (dto.managerPassword?.trim()) {
-            await this.upsertUserPassword(
-              tx,
-              membership.userId,
-              dto.managerPassword.trim(),
-            );
-          }
+            await tx.tenantStaffMembership.update({
+              where: { id: membership.id },
+              data: { employeeDisplayName: managerName },
+            });
 
-          if (primaryBranch) {
-            await this.ensureManagerRole(
-              tx,
-              tenantId,
-              primaryBranch.id,
-              membership.id,
-            );
+            if (dto.managerPassword?.trim()) {
+              await this.upsertUserPassword(
+                tx,
+                membership.userId,
+                dto.managerPassword.trim(),
+              );
+            }
+
+            if (primaryBranch) {
+              await this.ensureManagerRole(
+                tx,
+                tenantId,
+                primaryBranch.id,
+                membership.id,
+              );
+            }
           }
         }
-      }
 
-      await tx.auditEvent.create({
-        data: {
-          tenantId,
-          branchId: existing.branches[0]?.id,
-          actorUserId: userId,
-          action: 'TENANT_UPDATED',
-          entityType: 'TENANT',
-          entityId: tenantId,
-          reason: `Updated tenant ${displayName || existing.displayName}`,
-        },
+        await tx.auditEvent.create({
+          data: {
+            tenantId,
+            branchId: existing.branches[0]?.id,
+            actorUserId: userId,
+            action: 'TENANT_UPDATED',
+            entityType: 'TENANT',
+            entityId: tenantId,
+            reason: `Updated tenant ${displayName || existing.displayName}`,
+          },
+        });
       });
-    });
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const target = Array.isArray(error.meta?.target)
+          ? (error.meta?.target as string[]).join(', ')
+          : String(error.meta?.target || 'field');
+        throw new ConflictException(
+          `Could not update tenant: ${target} is already in use.`,
+        );
+      }
+      throw error;
+    }
 
     return this.getTenantById(userId, tenantId);
   }

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   Param,
@@ -20,6 +21,7 @@ import { SuperAdminService } from './super-admin.service';
 import {
   CreatePlatformStaffDto,
   CreateTenantDto,
+  DeleteTenantResponseDto,
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
@@ -123,6 +125,16 @@ export class SuperAdminController {
   ): Promise<TenantDetailResponseDto> {
     const userId = this.extractUserId(request);
     return this.superAdminService.updateTenant(userId, id, dto);
+  }
+
+  @Delete('tenants/:id')
+  @ApiOkResponse({ type: DeleteTenantResponseDto })
+  deleteTenant(
+    @Request() request,
+    @Param('id') id: string,
+  ): Promise<DeleteTenantResponseDto> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.deleteTenant(userId, id);
   }
 
   @Get('audit/export')

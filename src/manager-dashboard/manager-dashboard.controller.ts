@@ -26,15 +26,27 @@ export class ManagerDashboardController {
 
   @Get()
   @ApiQuery({ name: 'businessDate', required: false })
+  @ApiQuery({
+    name: 'period',
+    required: false,
+    enum: ['today', 'week', 'month', 'quarter', 'year', 'custom'],
+  })
+  @ApiQuery({ name: 'fromDate', required: false })
+  @ApiQuery({ name: 'toDate', required: false })
   @ApiOkResponse({ type: ManagerDashboardResponseDto })
   getDashboard(
     @Request() request,
     @Query('businessDate') businessDate?: string,
+    @Query('period') period?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
   ): Promise<ManagerDashboardResponseDto> {
-    return this.managerDashboardService.getDashboard(
-      String(request.user.id),
+    return this.managerDashboardService.getDashboard(String(request.user.id), {
       businessDate,
-    );
+      period,
+      fromDate,
+      toDate,
+    });
   }
 
   @Get('branch-revenue')

@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { InventoryService } from '../inventory/inventory.service';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
 import { managerRoom } from '../realtime/ops-rooms';
@@ -37,6 +38,7 @@ export class OrderItemMutationsService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
+    private readonly inventory: InventoryService,
   ) {}
 
   async directCancel(
@@ -59,15 +61,27 @@ export class OrderItemMutationsService {
       });
     }
 
-    const updated = await this.prisma.orderItem.update({
-      where: { id: item.id },
-      data: {
-        state: 'CANCELLED',
-        cancelledAt: new Date(),
-        cancelledByMembershipId: context.staffMembershipId!,
-        cancellationReason: dto.reason.trim(),
-        version: { increment: 1 },
-      },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const cancelled = await tx.orderItem.update({
+        where: { id: item.id },
+        data: {
+          state: 'CANCELLED',
+          cancelledAt: new Date(),
+          cancelledByMembershipId: context.staffMembershipId!,
+          cancellationReason: dto.reason.trim(),
+          version: { increment: 1 },
+        },
+      });
+      await this.inventory.reverseForOrderItem(
+        tx,
+        {
+          id: cancelled.id,
+          tenantId: cancelled.tenantId,
+          branchId: cancelled.branchId,
+        },
+        context.staffMembershipId,
+      );
+      return cancelled;
     });
 
     return {
@@ -414,6 +428,15 @@ export class OrderItemMutationsService {
             version: { increment: 1 },
           },
         });
+        await this.inventory.reverseForOrderItem(
+          tx,
+          {
+            id: updated.id,
+            tenantId: updated.tenantId,
+            branchId: updated.branchId,
+          },
+          context.staffMembershipId,
+        );
         return updated;
       }
 
