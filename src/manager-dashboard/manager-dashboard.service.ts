@@ -90,6 +90,158 @@ function avgMinutes(seconds: number[]): number {
   );
 }
 
+const SETTLED_STATUSES = new Set(['SETTLED', 'VERIFIED']);
+const VOID_STATUSES = new Set(['CANCELLED', 'FAILED', 'VOID']);
+
+/** Cash: any non-void recorded payment. Digital: SETTLED/VERIFIED only. */
+function countsAsCollection(p: { method: string; status: string }): boolean {
+  if (VOID_STATUSES.has(p.status)) return false;
+  if (p.method === 'CASH') return true;
+  return SETTLED_STATUSES.has(p.status);
+}
+
+function hourInTimezone(date: Date, timeZone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: 'numeric',
+      hour12: false,
+    }).formatToParts(date);
+    const raw = parts.find((part) => part.type === 'hour')?.value ?? '0';
+    const n = Number(raw);
+    return Number.isFinite(n) ? (n === 24 ? 0 : n) : date.getHours();
+  } catch {
+    return date.getHours();
+  }
+}
+
+export type DashboardPeriod =
+  | 'today'
+  | 'week'
+  | 'month'
+  | 'quarter'
+  | 'year'
+  | 'custom';
+
+function addLocalDays(date: Date, days: number): Date {
+  const d = startOfLocalDay(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function resolveDashboardRange(
+  periodRaw?: string,
+  fromRaw?: string,
+  toRaw?: string,
+  businessDateRaw?: string,
+): {
+  period: DashboardPeriod;
+  rangeStart: Date;
+  rangeEnd: Date;
+  periodLabel: string;
+  isSingleDay: boolean;
+} {
+  const today = startOfLocalDay();
+  const anchor = businessDateRaw ? parseBusinessDate(businessDateRaw) : today;
+  const period = (periodRaw || 'today').toLowerCase() as DashboardPeriod;
+
+  if (period === 'custom' && fromRaw && toRaw) {
+    const from = parseBusinessDate(fromRaw);
+    const to = parseBusinessDate(toRaw);
+    const rangeStart = from <= to ? from : to;
+    const rangeEnd = from <= to ? to : from;
+    return {
+      period: 'custom',
+      rangeStart,
+      rangeEnd,
+      periodLabel: `${localYmd(rangeStart)} → ${localYmd(rangeEnd)}`,
+      isSingleDay: localYmd(rangeStart) === localYmd(rangeEnd),
+    };
+  }
+
+  if (period === 'week') {
+    const rangeEnd = anchor;
+    const rangeStart = addLocalDays(rangeEnd, -6);
+    return {
+      period: 'week',
+      rangeStart,
+      rangeEnd,
+      periodLabel: 'Last 7 days',
+      isSingleDay: false,
+    };
+  }
+
+  if (period === 'month') {
+    // Previous calendar month
+    const firstThisMonth = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const rangeEnd = addLocalDays(firstThisMonth, -1);
+    const rangeStart = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
+    rangeStart.setHours(0, 0, 0, 0);
+    return {
+      period: 'month',
+      rangeStart,
+      rangeEnd,
+      periodLabel: rangeEnd.toLocaleString('en', {
+        month: 'long',
+        year: 'numeric',
+      }),
+      isSingleDay: false,
+    };
+  }
+
+  if (period === 'quarter') {
+    const q = Math.floor(anchor.getMonth() / 3); // 0-3 current
+    const prevQ = q === 0 ? 3 : q - 1;
+    const year = q === 0 ? anchor.getFullYear() - 1 : anchor.getFullYear();
+    const rangeStart = new Date(year, prevQ * 3, 1);
+    rangeStart.setHours(0, 0, 0, 0);
+    const rangeEnd = new Date(year, prevQ * 3 + 3, 0);
+    rangeEnd.setHours(0, 0, 0, 0);
+    return {
+      period: 'quarter',
+      rangeStart,
+      rangeEnd,
+      periodLabel: `Q${prevQ + 1} ${year}`,
+      isSingleDay: false,
+    };
+  }
+
+  if (period === 'year') {
+    const year = anchor.getFullYear() - 1;
+    const rangeStart = new Date(year, 0, 1);
+    rangeStart.setHours(0, 0, 0, 0);
+    const rangeEnd = new Date(year, 11, 31);
+    rangeEnd.setHours(0, 0, 0, 0);
+    return {
+      period: 'year',
+      rangeStart,
+      rangeEnd,
+      periodLabel: String(year),
+      isSingleDay: false,
+    };
+  }
+
+  return {
+    period: 'today',
+    rangeStart: anchor,
+    rangeEnd: anchor,
+    periodLabel: localYmd(anchor),
+    isSingleDay: true,
+  };
+}
+
+function eachLocalDay(from: Date, to: Date): Date[] {
+  const days: Date[] = [];
+  let cursor = startOfLocalDay(from);
+  const end = startOfLocalDay(to);
+  while (cursor <= end) {
+    days.push(new Date(cursor));
+    cursor = addLocalDays(cursor, 1);
+    if (days.length > 400) break;
+  }
+  return days;
+}
+
 @Injectable()
 export class ManagerDashboardService {
   constructor(
@@ -99,8 +251,14 @@ export class ManagerDashboardService {
 
   async getDashboard(
     userId: string,
-    businessDateRaw?: string,
+    opts?: {
+      businessDate?: string;
+      period?: string;
+      fromDate?: string;
+      toDate?: string;
+    },
   ): Promise<ManagerDashboardResponseDto> {
+    const businessDateRaw = opts?.businessDate;
     const context = await this.identity.getByUserId(userId);
     const role = context.roleCode ?? '';
     const allowed = new Set([
@@ -123,6 +281,7 @@ export class ManagerDashboardService {
 
     let branchId = context.branchId;
     let branchName = context.branchName ?? 'Main Branch';
+    let branchTimezone = 'Africa/Addis_Ababa';
 
     if (!branchId) {
       const branch = await this.prisma.branch.findFirst({
@@ -131,6 +290,16 @@ export class ManagerDashboardService {
       if (branch) {
         branchId = branch.id;
         branchName = branch.name;
+        branchTimezone = branch.timezone || branchTimezone;
+      }
+    } else {
+      const branch = await this.prisma.branch.findUnique({
+        where: { id: branchId },
+        select: { name: true, timezone: true },
+      });
+      if (branch) {
+        branchName = branch.name;
+        branchTimezone = branch.timezone || branchTimezone;
       }
     }
 
@@ -140,27 +309,33 @@ export class ManagerDashboardService {
       );
     }
 
-    const businessDate = parseBusinessDate(businessDateRaw);
-    const yesterdayDate = startOfLocalDay(businessDate);
-    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const { period, rangeStart, rangeEnd, periodLabel, isSingleDay } =
+      resolveDashboardRange(
+        opts?.period,
+        opts?.fromDate,
+        opts?.toDate,
+        businessDateRaw,
+      );
 
-    const sevenDaysAgo = startOfLocalDay(businessDate);
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    // Live floor / attention always uses today (open sessions / pending work).
+    const liveDate = startOfLocalDay();
+    const periodDays = eachLocalDay(rangeStart, rangeEnd);
+    const priorStart = addLocalDays(rangeStart, -(periodDays.length || 1));
+    const priorEnd = addLocalDays(rangeStart, -1);
 
     const [
       tables,
       activeSessions,
-      todaySessions,
-      todayBills,
-      todayPayments,
-      yesterdayClose,
-      todayOrderItems,
-      yesterdayOrderItems,
-      past7Payments,
-      past7CashDrops,
-      past7Bills,
-      past7Orders,
-      past7Sessions,
+      periodSessions,
+      periodBills,
+      periodPayments,
+      priorPayments,
+      priorBills,
+      liveOrderItems,
+      periodOrderItems,
+      priorOrderItems,
+      periodCashDrops,
+      periodOrders,
       pendingBillRequests,
       pendingCashDrops,
     ] = await Promise.all([
@@ -171,27 +346,43 @@ export class ManagerDashboardService {
       this.prisma.tableSession.findMany({
         where: {
           branchId,
-          businessDate,
+          businessDate: liveDate,
           status: { not: 'CLOSED' },
         },
         select: { id: true, tableId: true },
       }),
       this.prisma.tableSession.findMany({
-        where: { branchId, businessDate },
-        select: { id: true, guestCount: true, status: true },
+        where: {
+          branchId,
+          businessDate: { gte: rangeStart, lte: rangeEnd },
+        },
+        select: {
+          id: true,
+          guestCount: true,
+          status: true,
+          businessDate: true,
+        },
       }),
       this.prisma.bill.findMany({
-        where: { branchId, businessDate },
+        where: {
+          branchId,
+          businessDate: { gte: rangeStart, lte: rangeEnd },
+        },
         select: {
           totalAmount: true,
           subtotalAmount: true,
           cancelledAmount: true,
           amountPaid: true,
           generatedAt: true,
+          businessDate: true,
         },
       }),
       this.prisma.payment.findMany({
-        where: { branchId, businessDate },
+        where: {
+          branchId,
+          businessDate: { gte: rangeStart, lte: rangeEnd },
+          status: { notIn: ['CANCELLED', 'FAILED', 'VOID'] },
+        },
         select: {
           amount: true,
           method: true,
@@ -201,72 +392,68 @@ export class ManagerDashboardService {
           collectedAt: true,
           settledAt: true,
           verifiedAt: true,
+          businessDate: true,
         },
       }),
-      this.prisma.operationalDailyClose.findUnique({
+      this.prisma.payment.findMany({
         where: {
-          branchId_businessDate: {
-            branchId,
-            businessDate: yesterdayDate,
-          },
+          branchId,
+          businessDate: { gte: priorStart, lte: priorEnd },
+          status: { notIn: ['CANCELLED', 'FAILED', 'VOID'] },
         },
+        select: {
+          amount: true,
+          method: true,
+          status: true,
+        },
+      }),
+      this.prisma.bill.findMany({
+        where: {
+          branchId,
+          businessDate: { gte: priorStart, lte: priorEnd },
+        },
+        select: { totalAmount: true, amountPaid: true },
       }),
       this.prisma.orderItem.findMany({
-        where: { branchId, businessDate },
+        where: { branchId, businessDate: liveDate },
         include: { currentStation: true },
       }),
       this.prisma.orderItem.findMany({
-        where: { branchId, businessDate: yesterdayDate },
+        where: {
+          branchId,
+          businessDate: { gte: rangeStart, lte: rangeEnd },
+        },
+        include: { currentStation: true },
+      }),
+      this.prisma.orderItem.findMany({
+        where: {
+          branchId,
+          businessDate: { gte: priorStart, lte: priorEnd },
+        },
         select: {
           readyAt: true,
           preparationStartedAt: true,
           queuedAt: true,
         },
       }),
-      this.prisma.payment.findMany({
-        where: {
-          branchId,
-          businessDate: { gte: sevenDaysAgo, lte: businessDate },
-          status: { in: ['SETTLED', 'VERIFIED'] },
-        },
-        select: { amount: true, method: true, businessDate: true },
-      }),
       this.prisma.cashDrop.findMany({
         where: {
           branchId,
-          businessDate: { gte: sevenDaysAgo, lte: businessDate },
+          businessDate: { gte: rangeStart, lte: rangeEnd },
           status: { in: ['CONFIRMED', 'COLLECTED', 'RECEIVED'] },
         },
         select: {
-          declaredAmount: true,
           countedAmount: true,
-          businessDate: true,
-        },
-      }),
-      this.prisma.bill.findMany({
-        where: {
-          branchId,
-          businessDate: { gte: sevenDaysAgo, lte: businessDate },
-        },
-        select: {
-          totalAmount: true,
-          subtotalAmount: true,
+          declaredAmount: true,
           businessDate: true,
         },
       }),
       this.prisma.order.findMany({
         where: {
           branchId,
-          businessDate: { gte: sevenDaysAgo, lte: businessDate },
+          businessDate: { gte: rangeStart, lte: rangeEnd },
         },
-        select: { businessDate: true },
-      }),
-      this.prisma.tableSession.findMany({
-        where: {
-          branchId,
-          businessDate: { gte: sevenDaysAgo, lte: businessDate },
-        },
-        select: { businessDate: true, guestCount: true },
+        select: { id: true, businessDate: true },
       }),
       this.prisma.billRequest.count({
         where: { branchId, status: 'PENDING' },
@@ -279,17 +466,17 @@ export class ManagerDashboardService {
       }),
     ]);
 
-    let todayGross = 0;
-    let todayNetRevenue = 0;
-    let todayPaidOnBills = 0;
-    for (const b of todayBills) {
-      todayGross += Number(b.subtotalAmount);
-      todayNetRevenue += Number(b.totalAmount);
-      todayPaidOnBills += Number(b.amountPaid);
+    let periodGross = 0;
+    let periodNetRevenue = 0;
+    let periodPaidOnBills = 0;
+    for (const b of periodBills) {
+      periodGross += Number(b.subtotalAmount);
+      periodNetRevenue += Number(b.totalAmount);
+      periodPaidOnBills += Number(b.amountPaid);
     }
 
-    let todayCashSales = 0;
-    let todayVerifiedTransferSales = 0;
+    let cashSales = 0;
+    let verifiedTransferSales = 0;
     const channelTotals: Record<string, number> = {
       telebirr: 0,
       cbe: 0,
@@ -298,84 +485,106 @@ export class ManagerDashboardService {
       other: 0,
     };
 
-    const settledStatuses = new Set(['SETTLED', 'VERIFIED']);
-    const cashStatuses = new Set([
-      'COLLECTED',
-      'SETTLED',
-      'VERIFIED',
-      'RECORDED',
-      'CAPTURED',
-    ]);
-
-    for (const p of todayPayments) {
+    for (const p of periodPayments) {
+      if (!countsAsCollection(p)) continue;
       const amt = Number(p.amount);
 
       if (p.method === 'CASH') {
-        if (!cashStatuses.has(p.status) && !settledStatuses.has(p.status)) {
-          // Include cash unless explicitly cancelled/failed
-          if (['CANCELLED', 'FAILED', 'VOID'].includes(p.status)) continue;
-        }
-        todayCashSales += amt;
+        cashSales += amt;
         channelTotals.cash += amt;
         continue;
       }
 
-      if (p.method === 'TRANSFER' && settledStatuses.has(p.status)) {
-        todayVerifiedTransferSales += amt;
-        const ch = (p.transferChannel ?? '').toUpperCase();
-        if (ch.includes('TELEBIRR')) {
-          channelTotals.telebirr += amt;
-        } else if (ch.includes('CBE')) {
-          channelTotals.cbe += amt;
-        } else if (
-          ch.includes('AWASH') ||
-          ch.includes('DASHEN') ||
-          ch.includes('BANK')
-        ) {
-          channelTotals.transfer += amt;
-        } else {
-          channelTotals.other += amt;
-        }
+      verifiedTransferSales += amt;
+      const ch = (p.transferChannel ?? '').toUpperCase();
+      if (ch.includes('TELEBIRR')) {
+        channelTotals.telebirr += amt;
+      } else if (ch.includes('CBE')) {
+        channelTotals.cbe += amt;
+      } else if (
+        ch.includes('AWASH') ||
+        ch.includes('DASHEN') ||
+        ch.includes('BANK')
+      ) {
+        channelTotals.transfer += amt;
+      } else {
+        channelTotals.other += amt;
       }
     }
 
-    const totalCollections = todayCashSales + todayVerifiedTransferSales;
-    const billedToday =
-      todayNetRevenue > 0 ? todayNetRevenue : todayPaidOnBills;
-    const finalRevenue = billedToday > 0 ? billedToday : totalCollections;
-    const collectionGap = Math.max(0, billedToday - totalCollections);
+    const totalCollections = cashSales + verifiedTransferSales;
+    const billedTotal =
+      periodNetRevenue > 0 ? periodNetRevenue : periodPaidOnBills;
+    const finalRevenue = billedTotal > 0 ? billedTotal : totalCollections;
+    const collectionGap = Math.max(0, billedTotal - totalCollections);
+
+    const priorCollections = priorPayments
+      .filter((p) => countsAsCollection(p))
+      .reduce((acc, p) => acc + Number(p.amount), 0);
+
+    let priorBilled = 0;
+    for (const b of priorBills) {
+      priorBilled += Number(b.totalAmount);
+    }
+    if (priorBilled <= 0) {
+      priorBilled = priorBills.reduce(
+        (acc, b) => acc + Number(b.amountPaid),
+        0,
+      );
+    }
+
+    let collectionsTrend = '0%';
+    let collectionsTrendLabel =
+      period === 'today' ? 'vs collected yesterday' : 'vs prior period';
+    if (priorCollections > 0) {
+      collectionsTrend = pctDelta(totalCollections, priorCollections);
+    } else if (totalCollections > 0) {
+      collectionsTrend = '+100%';
+      collectionsTrendLabel =
+        period === 'today' ? 'first collections of day' : 'first collections';
+    }
 
     let revTrend = '0%';
-    let revTrendLabel = 'vs yesterday';
-    if (yesterdayClose && Number(yesterdayClose.netBilledSales) > 0) {
-      revTrend = pctDelta(finalRevenue, Number(yesterdayClose.netBilledSales));
-    } else if (finalRevenue > 0) {
+    let revTrendLabel =
+      period === 'today' ? 'vs billed yesterday' : 'vs prior period billed';
+    if (priorBilled > 0) {
+      revTrend = pctDelta(billedTotal, priorBilled);
+    } else if (billedTotal > 0) {
       revTrend = '+100%';
-      revTrendLabel = 'first sales of day';
+      revTrendLabel =
+        period === 'today' ? 'first sales of day' : 'first sales in period';
     }
 
     const prepDurationsSec: number[] = [];
-    for (const item of todayOrderItems) {
+    for (const item of periodOrderItems) {
       const sec = prepSeconds(item);
       if (sec != null) prepDurationsSec.push(sec);
     }
     const avgPrepMinutes = avgMinutes(prepDurationsSec);
 
-    const yesterdayPrepSec: number[] = [];
-    for (const item of yesterdayOrderItems) {
+    const priorPrepSec: number[] = [];
+    for (const item of priorOrderItems) {
       const sec = prepSeconds(item);
-      if (sec != null) yesterdayPrepSec.push(sec);
+      if (sec != null) priorPrepSec.push(sec);
     }
-    const yesterdayAvgPrep = avgMinutes(yesterdayPrepSec);
+    const priorAvgPrep = avgMinutes(priorPrepSec);
 
     let prepTrend = '0%';
-    let prepTrendLabel = 'no tickets completed today';
-    if (prepDurationsSec.length > 0 && yesterdayAvgPrep > 0) {
-      // Lower prep time is better — invert sign for "faster"
-      const raw =
-        ((avgPrepMinutes - yesterdayAvgPrep) / yesterdayAvgPrep) * 100;
+    let prepTrendLabel =
+      period === 'today'
+        ? 'no tickets completed today'
+        : 'no tickets completed in period';
+    if (prepDurationsSec.length > 0 && priorAvgPrep > 0) {
+      const raw = ((avgPrepMinutes - priorAvgPrep) / priorAvgPrep) * 100;
       prepTrend = `${-raw >= 0 ? '+' : ''}${(-raw).toFixed(0)}%`;
-      prepTrendLabel = raw <= 0 ? 'faster vs yesterday' : 'slower vs yesterday';
+      prepTrendLabel =
+        raw <= 0
+          ? period === 'today'
+            ? 'faster vs yesterday'
+            : 'faster vs prior period'
+          : period === 'today'
+            ? 'slower vs yesterday'
+            : 'slower vs prior period';
     } else if (prepDurationsSec.length > 0) {
       prepTrend = 'Live';
       prepTrendLabel = `${prepDurationsSec.length} tickets completed`;
@@ -390,54 +599,52 @@ export class ManagerDashboardService {
 
     const tinaMixPercent =
       totalCollections > 0
-        ? Number(
-            ((todayVerifiedTransferSales / totalCollections) * 100).toFixed(1),
-          )
+        ? Number(((verifiedTransferSales / totalCollections) * 100).toFixed(1))
         : 0;
 
-    const yesterdayCollected = yesterdayClose
-      ? Number(yesterdayClose.cashSales) +
-        Number(yesterdayClose.verifiedTransferSales)
-      : 0;
-    const yesterdayDigitalShare =
-      yesterdayCollected > 0
-        ? (Number(yesterdayClose!.verifiedTransferSales) / yesterdayCollected) *
-          100
-        : 0;
+    const priorDigital = priorPayments
+      .filter((p) => countsAsCollection(p) && p.method !== 'CASH')
+      .reduce((acc, p) => acc + Number(p.amount), 0);
+    const priorDigitalShare =
+      priorCollections > 0 ? (priorDigital / priorCollections) * 100 : 0;
 
     let tinaTrend = tinaMixPercent > 0 ? `+${tinaMixPercent}%` : '0%';
     let tinaTrendLabel =
       totalCollections > 0 ? 'digital transfer share' : 'no collections yet';
-    if (yesterdayDigitalShare > 0 && totalCollections > 0) {
-      tinaTrend = pctDelta(tinaMixPercent, yesterdayDigitalShare);
-      tinaTrendLabel = 'vs yesterday mix';
+    if (priorDigitalShare > 0 && totalCollections > 0) {
+      tinaTrend = pctDelta(tinaMixPercent, priorDigitalShare);
+      tinaTrendLabel =
+        period === 'today' ? 'vs yesterday mix' : 'vs prior period mix';
     }
 
-    const stationBacklogCount = todayOrderItems.filter((item) =>
+    const stationBacklogCount = liveOrderItems.filter((item) =>
       ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'].includes(item.state),
     ).length;
-    const readyItemCount = todayOrderItems.filter(
+    const readyItemCount = liveOrderItems.filter(
       (item) => item.state === 'READY',
     ).length;
-    const cancelledItemsCount = todayOrderItems.filter(
+    const cancelledItemsCount = periodOrderItems.filter(
       (item) => item.state === 'CANCELLED' || item.cancelledAt,
     ).length;
     const pendingActionsCount = pendingBillRequests + pendingCashDrops;
 
-    const coversCount = todaySessions.reduce(
+    const coversCount = periodSessions.reduce(
       (sum, s) => sum + (s.guestCount ?? 0),
       0,
     );
-    const ordersCount = new Set(todayOrderItems.map((i) => i.orderId)).size;
-    const closedOrBilledSessions = todaySessions.filter(
+    const ordersCount =
+      periodOrders.length > 0
+        ? periodOrders.length
+        : new Set(periodOrderItems.map((i) => i.orderId)).size;
+    const closedOrBilledSessions = periodSessions.filter(
       (s) => s.status === 'CLOSED' || s.status === 'BILL_REQUESTED',
     ).length;
     const checkBase =
-      todayBills.length > 0 ? todayBills.length : closedOrBilledSessions || 1;
+      periodBills.length > 0 ? periodBills.length : closedOrBilledSessions || 1;
     const avgCheckValue =
-      billedToday > 0 && todayBills.length > 0
-        ? billedToday / todayBills.length
-        : billedToday / checkBase;
+      billedTotal > 0 && periodBills.length > 0
+        ? billedTotal / periodBills.length
+        : billedTotal / checkBase;
 
     const kpis: ManagerKpiDto = {
       dailyRevenueFormatted: formatK(finalRevenue),
@@ -458,6 +665,8 @@ export class ManagerDashboardService {
       tinaVerifyTrendLabel: tinaTrendLabel,
       collectionsFormatted: formatK(totalCollections),
       collectionsValue: totalCollections,
+      collectionsTrend,
+      collectionsTrendLabel,
       stationBacklogFormatted: String(stationBacklogCount),
       stationBacklogCount,
       stationBacklogHint:
@@ -480,8 +689,8 @@ export class ManagerDashboardService {
             ]
               .filter(Boolean)
               .join(' · '),
-      billedFormatted: formatK(billedToday),
-      billedValue: billedToday,
+      billedFormatted: formatK(billedTotal),
+      billedValue: billedTotal,
       collectionGapFormatted: formatK(collectionGap),
       collectionGapValue: collectionGap,
       avgCheckFormatted: formatK(avgCheckValue),
@@ -558,7 +767,7 @@ export class ManagerDashboardService {
       string,
       { name: string; category: string; revenue: number; orders: number }
     >();
-    for (const item of todayOrderItems) {
+    for (const item of periodOrderItems) {
       if (item.state === 'CANCELLED' || item.cancelledAt) continue;
       const name = item.itemNameSnapshot || 'Dish';
       const category =
@@ -591,111 +800,181 @@ export class ManagerDashboardService {
     const weeklyCashMovement: WeeklyCashMovementPointDto[] = [];
     const orderVolumeTrend: OrderVolumePointDto[] = [];
 
-    for (let i = 6; i >= 0; i--) {
-      const targetDate = startOfLocalDay(businessDate);
-      targetDate.setDate(targetDate.getDate() - i);
-      const targetYmd = localYmd(targetDate);
-      const dayLabel = dayNames[targetDate.getDay()];
+    const useWeeklyBuckets = periodDays.length > 45;
+    if (useWeeklyBuckets) {
+      const weeks: Date[][] = [];
+      for (let i = 0; i < periodDays.length; i += 7) {
+        weeks.push(periodDays.slice(i, i + 7));
+      }
+      for (const week of weeks) {
+        const start = week[0];
+        const end = week[week.length - 1];
+        const label = `${start.getMonth() + 1}/${start.getDate()}`;
+        const inWeek = (d: Date) => {
+          const ymd = localYmd(d);
+          return ymd >= localYmd(start) && ymd <= localYmd(end);
+        };
+        const dayBills = periodBills.filter((b) => inWeek(b.businessDate));
+        const dayGross = dayBills.reduce(
+          (acc, b) => acc + Number(b.subtotalAmount ?? b.totalAmount),
+          0,
+        );
+        const dayNet = dayBills.reduce(
+          (acc, b) => acc + Number(b.totalAmount),
+          0,
+        );
+        const dayPayments = periodPayments.filter(
+          (p) => inWeek(p.businessDate) && countsAsCollection(p),
+        );
+        const dayCollections = dayPayments.reduce(
+          (acc, p) => acc + Number(p.amount),
+          0,
+        );
+        const dayDigital = dayPayments
+          .filter((p) => p.method !== 'CASH')
+          .reduce((acc, p) => acc + Number(p.amount), 0);
+        const dayDropAmt = periodCashDrops
+          .filter((c) => inWeek(c.businessDate))
+          .reduce(
+            (acc, c) => acc + Number(c.countedAmount ?? c.declaredAmount),
+            0,
+          );
+        const dayOrders = periodOrders.filter((o) =>
+          inWeek(o.businessDate),
+        ).length;
+        const dayCovers = periodSessions
+          .filter((s) => inWeek(s.businessDate))
+          .reduce((acc, s) => acc + (s.guestCount ?? 0), 0);
+        const dayAvgCheck = dayBills.length > 0 ? dayNet / dayBills.length : 0;
 
-      const dayBills = past7Bills.filter(
-        (b) => localYmd(b.businessDate) === targetYmd,
-      );
-      const dayGross = dayBills.reduce(
-        (acc, b) => acc + Number(b.subtotalAmount ?? b.totalAmount),
-        0,
-      );
-      const dayNet = dayBills.reduce(
-        (acc, b) => acc + Number(b.totalAmount),
-        0,
-      );
+        salesTrend.push({
+          period: label,
+          grossSales: dayGross,
+          netRevenue: dayNet,
+          collections: dayCollections,
+        });
+        weeklyCashMovement.push({
+          day: label,
+          digitalInflow: dayDigital / 1000,
+          cashDrop: dayDropAmt / 1000,
+        });
+        orderVolumeTrend.push({
+          period: label,
+          orders: dayOrders,
+          covers: dayCovers,
+          avgCheck: Math.round(dayAvgCheck),
+        });
+      }
+    } else {
+      for (const targetDate of periodDays) {
+        const targetYmd = localYmd(targetDate);
+        const dayLabel =
+          periodDays.length <= 7
+            ? dayNames[targetDate.getDay()]
+            : `${targetDate.getMonth() + 1}/${targetDate.getDate()}`;
 
-      const dayPayments = past7Payments.filter(
-        (p) => localYmd(p.businessDate) === targetYmd,
-      );
-      const dayCollections = dayPayments.reduce(
-        (acc, p) => acc + Number(p.amount),
-        0,
-      );
-      const dayDigital = dayPayments
-        .filter((p) => p.method === 'TRANSFER')
-        .reduce((acc, p) => acc + Number(p.amount), 0);
+        const dayBills = periodBills.filter(
+          (b) => localYmd(b.businessDate) === targetYmd,
+        );
+        const dayGross = dayBills.reduce(
+          (acc, b) => acc + Number(b.subtotalAmount ?? b.totalAmount),
+          0,
+        );
+        const dayNet = dayBills.reduce(
+          (acc, b) => acc + Number(b.totalAmount),
+          0,
+        );
 
-      const dayCashDrops = past7CashDrops.filter(
-        (c) => localYmd(c.businessDate) === targetYmd,
-      );
-      const dayDropAmt = dayCashDrops.reduce(
-        (acc, c) => acc + Number(c.countedAmount ?? c.declaredAmount),
-        0,
-      );
+        const dayPayments = periodPayments.filter(
+          (p) =>
+            localYmd(p.businessDate) === targetYmd && countsAsCollection(p),
+        );
+        const dayCollections = dayPayments.reduce(
+          (acc, p) => acc + Number(p.amount),
+          0,
+        );
+        const dayDigital = dayPayments
+          .filter((p) => p.method !== 'CASH')
+          .reduce((acc, p) => acc + Number(p.amount), 0);
 
-      const dayOrders = past7Orders.filter(
-        (o) => localYmd(o.businessDate) === targetYmd,
-      ).length;
-      const dayCovers = past7Sessions
-        .filter((s) => localYmd(s.businessDate) === targetYmd)
-        .reduce((acc, s) => acc + (s.guestCount ?? 0), 0);
-      const dayAvgCheck = dayBills.length > 0 ? dayNet / dayBills.length : 0;
+        const dayDropAmt = periodCashDrops
+          .filter((c) => localYmd(c.businessDate) === targetYmd)
+          .reduce(
+            (acc, c) => acc + Number(c.countedAmount ?? c.declaredAmount),
+            0,
+          );
 
-      salesTrend.push({
-        period: dayLabel,
-        grossSales: dayGross,
-        netRevenue: dayNet,
-        collections: dayCollections,
-      });
-      weeklyCashMovement.push({
-        day: dayLabel,
-        digitalInflow: dayDigital / 1000,
-        cashDrop: dayDropAmt / 1000,
-      });
-      orderVolumeTrend.push({
-        period: dayLabel,
-        orders: dayOrders,
-        covers: dayCovers,
-        avgCheck: Math.round(dayAvgCheck),
-      });
+        const dayOrders = periodOrders.filter(
+          (o) => localYmd(o.businessDate) === targetYmd,
+        ).length;
+        const dayCovers = periodSessions
+          .filter((s) => localYmd(s.businessDate) === targetYmd)
+          .reduce((acc, s) => acc + (s.guestCount ?? 0), 0);
+        const dayAvgCheck = dayBills.length > 0 ? dayNet / dayBills.length : 0;
+
+        salesTrend.push({
+          period: dayLabel,
+          grossSales: dayGross,
+          netRevenue: dayNet,
+          collections: dayCollections,
+        });
+        weeklyCashMovement.push({
+          day: dayLabel,
+          digitalInflow: dayDigital / 1000,
+          cashDrop: dayDropAmt / 1000,
+        });
+        orderVolumeTrend.push({
+          period: dayLabel,
+          orders: dayOrders,
+          covers: dayCovers,
+          avgCheck: Math.round(dayAvgCheck),
+        });
+      }
     }
 
-    // Hourly billed + collected for today (local hours)
-    const hourlyMap = new Map<number, { billed: number; collected: number }>();
-    for (let h = 0; h < 24; h++) {
-      hourlyMap.set(h, { billed: 0, collected: 0 });
-    }
-    for (const b of todayBills) {
-      const h = new Date(b.generatedAt).getHours();
-      const slot = hourlyMap.get(h)!;
-      slot.billed += Number(b.totalAmount);
-    }
-    for (const p of todayPayments) {
-      const counts =
-        p.method === 'CASH'
-          ? !['CANCELLED', 'FAILED', 'VOID'].includes(p.status)
-          : settledStatuses.has(p.status);
-      if (!counts) continue;
-      const when =
-        p.collectedAt ?? p.settledAt ?? p.verifiedAt ?? p.initiatedAt;
-      const h = new Date(when).getHours();
-      const slot = hourlyMap.get(h)!;
-      slot.collected += Number(p.amount);
-    }
-    const activeHours = [...hourlyMap.entries()].filter(
-      ([, v]) => v.billed > 0 || v.collected > 0,
-    );
-    const hourStart =
-      activeHours.length > 0 ? Math.min(...activeHours.map(([h]) => h)) : 10;
-    const hourEnd =
-      activeHours.length > 0 ? Math.max(...activeHours.map(([h]) => h)) : 22;
+    // Hourly billed + collected in branch timezone (single-day periods only)
     const hourlySales: HourlySalesPointDto[] = [];
-    for (let h = Math.min(hourStart, 8); h <= Math.max(hourEnd, 21); h++) {
-      const slot = hourlyMap.get(h)!;
-      hourlySales.push({
-        hour: `${String(h).padStart(2, '0')}:00`,
-        billed: Math.round(slot.billed),
-        collected: Math.round(slot.collected),
-      });
+    if (isSingleDay) {
+      const hourlyMap = new Map<
+        number,
+        { billed: number; collected: number }
+      >();
+      for (let h = 0; h < 24; h++) {
+        hourlyMap.set(h, { billed: 0, collected: 0 });
+      }
+      for (const b of periodBills) {
+        const h = hourInTimezone(new Date(b.generatedAt), branchTimezone);
+        const slot = hourlyMap.get(h)!;
+        slot.billed += Number(b.totalAmount);
+      }
+      for (const p of periodPayments) {
+        if (!countsAsCollection(p)) continue;
+        const when =
+          p.collectedAt ?? p.settledAt ?? p.verifiedAt ?? p.initiatedAt;
+        const h = hourInTimezone(new Date(when), branchTimezone);
+        const slot = hourlyMap.get(h)!;
+        slot.collected += Number(p.amount);
+      }
+      const activeHours = [...hourlyMap.entries()].filter(
+        ([, v]) => v.billed > 0 || v.collected > 0,
+      );
+      const hourStart =
+        activeHours.length > 0 ? Math.min(...activeHours.map(([h]) => h)) : 10;
+      const hourEnd =
+        activeHours.length > 0 ? Math.max(...activeHours.map(([h]) => h)) : 22;
+      for (let h = Math.min(hourStart, 8); h <= Math.max(hourEnd, 21); h++) {
+        const slot = hourlyMap.get(h)!;
+        hourlySales.push({
+          hour: `${String(h).padStart(2, '0')}:00`,
+          billed: Math.round(slot.billed),
+          collected: Math.round(slot.collected),
+        });
+      }
     }
 
+    // Live station ticket states (current open work — not completed volume)
     const stationMap = new Map<string, StationThroughputPointDto>();
-    for (const item of todayOrderItems) {
+    for (const item of liveOrderItems) {
       const station =
         item.currentStation?.name || item.stationNameSnapshot || 'Station';
       const row =
@@ -730,8 +1009,7 @@ export class ManagerDashboardService {
         (a.queued + a.inPrep + a.ready + a.served),
     );
 
-    // Prefer gross from subtotals when available
-    void todayGross;
+    void periodGross;
 
     const data: ManagerDashboardDataDto = {
       kpis,
@@ -743,7 +1021,12 @@ export class ManagerDashboardService {
       hourlySales,
       stationThroughput,
       orderVolumeTrend,
-      businessDate: localYmd(businessDate),
+      businessDate: localYmd(rangeEnd),
+      fromDate: localYmd(rangeStart),
+      toDate: localYmd(rangeEnd),
+      period,
+      periodLabel,
+      timezone: branchTimezone,
       branchName,
     };
 

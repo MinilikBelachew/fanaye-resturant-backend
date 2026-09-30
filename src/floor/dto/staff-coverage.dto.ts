@@ -1,8 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -11,6 +13,16 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+const WORKING_DAY_CODES = [
+  'Mon',
+  'Tue',
+  'Wed',
+  'Thu',
+  'Fri',
+  'Sat',
+  'Sun',
+] as const;
 
 export class CreateShiftDefinitionDto {
   @ApiProperty({ example: 'Brunch' })
@@ -126,6 +138,17 @@ export class CreateAdminStaffDto {
   active?: boolean;
 
   @ApiPropertyOptional({
+    type: [String],
+    example: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+    description: 'Scheduled working days: Mon Tue Wed Thu Fri Sat Sun',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsIn(WORKING_DAY_CODES, { each: true })
+  workingDays?: string[];
+
+  @ApiPropertyOptional({
     description: 'Preparation station id when role is a station operator',
   })
   @IsOptional()
@@ -199,6 +222,17 @@ export class UpdateAdminStaffDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+    description: 'Scheduled working days: Mon Tue Wed Thu Fri Sat Sun',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsIn(WORKING_DAY_CODES, { each: true })
+  workingDays?: string[];
 
   @ApiPropertyOptional({
     description: 'Preparation station id when role is a station operator',

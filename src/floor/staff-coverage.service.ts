@@ -62,6 +62,33 @@ const UI_ROLE_TO_STATION_CODE: Record<string, string> = {
   soft_drinks: 'SOFT_DRINKS',
 };
 
+const WEEKDAY_ORDER = [
+  'Mon',
+  'Tue',
+  'Wed',
+  'Thu',
+  'Fri',
+  'Sat',
+  'Sun',
+] as const;
+
+const DEFAULT_WORKING_DAYS = [
+  'Mon',
+  'Tue',
+  'Wed',
+  'Thu',
+  'Fri',
+  'Sat',
+] as const;
+
+function normalizeWorkingDays(days?: string[] | null): string[] {
+  if (!days || days.length === 0) {
+    return [...DEFAULT_WORKING_DAYS];
+  }
+  const selected = new Set(days);
+  return WEEKDAY_ORDER.filter((day) => selected.has(day));
+}
+
 @Injectable()
 export class StaffCoverageService {
   constructor(
@@ -213,6 +240,7 @@ export class StaffCoverageService {
           userId: user.id,
           employeeDisplayName: name,
           status: dto.active === false ? 'INACTIVE' : 'ACTIVE',
+          workingDays: normalizeWorkingDays(dto.workingDays),
           joinedAt: new Date(),
         },
       });
@@ -372,6 +400,13 @@ export class StaffCoverageService {
           data: {
             accountStatus: dto.active ? 'ACTIVE' : 'INACTIVE',
           },
+        });
+      }
+
+      if (dto.workingDays !== undefined) {
+        await tx.tenantStaffMembership.update({
+          where: { id: membershipId },
+          data: { workingDays: normalizeWorkingDays(dto.workingDays) },
         });
       }
 
@@ -709,6 +744,7 @@ export class StaffCoverageService {
     id: string;
     employeeDisplayName: string;
     status: string;
+    workingDays: string[];
     user: { phone: string | null; email: string | null } | null;
     roleAssignments: Array<{ role: { code: string; name: string } }>;
     stationAssignments?: Array<{
@@ -770,6 +806,7 @@ export class StaffCoverageService {
       roleCode,
       roleLabel,
       active: member.status === 'ACTIVE',
+      workingDays: normalizeWorkingDays(member.workingDays),
       phone: member.user?.phone ?? null,
       email: member.user?.email ?? null,
       hasPin: hasCred,

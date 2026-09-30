@@ -55,6 +55,12 @@ export class ManagerKpiDto {
   @ApiProperty({ example: 36800 })
   collectionsValue: number;
 
+  @ApiProperty({ example: '+12%' })
+  collectionsTrend: string;
+
+  @ApiProperty({ example: 'vs collected yesterday' })
+  collectionsTrendLabel: string;
+
   @ApiProperty({ example: '12' })
   stationBacklogFormatted: string;
 
@@ -264,6 +270,24 @@ export class ManagerDashboardDataDto {
 
   @ApiProperty({ example: '2026-09-08' })
   businessDate: string;
+
+  @ApiProperty({ example: '2026-09-01' })
+  fromDate: string;
+
+  @ApiProperty({ example: '2026-09-08' })
+  toDate: string;
+
+  @ApiProperty({
+    example: 'today',
+    enum: ['today', 'week', 'month', 'quarter', 'year', 'custom'],
+  })
+  period: 'today' | 'week' | 'month' | 'quarter' | 'year' | 'custom';
+
+  @ApiProperty({ example: '2026-09-08' })
+  periodLabel: string;
+
+  @ApiProperty({ example: 'Africa/Addis_Ababa' })
+  timezone: string;
 
   @ApiProperty({ example: 'Bole Main Branch' })
   branchName: string;

@@ -105,6 +105,13 @@ export class WaiterMenuItemDto {
   @Expose()
   soldOut: boolean;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Remaining portions when station set a limit',
+  })
+  @Expose()
+  remainingQty?: number | null;
+
   @ApiPropertyOptional()
   @Expose()
   categoryId: string | null;

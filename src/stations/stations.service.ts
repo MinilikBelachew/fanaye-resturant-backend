@@ -21,6 +21,11 @@ import {
 import { CreateStationDto } from './dto/create-station.dto';
 import { UpdateStationDto } from './dto/update-station.dto';
 import { StationManagementResponseDto } from './dto/station-response.dto';
+import {
+  SetStationItemLimitDto,
+  StationMenuItemDto,
+  StationMenuResponseDto,
+} from './dto/station-menu.dto';
 
 const DEFAULT_STATES = [
   'QUEUED',
@@ -414,6 +419,168 @@ export class StationsService {
     });
   }
 
+  async listStationMenu(
+    userId: string,
+    stationId: string,
+  ): Promise<StationMenuResponseDto> {
+    const { context, station } = await this.requireStation(userId, stationId);
+    const items = await this.prisma.menuItem.findMany({
+      where: {
+        tenantId: context.tenantId!,
+        preparationStationId: station.id,
+        status: 'ACTIVE',
+      },
+      include: {
+        category: true,
+        imageFile: true,
+        overrides: {
+          where: {
+            branchId: context.branchId!,
+            OR: [{ endsAt: null }, { endsAt: { gt: new Date() } }],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+
+    return {
+      stationId: station.id,
+      stationName: station.name,
+      data: items.map((item) => {
+        const override = item.overrides[0] ?? null;
+        const remainingQty =
+          override?.state === 'LIMITED' && override.remainingQty != null
+            ? override.remainingQty
+            : null;
+        return {
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          price: Number(item.currentPrice).toFixed(2),
+          currencyCode: item.currencyCode,
+          soldOut: item.soldOut || remainingQty === 0,
+          remainingQty,
+          availabilityState: override?.state ?? null,
+          availabilityReason: override?.reason ?? null,
+          imageKey: item.imageKey,
+          imageUrl: item.imageFile?.path
+            ? item.imageFile.path.replace(/\\/g, '/')
+            : null,
+          categoryName: item.category?.name ?? null,
+        };
+      }),
+    };
+  }
+
+  async markStationItemSoldOut(
+    userId: string,
+    stationId: string,
+    menuItemId: string,
+    soldOut: boolean,
+    reason?: string,
+  ): Promise<StationMenuItemDto> {
+    const { context, station } = await this.requireStation(userId, stationId);
+    const item = await this.requireStationMenuItem(
+      context,
+      station.id,
+      menuItemId,
+    );
+
+    if (soldOut) {
+      await this.applySoldOutOverride(
+        context,
+        item.id,
+        reason?.trim() || 'Marked sold out by station',
+      );
+    } else {
+      await this.clearAvailabilityOverrides(context, item.id);
+    }
+
+    await this.notifyMenuAvailability(
+      context,
+      station,
+      item.name,
+      soldOut
+        ? {
+            title: `Sold out · ${item.name}`,
+            body: `${station.name}: do not take new orders for ${item.name}`,
+            soldOut: true,
+            remainingQty: null,
+            state: 'SOLD_OUT',
+          }
+        : {
+            title: `Available again · ${item.name}`,
+            body: `${station.name}: ${item.name} can be ordered again`,
+            soldOut: false,
+            remainingQty: null,
+            state: 'AVAILABLE',
+          },
+      item.id,
+    );
+
+    return this.getStationMenuItemDto(context, station.id, item.id);
+  }
+
+  async setStationItemLimit(
+    userId: string,
+    stationId: string,
+    menuItemId: string,
+    dto: SetStationItemLimitDto,
+  ): Promise<StationMenuItemDto> {
+    const { context, station } = await this.requireStation(userId, stationId);
+    const item = await this.requireStationMenuItem(
+      context,
+      station.id,
+      menuItemId,
+    );
+    const qty = Math.max(0, Math.floor(dto.remainingQty));
+    const reason =
+      dto.reason?.trim() ||
+      (qty === 0
+        ? 'No more portions available'
+        : `Only ${qty} portion${qty === 1 ? '' : 's'} left`);
+
+    if (qty === 0) {
+      await this.applySoldOutOverride(context, item.id, reason);
+    } else {
+      await this.applyLimitedOverride(context, item.id, qty, reason);
+    }
+
+    await this.notifyMenuAvailability(
+      context,
+      station,
+      item.name,
+      qty === 0
+        ? {
+            title: `Sold out · ${item.name}`,
+            body: `${station.name}: ${reason}`,
+            soldOut: true,
+            remainingQty: 0,
+            state: 'SOLD_OUT',
+          }
+        : {
+            title: `Limited · ${item.name}`,
+            body: `${station.name}: only ${qty} left — avoid over-ordering`,
+            soldOut: false,
+            remainingQty: qty,
+            state: 'LIMITED',
+          },
+      item.id,
+    );
+
+    return this.getStationMenuItemDto(context, station.id, item.id);
+  }
+
+  async clearStationItemLimit(
+    userId: string,
+    stationId: string,
+    menuItemId: string,
+  ): Promise<StationMenuItemDto> {
+    return this.markStationItemSoldOut(userId, stationId, menuItemId, false);
+  }
+
   async reportCannotPrepare(
     userId: string,
     orderItemId: string,
@@ -480,7 +647,248 @@ export class StationsService {
       },
     });
 
+    if (dto.markSoldOut && updated.menuItemId) {
+      const station = await this.prisma.preparationStation.findFirst({
+        where: { id: updated.currentPreparationStationId },
+      });
+      if (station) {
+        await this.applySoldOutOverride(
+          loaded.context,
+          updated.menuItemId,
+          dto.reasonDetail?.trim() ||
+            `Cannot prepare: ${updated.itemNameSnapshot}`,
+        );
+        await this.notifyMenuAvailability(
+          loaded.context,
+          station,
+          updated.itemNameSnapshot,
+          {
+            title: `Sold out · ${updated.itemNameSnapshot}`,
+            body: `${station.name}: do not take new orders for ${updated.itemNameSnapshot}`,
+            soldOut: true,
+            remainingQty: null,
+            state: 'SOLD_OUT',
+          },
+          updated.menuItemId,
+        );
+      }
+    }
+
     return toTicketDto(updated);
+  }
+
+  private async requireStationMenuItem(
+    context: AuthContextDto,
+    stationId: string,
+    menuItemId: string,
+  ) {
+    const item = await this.prisma.menuItem.findFirst({
+      where: {
+        id: menuItemId,
+        tenantId: context.tenantId!,
+        preparationStationId: stationId,
+        status: 'ACTIVE',
+      },
+    });
+    if (!item) {
+      throw new NotFoundException('Menu item not found on this station.');
+    }
+    return item;
+  }
+
+  private async endOpenOverrides(
+    tx: Prisma.TransactionClient,
+    branchId: string,
+    menuItemId: string,
+  ) {
+    await tx.itemAvailabilityOverride.updateMany({
+      where: {
+        branchId,
+        menuItemId,
+        OR: [{ endsAt: null }, { endsAt: { gt: new Date() } }],
+      },
+      data: { endsAt: new Date() },
+    });
+  }
+
+  private async applySoldOutOverride(
+    context: AuthContextDto,
+    menuItemId: string,
+    reason: string,
+  ) {
+    if (!context.staffMembershipId) {
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await this.endOpenOverrides(tx, context.branchId!, menuItemId);
+      await tx.itemAvailabilityOverride.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          menuItemId,
+          state: 'SOLD_OUT',
+          reason,
+          remainingQty: null,
+          initialQty: null,
+          setByMembershipId: context.staffMembershipId!,
+          startsAt: new Date(),
+        },
+      });
+      await tx.menuItem.update({
+        where: { id: menuItemId },
+        data: { soldOut: true, version: { increment: 1 } },
+      });
+    });
+  }
+
+  private async applyLimitedOverride(
+    context: AuthContextDto,
+    menuItemId: string,
+    qty: number,
+    reason: string,
+  ) {
+    if (!context.staffMembershipId) {
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await this.endOpenOverrides(tx, context.branchId!, menuItemId);
+      await tx.itemAvailabilityOverride.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          menuItemId,
+          state: 'LIMITED',
+          reason,
+          remainingQty: qty,
+          initialQty: qty,
+          setByMembershipId: context.staffMembershipId!,
+          startsAt: new Date(),
+        },
+      });
+      await tx.menuItem.update({
+        where: { id: menuItemId },
+        data: { soldOut: false, version: { increment: 1 } },
+      });
+    });
+  }
+
+  private async clearAvailabilityOverrides(
+    context: AuthContextDto,
+    menuItemId: string,
+  ) {
+    await this.prisma.$transaction(async (tx) => {
+      await this.endOpenOverrides(tx, context.branchId!, menuItemId);
+      await tx.menuItem.update({
+        where: { id: menuItemId },
+        data: { soldOut: false, version: { increment: 1 } },
+      });
+    });
+  }
+
+  private async notifyMenuAvailability(
+    context: AuthContextDto,
+    station: { id: string; name: string },
+    itemName: string,
+    detail: {
+      title: string;
+      body: string;
+      soldOut: boolean;
+      remainingQty: number | null;
+      state: string;
+    },
+    menuItemId: string,
+  ) {
+    await this.opsNotify.notifyWaiters({
+      type: OpsEventType.MENU_ITEM_AVAILABILITY,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: detail.soldOut ? 'ATTENTION' : 'INFO',
+      title: detail.title,
+      body: detail.body,
+      relatedEntityType: 'MenuItem',
+      relatedEntityId: menuItemId,
+      payload: {
+        menuItemId,
+        menuItemName: itemName,
+        stationId: station.id,
+        stationName: station.name,
+        soldOut: detail.soldOut,
+        remainingQty: detail.remainingQty,
+        state: detail.state,
+      },
+    });
+    this.opsNotify.broadcast({
+      type: OpsEventType.MENU_ITEM_AVAILABILITY,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'INFO',
+      title: detail.title,
+      body: detail.body,
+      rooms: [stationRoom(station.id), managerRoom(context.branchId!)],
+      relatedEntityType: 'MenuItem',
+      relatedEntityId: menuItemId,
+      payload: {
+        menuItemId,
+        soldOut: detail.soldOut,
+        remainingQty: detail.remainingQty,
+        state: detail.state,
+      },
+    });
+  }
+
+  private async getStationMenuItemDto(
+    context: AuthContextDto,
+    stationId: string,
+    menuItemId: string,
+  ): Promise<StationMenuItemDto> {
+    const item = await this.prisma.menuItem.findFirst({
+      where: {
+        id: menuItemId,
+        tenantId: context.tenantId!,
+        preparationStationId: stationId,
+        status: 'ACTIVE',
+      },
+      include: {
+        category: true,
+        imageFile: true,
+        overrides: {
+          where: {
+            branchId: context.branchId!,
+            OR: [{ endsAt: null }, { endsAt: { gt: new Date() } }],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+    if (!item) {
+      throw new NotFoundException('Menu item not found on this station.');
+    }
+    const override = item.overrides[0] ?? null;
+    const remainingQty =
+      override?.state === 'LIMITED' && override.remainingQty != null
+        ? override.remainingQty
+        : null;
+    return {
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      price: Number(item.currentPrice).toFixed(2),
+      currencyCode: item.currencyCode,
+      soldOut: item.soldOut || remainingQty === 0,
+      remainingQty,
+      availabilityState: override?.state ?? null,
+      availabilityReason: override?.reason ?? null,
+      imageKey: item.imageKey,
+      imageUrl: item.imageFile?.path
+        ? item.imageFile.path.replace(/\\/g, '/')
+        : null,
+      categoryName: item.category?.name ?? null,
+    };
   }
 
   private async transition(
