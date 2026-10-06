@@ -44,6 +44,9 @@ export class DailyCloseSummaryDto {
 
   @ApiProperty()
   undroppedWaiterCash: string;
+
+  @ApiProperty()
+  kitchenTicketValue: string;
 }
 
 export class DailyCloseWaiterLineDto {
@@ -110,6 +113,18 @@ export class DailyClosePreviewDto {
 
   @ApiProperty({ type: DailyCloseSummaryDto })
   summary: DailyCloseSummaryDto;
+
+  @ApiProperty()
+  orderCount: number;
+
+  @ApiProperty()
+  itemCount: number;
+
+  @ApiProperty()
+  tableCount: number;
+
+  @ApiProperty()
+  openTableCount: number;
 
   @ApiProperty({ type: [DailyCloseWaiterLineDto] })
   waiters: DailyCloseWaiterLineDto[];

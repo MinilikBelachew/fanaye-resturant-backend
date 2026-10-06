@@ -143,14 +143,17 @@ export class BranchesService {
     }
 
     type StationSeed = { name: string; code: string; sortOrder: number };
-    let stationConfigs: StationSeed[] = [
-      { name: 'Kitchen Station', code: 'KITCHEN', sortOrder: 0 },
-      { name: 'Barista Station', code: 'BARISTA', sortOrder: 1 },
-      { name: 'Cakes & Pastry', code: 'CAKES', sortOrder: 2 },
-      { name: 'Soft Drinks & Bar', code: 'SOFT_DRINKS', sortOrder: 3 },
-    ];
+    const isBakery = dto.serviceMode === 'BAKERY';
+    let stationConfigs: StationSeed[] = isBakery
+      ? [{ name: 'Counter', code: 'COUNTER', sortOrder: 0 }]
+      : [
+          { name: 'Kitchen Station', code: 'KITCHEN', sortOrder: 0 },
+          { name: 'Barista Station', code: 'BARISTA', sortOrder: 1 },
+          { name: 'Cakes & Pastry', code: 'CAKES', sortOrder: 2 },
+          { name: 'Soft Drinks & Bar', code: 'SOFT_DRINKS', sortOrder: 3 },
+        ];
 
-    if (dto.copyFromBranchId) {
+    if (!isBakery && dto.copyFromBranchId) {
       const copyFrom = await this.prisma.branch.findFirst({
         where: { id: dto.copyFromBranchId, tenantId, status: 'ACTIVE' },
         include: {
@@ -175,7 +178,9 @@ export class BranchesService {
       }
     }
 
-    const tableCount = Math.min(Math.max(dto.tableCount ?? 8, 0), 60);
+    const tableCount = isBakery
+      ? 1
+      : Math.min(Math.max(dto.tableCount ?? 8, 0), 60);
     const passwordHash = await bcrypt.hash(
       dto.manager.password.trim().slice(0, 72),
       10,
@@ -188,6 +193,7 @@ export class BranchesService {
           name,
           displayCode,
           timezone: dto.timezone?.trim() || 'Africa/Addis_Ababa',
+          serviceMode: isBakery ? 'BAKERY' : 'RESTAURANT',
           status: 'ACTIVE',
           businessDayCutoff: new Date('1970-01-01T04:00:00Z'),
           settings: {
@@ -217,8 +223,8 @@ export class BranchesService {
           data: {
             tenantId,
             branchId: branch.id,
-            name: 'Main Dining Floor',
-            code: 'MAIN_FLOOR',
+            name: isBakery ? 'Counter' : 'Main Dining Floor',
+            code: isBakery ? 'COUNTER' : 'MAIN_FLOOR',
             status: 'ACTIVE',
             sortOrder: 0,
           },
@@ -229,8 +235,8 @@ export class BranchesService {
               tenantId,
               branchId: branch.id,
               locationId: location.id,
-              displayName: `Table ${i}`,
-              displayNumber: String(i),
+              displayName: isBakery ? 'Counter' : `Table ${i}`,
+              displayNumber: isBakery ? 'C' : String(i),
               status: 'AVAILABLE',
               sortOrder: i,
             },
@@ -362,9 +368,14 @@ export class BranchesService {
               archivedAt: dto.status === 'ARCHIVED' ? new Date() : null,
             }
           : {}),
+        ...(dto.serviceMode ? { serviceMode: dto.serviceMode } : {}),
         version: { increment: 1 },
       },
     });
+
+    if (dto.serviceMode === 'BAKERY') {
+      await this.ensureBakeryCounter(tenantId, branchId);
+    }
 
     const full = await this.loadBranch(branchId, tenantId);
     return { data: full };
@@ -421,6 +432,49 @@ export class BranchesService {
       },
     });
     return Boolean(assignment);
+  }
+
+  private async ensureBakeryCounter(tenantId: string, branchId: string) {
+    const station = await this.prisma.preparationStation.findFirst({
+      where: { branchId, code: 'COUNTER', status: 'ACTIVE' },
+    });
+    if (!station) {
+      await this.prisma.preparationStation.create({
+        data: {
+          tenantId,
+          branchId,
+          name: 'Counter',
+          code: 'COUNTER',
+          status: 'ACTIVE',
+          sortOrder: 0,
+        },
+      });
+    }
+    const table = await this.prisma.diningTable.findFirst({
+      where: { branchId, status: { not: 'RETIRED' } },
+    });
+    if (table) return;
+    const location = await this.prisma.tableLocation.create({
+      data: {
+        tenantId,
+        branchId,
+        name: 'Counter',
+        code: 'COUNTER',
+        status: 'ACTIVE',
+        sortOrder: 0,
+      },
+    });
+    await this.prisma.diningTable.create({
+      data: {
+        tenantId,
+        branchId,
+        locationId: location.id,
+        displayName: 'Counter',
+        displayNumber: 'C',
+        status: 'AVAILABLE',
+        sortOrder: 1,
+      },
+    });
   }
 
   private resolveTenantId(
@@ -539,6 +593,7 @@ export class BranchesService {
     name: string;
     displayCode: string | null;
     timezone: string;
+    serviceMode: string;
     status: string;
     createdAt: Date;
     _count: {
@@ -561,6 +616,7 @@ export class BranchesService {
       name: branch.name,
       displayCode: branch.displayCode,
       timezone: branch.timezone,
+      serviceMode: branch.serviceMode || 'RESTAURANT',
       status: branch.status,
       createdAt: branch.createdAt.toISOString(),
       manager: managerAssignment

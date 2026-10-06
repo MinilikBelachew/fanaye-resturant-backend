@@ -20,7 +20,9 @@ import {
 import { SuperAdminService } from './super-admin.service';
 import {
   CreatePlatformStaffDto,
+  CreateSubscriptionPlanDto,
   CreateTenantDto,
+  DeletePlanResponseDto,
   DeleteTenantResponseDto,
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
@@ -30,10 +32,13 @@ import {
   PlatformStaffMemberDto,
   ResetPlatformStaffPasswordDto,
   ResetPlatformStaffPinDto,
+  SubscriptionPlanDto,
+  SubscriptionPlanListResponseDto,
   SuspendPlatformStaffDto,
   SuperAdminDashboardResponseDto,
   TenantDetailResponseDto,
   TenantListResponseDto,
+  UpdateSubscriptionPlanDto,
   UpdateTenantDto,
 } from './dto/super-admin-dashboard.dto';
 
@@ -87,6 +92,44 @@ export class SuperAdminController {
   ): Promise<SuperAdminDashboardResponseDto> {
     const userId = this.extractUserId(request);
     return this.superAdminService.getDashboard(userId, businessDate);
+  }
+
+  @Get('plans')
+  @ApiOkResponse({ type: SubscriptionPlanListResponseDto })
+  listPlans(@Request() request): Promise<SubscriptionPlanListResponseDto> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.listPlans(userId);
+  }
+
+  @Post('plans')
+  @ApiCreatedResponse({ type: SubscriptionPlanDto })
+  createPlan(
+    @Request() request,
+    @Body() dto: CreateSubscriptionPlanDto,
+  ): Promise<SubscriptionPlanDto> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.createPlan(userId, dto);
+  }
+
+  @Patch('plans/:id')
+  @ApiOkResponse({ type: SubscriptionPlanDto })
+  updatePlan(
+    @Request() request,
+    @Param('id') id: string,
+    @Body() dto: UpdateSubscriptionPlanDto,
+  ): Promise<SubscriptionPlanDto> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.updatePlan(userId, id, dto);
+  }
+
+  @Delete('plans/:id')
+  @ApiOkResponse({ type: DeletePlanResponseDto })
+  deletePlan(
+    @Request() request,
+    @Param('id') id: string,
+  ): Promise<DeletePlanResponseDto> {
+    const userId = this.extractUserId(request);
+    return this.superAdminService.deletePlan(userId, id);
   }
 
   @Get('tenants')

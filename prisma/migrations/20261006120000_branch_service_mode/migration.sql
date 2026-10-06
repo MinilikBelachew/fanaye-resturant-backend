@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "branches" ADD COLUMN IF NOT EXISTS "service_mode" VARCHAR(20) NOT NULL DEFAULT 'RESTAURANT';

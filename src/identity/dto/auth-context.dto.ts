@@ -54,6 +54,10 @@ export class AuthContextDto {
 
   @ApiPropertyOptional()
   @Expose()
+  serviceMode: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
   staffMembershipId: string | null;
 
   @ApiProperty()

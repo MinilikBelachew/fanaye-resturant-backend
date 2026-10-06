@@ -10,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { businessDateUtc } from '../common/business-date';
 import { StartTableSessionDto } from './dto/start-table-session.dto';
 import { CloseTableSessionDto } from './dto/close-table-session.dto';
 import { OpenCallPickupDto } from './dto/open-call-pickup.dto';
@@ -172,8 +173,7 @@ export class FloorService {
     }
 
     const now = new Date();
-    const businessDate = new Date(now);
-    businessDate.setHours(0, 0, 0, 0);
+    const businessDate = businessDateUtc(now);
 
     try {
       const created = await this.prisma.$transaction(async (tx) => {

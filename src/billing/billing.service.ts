@@ -14,12 +14,14 @@ import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { businessDateUtc } from '../common/business-date';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
 import { VerifyEtService } from '../verify-et/verify-et.service';
 import { VerifyEtBank } from '../verify-et/verify-et.types';
 import { ExpectedTableSessionVersionDto } from './dto/expected-table-session-version.dto';
 import { CashPaymentDto, TransferPaymentDto } from './dto/payment.dto';
+import { CounterSaleDto } from './dto/counter-sale.dto';
 import {
   BillDto,
   BillRequestCreatedDto,
@@ -319,6 +321,199 @@ export class BillingService {
     });
 
     return { data };
+  }
+
+  async createCounterSale(
+    userId: string,
+    dto: CounterSaleDto,
+    idempotencyKey?: string,
+  ): Promise<BillDto> {
+    const context = await this.requireCashierOnShift(userId);
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: context.branchId! },
+    });
+    if (branch?.serviceMode !== 'BAKERY') {
+      throw new ForbiddenException('Counter sale is only for bakery branches.');
+    }
+    const key = this.requireIdempotencyKey(idempotencyKey);
+    const existing = await this.findIdempotent(
+      context,
+      'bill.counter_sale',
+      key,
+      dto,
+    );
+    if (existing) return existing as unknown as BillDto;
+
+    const table = await this.prisma.diningTable.findFirst({
+      where: { branchId: context.branchId!, status: { not: 'RETIRED' } },
+      orderBy: { sortOrder: 'asc' },
+    });
+    if (!table) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'COUNTER_TABLE_MISSING',
+        errors: { table: 'COUNTER_TABLE_MISSING' },
+      });
+    }
+
+    const menuItemIds = [...new Set(dto.items.map((line) => line.menuItemId))];
+    const menuItems = await this.prisma.menuItem.findMany({
+      where: {
+        id: { in: menuItemIds },
+        tenantId: context.tenantId!,
+        status: 'ACTIVE',
+      },
+      include: { station: true },
+    });
+    if (menuItems.length !== menuItemIds.length) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { items: 'MENU_ITEM_NOT_FOUND' },
+      });
+    }
+    const menuById = new Map(menuItems.map((item) => [item.id, item]));
+    for (const line of dto.items) {
+      const item = menuById.get(line.menuItemId);
+      if (!item?.station || item.station.status !== 'ACTIVE') {
+        throw new UnprocessableEntityException({
+          status: 422,
+          errors: { items: 'MENU_ITEM_STATION_MISSING' },
+        });
+      }
+    }
+    const businessDate = businessDateUtc();
+    const now = new Date();
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      // One open session per table is enforced in DB. Bakery reuses the same
+      // Counter table for every sale, so close any leftover open session first.
+      await tx.tableSession.updateMany({
+        where: {
+          tableId: table.id,
+          closedAt: null,
+          status: { not: 'CLOSED' },
+        },
+        data: {
+          status: 'CLOSED',
+          closedAt: now,
+          closedByMembershipId: context.staffMembershipId,
+          version: { increment: 1 },
+        },
+      });
+
+      const session = await tx.tableSession.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          tableId: table.id,
+          businessDate,
+          primaryWaiterMembershipId: context.staffMembershipId!,
+          primaryWaiterShiftSessionId: context.shiftSessionId!,
+          sessionKind: 'COUNTER',
+          status: 'OPEN',
+          openedAt: now,
+        },
+      });
+
+      const order = await tx.order.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          businessDate,
+          tableSessionId: session.id,
+          createdByWaiterMembershipId: context.staffMembershipId!,
+          waiterShiftSessionId: context.shiftSessionId!,
+          status: 'CONFIRMED',
+          confirmedAt: now,
+          items: {
+            create: dto.items.map((line) => {
+              const item = menuById.get(line.menuItemId)!;
+              return {
+                tenantId: context.tenantId!,
+                branchId: context.branchId!,
+                businessDate,
+                tableSessionId: session.id,
+                menuItemId: item.id,
+                itemNameSnapshot: item.name,
+                unitPriceSnapshot: item.currentPrice,
+                currencyCode: item.currencyCode,
+                quantity: line.quantity,
+                originalPreparationStationId: item.station.id,
+                currentPreparationStationId: item.station.id,
+                stationNameSnapshot: item.station.name,
+                expectedPrepMinutesSnapshot: item.expectedPrepMinutes,
+                state: 'SERVED',
+                confirmedAt: now,
+                servedAt: now,
+              };
+            }),
+          },
+        },
+        include: { items: { include: { modifiers: true } } },
+      });
+
+      const prefix = (branch.displayCode || branch.name || 'BILL')
+        .replace(/[^A-Za-z0-9]/g, '')
+        .slice(0, 8)
+        .toUpperCase();
+      const day = localYmd(businessDate);
+      const sequence = await tx.bill.count({
+        where: { branchId: context.branchId!, businessDate },
+      });
+      const billNumber = `${prefix}-${day}-${String(sequence + 1).padStart(4, '0')}`;
+
+      let subtotal = new Prisma.Decimal(0);
+      const lineData = order.items.map((item, sortOrder) => {
+        const total = lineTotal(item);
+        subtotal = subtotal.plus(total);
+        return {
+          tenantId: context.tenantId!,
+          orderItemId: item.id,
+          itemNameSnapshot: item.itemNameSnapshot,
+          quantity: item.quantity,
+          unitPriceSnapshot: item.unitPriceSnapshot,
+          modifierTotalSnapshot: 0,
+          lineTotal: total,
+          currencyCode: item.currencyCode,
+          chargeStatus: 'CHARGED',
+          sortOrder,
+        };
+      });
+
+      const bill = await tx.bill.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          businessDate,
+          tableSessionId: session.id,
+          billNumber,
+          status: 'GENERATED',
+          currencyCode: 'ETB',
+          subtotalAmount: subtotal,
+          cancelledAmount: 0,
+          totalAmount: subtotal,
+          amountPaid: 0,
+          generatedByMembershipId: context.staffMembershipId!,
+          generatedAt: now,
+          lines: { create: lineData },
+        },
+        include: { lines: { orderBy: { sortOrder: 'asc' } } },
+      });
+
+      const payload = toBillDto(bill);
+      await this.storeIdempotent(
+        tx,
+        context,
+        'bill.counter_sale',
+        key,
+        dto,
+        payload,
+        bill.id,
+      );
+      return payload;
+    });
+
+    return created;
   }
 
   async generateBill(
@@ -747,10 +942,18 @@ export class BillingService {
       });
       const session = await tx.tableSession.update({
         where: { id: bill.tableSessionId },
-        data: {
-          status: 'PAID',
-          version: { increment: 1 },
-        },
+        data:
+          bill.tableSession.sessionKind === 'COUNTER'
+            ? {
+                status: 'CLOSED',
+                closedAt: now,
+                closedByMembershipId: context.staffMembershipId,
+                version: { increment: 1 },
+              }
+            : {
+                status: 'PAID',
+                version: { increment: 1 },
+              },
       });
       const payload: CashPaymentResponseDto = {
         payment: toPaymentDto(payment),
@@ -1009,9 +1212,13 @@ export class BillingService {
     });
   }
 
-  async listPayments(userId: string): Promise<{
+  async listPayments(
+    userId: string,
+    range?: { from?: string; to?: string },
+  ): Promise<{
     data: Array<
       PaymentDto & {
+        businessDate: string;
         billId: string;
         billNumber: string;
         tableSessionId: string;
@@ -1028,10 +1235,22 @@ export class BillingService {
     if (!VIEW_PAYMENT_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Payment log is for cashiers.');
     }
+    const fromYmd = (range?.from || '').trim().slice(0, 10);
+    const toYmd = (range?.to || range?.from || '').trim().slice(0, 10);
+    const dateFilter =
+      /^\d{4}-\d{2}-\d{2}$/.test(fromYmd) && /^\d{4}-\d{2}-\d{2}$/.test(toYmd)
+        ? {
+            businessDate: {
+              gte: new Date(`${fromYmd}T00:00:00.000Z`),
+              lte: new Date(`${toYmd}T00:00:00.000Z`),
+            },
+          }
+        : {};
     const payments = await this.prisma.payment.findMany({
       where: {
         branchId: context.branchId!,
         status: 'SETTLED',
+        ...dateFilter,
       },
       include: {
         collector: true,
@@ -1043,7 +1262,7 @@ export class BillingService {
         },
       },
       orderBy: { settledAt: 'desc' },
-      take: 100,
+      take: dateFilter.businessDate ? 500 : 100,
     });
     return {
       data: payments.map((payment) => {
@@ -1052,6 +1271,7 @@ export class BillingService {
         const receiptPath = payment.receipt?.file?.path ?? null;
         return {
           ...toPaymentDto(payment),
+          businessDate: payment.businessDate.toISOString().slice(0, 10),
           billId: payment.billId,
           billNumber: payment.bill.billNumber,
           tableSessionId: payment.bill.tableSessionId,
@@ -1133,8 +1353,16 @@ export class BillingService {
 
   private assertCollectorForBill(
     context: AuthContextDto,
-    bill: { tableSession: { primaryWaiterMembershipId: string } },
+    bill: {
+      tableSession: {
+        primaryWaiterMembershipId: string;
+        sessionKind: string;
+      };
+    },
   ) {
+    if (context.roleCode === 'CASHIER') {
+      return;
+    }
     if (SHIFT_OWNER_ROLES.includes(context.roleCode)) {
       if (
         bill.tableSession.primaryWaiterMembershipId !==
@@ -1180,11 +1408,31 @@ export class BillingService {
     return context;
   }
 
+  private async requireCashierOnShift(userId: string): Promise<AuthContextDto> {
+    const context = await this.requireBranch(userId);
+    if (!['CASHIER', 'MANAGER', 'OWNER_ADMIN'].includes(context.roleCode)) {
+      throw new ForbiddenException(
+        'Only the cashier can start a counter sale.',
+      );
+    }
+    if (!context.staffMembershipId || !context.shiftSessionId) {
+      throw new ForbiddenException({
+        status: 403,
+        code: 'SHIFT_REQUIRED',
+        errors: { shift: 'SHIFT_REQUIRED' },
+      });
+    }
+    return context;
+  }
+
   private async requireCollectorOnShift(
     userId: string,
   ): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!COLLECT_ROLES.includes(context.roleCode)) {
+    if (
+      !COLLECT_ROLES.includes(context.roleCode) &&
+      context.roleCode !== 'CASHIER'
+    ) {
       throw new ForbiddenException('Only the waiter can collect payment.');
     }
     if (!context.staffMembershipId || !context.shiftSessionId) {

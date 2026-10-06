@@ -25,6 +25,7 @@ import {
   TransferPaymentResponseDto,
 } from './dto/billing-response.dto';
 import { CashPaymentDto, TransferPaymentDto } from './dto/payment.dto';
+import { CounterSaleDto } from './dto/counter-sale.dto';
 
 @ApiTags('Billing')
 @ApiBearerAuth()
@@ -35,6 +36,22 @@ import { CashPaymentDto, TransferPaymentDto } from './dto/payment.dto';
 })
 export class BillsController {
   constructor(private readonly billingService: BillingService) {}
+
+  @Post('counter-sale')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  @ApiOkResponse({ type: BillDto })
+  @HttpCode(HttpStatus.OK)
+  counterSale(
+    @Request() request,
+    @Body() dto: CounterSaleDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<BillDto> {
+    return this.billingService.createCounterSale(
+      String(request.user.id),
+      dto,
+      idempotencyKey,
+    );
+  }
 
   @Get(':id')
   @ApiOkResponse({ type: BillDto })

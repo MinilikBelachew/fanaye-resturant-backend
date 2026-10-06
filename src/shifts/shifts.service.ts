@@ -8,6 +8,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
+import { businessDateUtc } from '../common/business-date';
 import { ClockInDto } from './dto/clock-in.dto';
 import { ClockOutDto } from './dto/clock-out.dto';
 import {
@@ -91,8 +92,7 @@ export class ShiftsService {
 
     const roleId = dto.roleId ?? assignment?.roleId ?? role?.roleId ?? null;
     const now = new Date();
-    const businessDate = new Date(now);
-    businessDate.setHours(0, 0, 0, 0);
+    const businessDate = businessDateUtc(now);
 
     let lateByMinutes = 0;
     if (assignment?.scheduledStartAt) {

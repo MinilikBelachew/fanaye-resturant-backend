@@ -10,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { localDayRange } from '../common/business-date';
 import {
   CreateDailyCloseDto,
   VersionedDailyCloseDto,
@@ -53,6 +54,7 @@ type Snapshot = {
     cashierCountedCash: Prisma.Decimal;
     cashierVariance: Prisma.Decimal;
     undroppedWaiterCash: Prisma.Decimal;
+    kitchenTicketValue: Prisma.Decimal;
   };
 };
 
@@ -90,6 +92,12 @@ export class DailyCloseService {
           blockers: snapshot.blockers,
         },
         summary: snapshot.summary,
+        orderCount: snapshot.orderCount,
+        itemCount: snapshot.itemCount,
+        tableCount: snapshot.tableCount,
+        openTableCount: snapshot.blockers.filter(
+          (b) => b.code === 'OPEN_TABLE_SESSION',
+        ).length,
         waiters: snapshot.waiters,
         stations: snapshot.stations,
         existingDailyCloseId: existing?.id ?? null,
@@ -411,11 +419,16 @@ export class DailyCloseService {
     branchId: string,
     businessDate: Date,
   ): Promise<Snapshot> {
+    const dayYmd = ymd(businessDate);
+    const { start: dayStart, end: dayEnd } = localDayRange(dayYmd);
+    const duringDay = { gte: dayStart, lte: dayEnd };
     const [
       bills,
       payments,
       openSessions,
+      leftoverOpenSessions,
       openDrops,
+      receivedDrops,
       cashierSessions,
       reconciliations,
       waiterShifts,
@@ -423,10 +436,21 @@ export class DailyCloseService {
       stations,
     ] = await Promise.all([
       this.prisma.bill.findMany({
-        where: { branchId, businessDate },
+        where: {
+          branchId,
+          OR: [{ businessDate }, { generatedAt: duringDay }],
+        },
       }),
       this.prisma.payment.findMany({
-        where: { branchId, businessDate },
+        where: {
+          branchId,
+          OR: [
+            { businessDate },
+            { settledAt: duringDay },
+            { collectedAt: duringDay },
+            { initiatedAt: duringDay },
+          ],
+        },
         include: {
           bill: { include: { tableSession: { include: { table: true } } } },
         },
@@ -436,16 +460,32 @@ export class DailyCloseService {
           branchId,
           businessDate,
           status: { not: 'CLOSED' },
+          sessionKind: { notIn: ['CALL_PICKUP', 'COUNTER'] },
+        },
+        include: { table: true },
+      }),
+      this.prisma.tableSession.findMany({
+        where: {
+          branchId,
+          status: { not: 'CLOSED' },
+          sessionKind: { notIn: ['CALL_PICKUP', 'COUNTER'] },
+          NOT: { businessDate },
         },
         include: { table: true },
       }),
       this.prisma.cashDrop.findMany({
         where: {
           branchId,
-          businessDate,
           status: { in: ['INITIATED', 'DISPUTED'] },
         },
         include: { waiter: true },
+      }),
+      this.prisma.cashDrop.findMany({
+        where: {
+          branchId,
+          status: { in: ['RECEIVED', 'RESOLVED'] },
+          OR: [{ businessDate }, { initiatedAt: duringDay }],
+        },
       }),
       this.prisma.cashierFinancialSession.findMany({
         where: { branchId, businessDate },
@@ -457,18 +497,25 @@ export class DailyCloseService {
       this.prisma.shiftSession.findMany({
         where: {
           branchId,
-          businessDate,
-          OR: [
-            { role: { code: 'WAITER' } },
-            { payments: { some: {} } },
-            { waiterCashDrops: { some: {} } },
-            { orders: { some: {} } },
+          AND: [
+            { OR: [{ businessDate }, { clockInAt: duringDay }] },
+            {
+              OR: [
+                { role: { code: 'WAITER' } },
+                { payments: { some: {} } },
+                { waiterCashDrops: { some: {} } },
+                { orders: { some: {} } },
+              ],
+            },
           ],
         },
         include: { membership: true },
       }),
       this.prisma.orderItem.findMany({
-        where: { branchId, businessDate },
+        where: {
+          branchId,
+          OR: [{ businessDate }, { confirmedAt: duringDay }],
+        },
       }),
       this.prisma.preparationStation.findMany({
         where: { branchId },
@@ -476,24 +523,47 @@ export class DailyCloseService {
     ]);
 
     const shifts = waiterShifts;
+    const inDay = (value?: Date | null) =>
+      Boolean(value && value >= dayStart && value <= dayEnd);
+    const dayBills = bills.filter(
+      (row) => ymd(row.businessDate) === dayYmd || inDay(row.generatedAt),
+    );
+    const dayPayments = payments.filter(
+      (row) =>
+        ymd(row.businessDate) === dayYmd ||
+        inDay(row.settledAt) ||
+        inDay(row.collectedAt) ||
+        inDay(row.initiatedAt),
+    );
+    const dayItems = orderItems.filter(
+      (row) => ymd(row.businessDate) === dayYmd || inDay(row.confirmedAt),
+    );
 
     let grossOrderValue = new Prisma.Decimal(0);
     let cancelledValue = new Prisma.Decimal(0);
-    for (const bill of bills) {
+    for (const bill of dayBills) {
       grossOrderValue = grossOrderValue.plus(bill.subtotalAmount);
       cancelledValue = cancelledValue.plus(bill.cancelledAmount);
     }
-    const netBilledSales = bills.reduce(
+    const netBilledSales = dayBills.reduce(
       (sum, bill) => sum.plus(bill.totalAmount),
       new Prisma.Decimal(0),
     );
+
+    let kitchenTicketValue = new Prisma.Decimal(0);
+    for (const item of dayItems) {
+      if (['CANCELLED', 'VOIDED'].includes(item.state)) continue;
+      kitchenTicketValue = kitchenTicketValue.plus(
+        new Prisma.Decimal(item.unitPriceSnapshot).mul(item.quantity),
+      );
+    }
 
     let cashSales = new Prisma.Decimal(0);
     let verifiedTransferSales = new Prisma.Decimal(0);
     let pendingTransferAmount = new Prisma.Decimal(0);
     let suspiciousTransferAmount = new Prisma.Decimal(0);
 
-    for (const payment of payments) {
+    for (const payment of dayPayments) {
       if (payment.method === 'CASH' && payment.status === 'SETTLED') {
         cashSales = cashSales.plus(payment.amount);
       }
@@ -527,6 +597,21 @@ export class DailyCloseService {
         );
       }
     }
+    const openingFloat = cashierSessions.reduce(
+      (sum, session) => sum.plus(session.openingFloatAmount),
+      new Prisma.Decimal(0),
+    );
+    const receivedDropTotal = receivedDrops.reduce(
+      (sum, drop) =>
+        sum.plus(
+          drop.resolutionAmount ?? drop.countedAmount ?? drop.declaredAmount,
+        ),
+      new Prisma.Decimal(0),
+    );
+    const drawerFloor = openingFloat.plus(receivedDropTotal);
+    if (cashierExpectedCash.lt(drawerFloor)) {
+      cashierExpectedCash = drawerFloor;
+    }
     const cashierVariance = cashierCountedCash.minus(cashierExpectedCash);
 
     const waiters: DailyCloseWaiterLineDto[] = [];
@@ -538,13 +623,15 @@ export class DailyCloseService {
         shift.id,
         shift.staffMembershipId,
         shift.membership.employeeDisplayName,
+        businessDate,
+        duringDay,
       );
       waiters.push(line);
       undroppedWaiterCash = undroppedWaiterCash.plus(line.undroppedCash);
     }
 
     const stationsOut: DailyCloseStationLineDto[] = stations.map((station) => {
-      const items = orderItems.filter(
+      const items = dayItems.filter(
         (item) => item.currentPreparationStationId === station.id,
       );
       return {
@@ -565,6 +652,8 @@ export class DailyCloseService {
 
     for (const session of openSessions) {
       if (session.status === 'CLOSED') continue;
+      if (session.sessionKind === 'CALL_PICKUP') continue;
+      if (session.sessionKind === 'COUNTER') continue;
       blockers.push({
         code: 'OPEN_TABLE_SESSION',
         message: `${session.table.displayName} is still ${session.status}.`,
@@ -572,7 +661,18 @@ export class DailyCloseService {
       });
     }
 
-    for (const payment of payments) {
+    for (const session of leftoverOpenSessions) {
+      if (session.status === 'CLOSED') continue;
+      if (session.sessionKind === 'CALL_PICKUP') continue;
+      if (session.sessionKind === 'COUNTER') continue;
+      blockers.push({
+        code: 'OPEN_TABLE_SESSION',
+        message: `${session.table.displayName} is still open from ${ymd(session.businessDate)}. Close it before lock.`,
+        entityId: session.id,
+      });
+    }
+
+    for (const payment of dayPayments) {
       if (
         payment.method === 'TRANSFER' &&
         ['VERIFICATION_PENDING', 'PENDING', 'SUBMITTED'].includes(
@@ -652,6 +752,7 @@ export class DailyCloseService {
       cashierCountedCash,
       cashierVariance,
       undroppedWaiterCash,
+      kitchenTicketValue,
     };
 
     return {
@@ -667,17 +768,25 @@ export class DailyCloseService {
         cashierCountedCash: money(cashierCountedCash),
         cashierVariance: money(cashierVariance),
         undroppedWaiterCash: money(undroppedWaiterCash),
+        kitchenTicketValue: money(kitchenTicketValue),
       },
       waiters,
       stations: stationsOut,
       blockers,
       tableCount: await this.prisma.tableSession.count({
-        where: { branchId, businessDate },
+        where: {
+          branchId,
+          businessDate,
+          sessionKind: { notIn: ['CALL_PICKUP', 'COUNTER'] },
+        },
       }),
       orderCount: await this.prisma.order.count({
-        where: { branchId, businessDate },
+        where: {
+          branchId,
+          OR: [{ businessDate }, { confirmedAt: duringDay }],
+        },
       }),
-      itemCount: orderItems.length,
+      itemCount: dayItems.length,
       managerOverrideCount: 0,
       raw,
     };
@@ -727,23 +836,37 @@ export class DailyCloseService {
     shiftSessionId: string,
     waiterMembershipId: string,
     waiterName: string,
+    businessDate: Date,
+    duringDay: { gte: Date; lte: Date },
   ): Promise<DailyCloseWaiterLineDto> {
     const [orders, payments, drops, tables] = await Promise.all([
       this.prisma.order.findMany({
-        where: { waiterShiftSessionId: shiftSessionId },
+        where: {
+          waiterShiftSessionId: shiftSessionId,
+          OR: [{ businessDate }, { confirmedAt: duringDay }],
+        },
         include: { items: true },
       }),
       this.prisma.payment.findMany({
         where: {
           branchId,
           collectorShiftSessionId: shiftSessionId,
+          OR: [
+            { businessDate },
+            { settledAt: duringDay },
+            { collectedAt: duringDay },
+            { initiatedAt: duringDay },
+          ],
         },
       }),
       this.prisma.cashDrop.findMany({
-        where: { waiterShiftSessionId: shiftSessionId },
+        where: {
+          waiterShiftSessionId: shiftSessionId,
+          OR: [{ businessDate }, { initiatedAt: duringDay }],
+        },
       }),
       this.prisma.tableSession.findMany({
-        where: { primaryWaiterShiftSessionId: shiftSessionId },
+        where: { primaryWaiterShiftSessionId: shiftSessionId, businessDate },
       }),
     ]);
 
@@ -930,6 +1053,7 @@ export class DailyCloseService {
         cashierCountedCash: money(row.cashierCountedCash),
         cashierVariance: money(row.cashierVariance),
         undroppedWaiterCash: money(row.undroppedWaiterCash),
+        kitchenTicketValue: money(row.grossOrderValue),
       },
       waiters: row.waiterLines.map((line) => ({
         waiterMembershipId: line.waiterMembershipId,

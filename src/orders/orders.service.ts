@@ -871,7 +871,18 @@ export class OrdersService {
 
   private async requireWaiter(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!ORDER_ROLES.includes(context.roleCode)) {
+    if (
+      !ORDER_ROLES.includes(context.roleCode) &&
+      !(
+        context.roleCode === 'CASHIER' &&
+        (
+          await this.prisma.branch.findUnique({
+            where: { id: context.branchId! },
+            select: { serviceMode: true },
+          })
+        )?.serviceMode === 'BAKERY'
+      )
+    ) {
       throw new ForbiddenException('Waiter menu is for waiters only.');
     }
     return context;

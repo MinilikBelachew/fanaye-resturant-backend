@@ -3,11 +3,12 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { BillingService } from './billing.service';
 
 @ApiTags('Billing')
@@ -21,8 +22,17 @@ export class CashierPaymentsController {
   constructor(private readonly billingService: BillingService) {}
 
   @Get('payments')
-  list(@Request() request) {
-    return this.billingService.listPayments(String(request.user.id));
+  @ApiQuery({ name: 'from', required: false })
+  @ApiQuery({ name: 'to', required: false })
+  list(
+    @Request() request,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.billingService.listPayments(String(request.user.id), {
+      from,
+      to,
+    });
   }
 
   @Get('payments/:paymentId')

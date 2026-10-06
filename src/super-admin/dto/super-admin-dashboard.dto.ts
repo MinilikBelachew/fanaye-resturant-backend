@@ -5,6 +5,7 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -14,6 +15,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
 
 function emptyToUndefined({ value }: { value: unknown }) {
@@ -396,6 +398,20 @@ export class DeleteTenantResponseDto {
   deletedTenantId: string;
 }
 
+export class CustomStationDto {
+  @ApiProperty({ example: 'GRILL' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(60)
+  code: string;
+
+  @ApiProperty({ example: 'Grill Station' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  name: string;
+}
+
 export class CreateTenantDto {
   @ApiProperty({ example: 'Abyssinia Grill & Lounge' })
   @IsString()
@@ -514,6 +530,14 @@ export class CreateTenantDto {
   @MaxLength(40)
   branchCode?: string;
 
+  @ApiPropertyOptional({
+    enum: ['RESTAURANT', 'BAKERY'],
+    default: 'RESTAURANT',
+  })
+  @IsOptional()
+  @IsIn(['RESTAURANT', 'BAKERY'])
+  serviceMode?: string;
+
   @ApiPropertyOptional({ example: '08:00 – 23:00' })
   @IsOptional()
   @IsString()
@@ -537,6 +561,15 @@ export class CreateTenantDto {
   @ArrayMinSize(1)
   @IsString({ each: true })
   activeStations?: string[];
+
+  @ApiPropertyOptional({
+    example: [{ code: 'GRILL', name: 'Grill Station' }],
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomStationDto)
+  customStations?: CustomStationDto[];
 }
 
 export class UpdateTenantDto {
@@ -967,4 +1000,98 @@ export class ResetPlatformStaffPasswordDto {
   @MinLength(6)
   @MaxLength(72)
   password: string;
+}
+
+export class SubscriptionPlanDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'PRO' })
+  code: string;
+
+  @ApiProperty({ example: 'Pro' })
+  name: string;
+
+  @ApiProperty({ example: 'ACTIVE' })
+  status: string;
+
+  @ApiProperty({ example: 3 })
+  maxBranches: number;
+
+  @ApiProperty({ example: 2 })
+  tenantCount: number;
+}
+
+export class SubscriptionPlanListResponseDto {
+  @ApiProperty({ type: [SubscriptionPlanDto] })
+  data: SubscriptionPlanDto[];
+}
+
+export class CreateSubscriptionPlanDto {
+  @ApiProperty({ example: 'Growth' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  name: string;
+
+  @ApiProperty({ example: 'GROWTH' })
+  @Transform(({ value }) =>
+    typeof value === 'string'
+      ? value.trim().toUpperCase().replace(/\s+/g, '_')
+      : value,
+  )
+  @IsString()
+  @MinLength(2)
+  @MaxLength(40)
+  @Matches(/^[A-Z][A-Z0-9_]*$/, {
+    message: 'Plan code must be letters, numbers, or underscores.',
+  })
+  code: string;
+
+  @ApiProperty({ example: 5 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  maxBranches: number;
+}
+
+export class UpdateSubscriptionPlanDto {
+  @ApiPropertyOptional({ example: 'Pro' })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  name?: string;
+
+  @ApiPropertyOptional({ example: 'PRO' })
+  @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string'
+      ? value.trim().toUpperCase().replace(/\s+/g, '_')
+      : value,
+  )
+  @IsString()
+  @MinLength(2)
+  @MaxLength(40)
+  @Matches(/^[A-Z][A-Z0-9_]*$/, {
+    message: 'Plan code must be letters, numbers, or underscores.',
+  })
+  code?: string;
+
+  @ApiPropertyOptional({ example: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  maxBranches?: number;
+}
+
+export class DeletePlanResponseDto {
+  @ApiProperty()
+  ok: boolean;
+
+  @ApiProperty()
+  deletedPlanId: string;
 }

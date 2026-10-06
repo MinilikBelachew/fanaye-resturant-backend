@@ -212,6 +212,24 @@ async function main() {
   }
   console.log('Users seeded.');
 
+  for (const person of STAFF.filter(entry => entry.platformAdmin)) {
+    await prisma.platformUserRole.upsert({
+      where: {
+        userId_roleCode: {
+          userId: person.id,
+          roleCode: 'PLATFORM_SUPER_ADMIN',
+        },
+      },
+      update: { status: 'ACTIVE' },
+      create: {
+        userId: person.id,
+        roleCode: 'PLATFORM_SUPER_ADMIN',
+        status: 'ACTIVE',
+      },
+    });
+  }
+  console.log('Platform super-admin role granted (selam@fanaye.et / demo123).');
+
   await prisma.tenant.upsert({
     where: { id: TENANT_ID },
     update: {

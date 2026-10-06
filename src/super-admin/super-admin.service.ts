@@ -12,7 +12,9 @@ import { IdentityContextService } from '../identity/identity-context.service';
 import {
   CityDistributionItemDto,
   CreatePlatformStaffDto,
+  CreateSubscriptionPlanDto,
   CreateTenantDto,
+  DeletePlanResponseDto,
   DeleteTenantResponseDto,
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
@@ -33,7 +35,10 @@ import {
   TenantDetailDto,
   TenantDetailResponseDto,
   TenantFleetItemDto,
+  SubscriptionPlanDto,
+  SubscriptionPlanListResponseDto,
   TenantListResponseDto,
+  UpdateSubscriptionPlanDto,
   UpdateTenantDto,
 } from './dto/super-admin-dashboard.dto';
 
@@ -91,6 +96,21 @@ const PLAN_PRICES: Record<string, number> = {
   PRO: 45000,
   ENTERPRISE: 120000,
 };
+
+const BRANCH_MAX_KEY = 'branch.max_count';
+
+function parseBranchMax(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
+  if (typeof raw === 'string') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  if (raw && typeof raw === 'object' && 'value' in (raw as object)) {
+    const n = Number((raw as { value: unknown }).value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 1;
+}
 
 @Injectable()
 export class SuperAdminService {
@@ -666,6 +686,170 @@ export class SuperAdminService {
     return { data };
   }
 
+  private mapPlanDto(plan: {
+    id: string;
+    code: string;
+    name: string;
+    status: string;
+    entitlements: Array<{ entitlementKey: string; valueJson: unknown }>;
+    _count: { subscriptions: number };
+  }): SubscriptionPlanDto {
+    const maxRaw = plan.entitlements.find(
+      (row) => row.entitlementKey === BRANCH_MAX_KEY,
+    )?.valueJson;
+    return {
+      id: plan.id,
+      code: plan.code,
+      name: plan.name,
+      status: plan.status,
+      maxBranches: parseBranchMax(maxRaw),
+      tenantCount: plan._count.subscriptions,
+    };
+  }
+
+  private async loadPlanDto(planId: string): Promise<SubscriptionPlanDto> {
+    const plan = await this.prisma.subscriptionPlan.findUnique({
+      where: { id: planId },
+      include: {
+        entitlements: true,
+        _count: { select: { subscriptions: true } },
+      },
+    });
+    if (!plan) {
+      throw new NotFoundException('Plan not found.');
+    }
+    return this.mapPlanDto(plan);
+  }
+
+  async listPlans(userId: string): Promise<SubscriptionPlanListResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const plans = await this.prisma.subscriptionPlan.findMany({
+      where: { status: 'ACTIVE' },
+      include: {
+        entitlements: true,
+        _count: { select: { subscriptions: true } },
+      },
+      orderBy: { code: 'asc' },
+    });
+
+    return { data: plans.map((plan) => this.mapPlanDto(plan)) };
+  }
+
+  async createPlan(
+    userId: string,
+    dto: CreateSubscriptionPlanDto,
+  ): Promise<SubscriptionPlanDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const code = dto.code.trim().toUpperCase();
+    const clash = await this.prisma.subscriptionPlan.findFirst({
+      where: { code, version: 1 },
+    });
+    if (clash) {
+      throw new ConflictException(`Plan code "${code}" already exists.`);
+    }
+
+    const created = await this.prisma.subscriptionPlan.create({
+      data: {
+        code,
+        name: dto.name.trim(),
+        status: 'ACTIVE',
+        version: 1,
+        entitlements: {
+          create: {
+            entitlementKey: BRANCH_MAX_KEY,
+            valueJson: dto.maxBranches,
+          },
+        },
+      },
+    });
+
+    return this.loadPlanDto(created.id);
+  }
+
+  async updatePlan(
+    userId: string,
+    planId: string,
+    dto: UpdateSubscriptionPlanDto,
+  ): Promise<SubscriptionPlanDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const existing = await this.prisma.subscriptionPlan.findUnique({
+      where: { id: planId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Plan not found.');
+    }
+
+    const nextCode = dto.code?.trim().toUpperCase();
+    if (nextCode && nextCode !== existing.code) {
+      const clash = await this.prisma.subscriptionPlan.findFirst({
+        where: {
+          code: nextCode,
+          version: existing.version,
+          NOT: { id: planId },
+        },
+      });
+      if (clash) {
+        throw new ConflictException(`Plan code "${nextCode}" already exists.`);
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      if (dto.name?.trim() || nextCode) {
+        await tx.subscriptionPlan.update({
+          where: { id: planId },
+          data: {
+            ...(dto.name?.trim() ? { name: dto.name.trim() } : {}),
+            ...(nextCode ? { code: nextCode } : {}),
+          },
+        });
+      }
+      if (dto.maxBranches != null) {
+        await tx.planEntitlement.upsert({
+          where: {
+            planId_entitlementKey: {
+              planId,
+              entitlementKey: BRANCH_MAX_KEY,
+            },
+          },
+          update: { valueJson: dto.maxBranches },
+          create: {
+            planId,
+            entitlementKey: BRANCH_MAX_KEY,
+            valueJson: dto.maxBranches,
+          },
+        });
+      }
+    });
+
+    return this.loadPlanDto(planId);
+  }
+
+  async deletePlan(
+    userId: string,
+    planId: string,
+  ): Promise<DeletePlanResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const existing = await this.prisma.subscriptionPlan.findUnique({
+      where: { id: planId },
+      include: { _count: { select: { subscriptions: true } } },
+    });
+    if (!existing) {
+      throw new NotFoundException('Plan not found.');
+    }
+    if (existing._count.subscriptions > 0) {
+      throw new ConflictException(
+        `Cannot delete "${existing.name}" while ${existing._count.subscriptions} tenant(s) still use it. Move them to another plan first.`,
+      );
+    }
+
+    await this.prisma.subscriptionPlan.delete({ where: { id: planId } });
+    return { ok: true, deletedPlanId: planId };
+  }
+
   async getTenants(userId: string): Promise<TenantListResponseDto> {
     await this.verifySuperAdminAccess(userId);
 
@@ -913,14 +1097,15 @@ export class SuperAdminService {
       throw new BadRequestException('Restaurant brand name is required.');
     }
 
-    const planCode = (dto.planCode || 'PRO').toUpperCase();
-    let plan = await this.prisma.subscriptionPlan.findFirst({
-      where: { code: planCode },
+    const planCode = (dto.planCode || '').trim().toUpperCase();
+    if (!planCode) {
+      throw new BadRequestException('Select a subscription plan.');
+    }
+    const plan = await this.prisma.subscriptionPlan.findFirst({
+      where: { code: planCode, status: 'ACTIVE' },
     });
     if (!plan) {
-      plan = await this.prisma.subscriptionPlan.findFirst({
-        where: { status: 'ACTIVE' },
-      });
+      throw new BadRequestException(`Unknown or inactive plan "${planCode}".`);
     }
 
     const createdTenant = await this.prisma.$transaction(async (tx) => {
@@ -953,6 +1138,7 @@ export class SuperAdminService {
           name: (dto.branchName || `${displayName} Main Branch`).trim(),
           displayCode: branchCode,
           timezone: 'Africa/Addis_Ababa',
+          serviceMode: dto.serviceMode === 'BAKERY' ? 'BAKERY' : 'RESTAURANT',
           status: 'ACTIVE',
           businessDayCutoff: new Date('1970-01-01T04:00:00Z'),
           settings: {
@@ -965,45 +1151,67 @@ export class SuperAdminService {
       });
 
       // 3. Create Subscription
-      if (plan) {
-        await tx.tenantSubscription.create({
-          data: {
-            tenantId: tenant.id,
-            planId: plan.id,
-            subscriptionStatus: 'ACTIVE',
-            effectiveFrom: new Date(),
-          },
-        });
-      }
+      await tx.tenantSubscription.create({
+        data: {
+          tenantId: tenant.id,
+          planId: plan.id,
+          subscriptionStatus: 'ACTIVE',
+          effectiveFrom: new Date(),
+        },
+      });
 
-      // 4. Create Preparation Stations (only those selected in the wizard)
-      const allStationConfigs = [
-        { name: 'Kitchen Station', code: 'KITCHEN', sortOrder: 0 },
-        { name: 'Barista Station', code: 'BARISTA', sortOrder: 1 },
-        { name: 'Cakes & Pastry', code: 'CAKES', sortOrder: 2 },
-        { name: 'Soft Drinks & Bar', code: 'SOFT_DRINKS', sortOrder: 3 },
-      ];
-      const selectedCodes = new Set(
-        (dto.activeStations?.length
-          ? dto.activeStations
-          : allStationConfigs.map((s) => s.code)
-        ).map((code) => code.toUpperCase()),
-      );
-      const stationConfigs = allStationConfigs.filter((st) =>
-        selectedCodes.has(st.code),
-      );
+      const isBakery = dto.serviceMode === 'BAKERY';
 
-      for (const st of stationConfigs) {
+      // 4. Create Preparation Stations (presets + custom), or Counter for bakery
+      if (isBakery) {
         await tx.preparationStation.create({
           data: {
             tenantId: tenant.id,
             branchId: branch.id,
-            name: st.name,
-            code: st.code,
+            name: 'Counter',
+            code: 'COUNTER',
             status: 'ACTIVE',
-            sortOrder: st.sortOrder,
+            sortOrder: 0,
           },
         });
+      } else {
+        const presetStations = [
+          { name: 'Kitchen Station', code: 'KITCHEN', sortOrder: 0 },
+          { name: 'Barista Station', code: 'BARISTA', sortOrder: 1 },
+          { name: 'Cakes & Pastry', code: 'CAKES', sortOrder: 2 },
+          { name: 'Soft Drinks & Bar', code: 'SOFT_DRINKS', sortOrder: 3 },
+        ];
+        const nameByCode = new Map(
+          presetStations.map((st) => [st.code, st.name]),
+        );
+        for (const custom of dto.customStations ?? []) {
+          const code = custom.code.trim().toUpperCase();
+          if (code) nameByCode.set(code, custom.name.trim() || code);
+        }
+        const selectedCodes = (
+          dto.activeStations?.length
+            ? dto.activeStations
+            : presetStations.map((s) => s.code)
+        )
+          .map((code) => code.trim().toUpperCase())
+          .filter(Boolean);
+        const uniqueCodes = [...new Set(selectedCodes)];
+
+        await Promise.all(
+          uniqueCodes.map((code, index) => {
+            const name = nameByCode.get(code) || code.replace(/_/g, ' ');
+            return tx.preparationStation.create({
+              data: {
+                tenantId: tenant.id,
+                branchId: branch.id,
+                name: name.slice(0, 120),
+                code: code.slice(0, 60),
+                status: 'ACTIVE',
+                sortOrder: index,
+              },
+            });
+          }),
+        );
       }
 
       // 5. Create default Table Location & Dining Tables
@@ -1011,22 +1219,24 @@ export class SuperAdminService {
         data: {
           tenantId: tenant.id,
           branchId: branch.id,
-          name: 'Main Dining Floor',
-          code: 'MAIN_FLOOR',
+          name: isBakery ? 'Counter' : 'Main Dining Floor',
+          code: isBakery ? 'COUNTER' : 'MAIN_FLOOR',
           status: 'ACTIVE',
           sortOrder: 0,
         },
       });
 
-      const tableCount = Math.min(Math.max(dto.tableCount || 16, 1), 60);
+      const tableCount = isBakery
+        ? 1
+        : Math.min(Math.max(dto.tableCount || 16, 1), 60);
       for (let i = 1; i <= tableCount; i++) {
         await tx.diningTable.create({
           data: {
             tenantId: tenant.id,
             branchId: branch.id,
             locationId: location.id,
-            displayName: `Table ${i}`,
-            displayNumber: String(i),
+            displayName: isBakery ? 'Counter' : `Table ${i}`,
+            displayNumber: isBakery ? 'C' : String(i),
             status: 'AVAILABLE',
             sortOrder: i,
           },
@@ -1384,8 +1594,13 @@ export class SuperAdminService {
         if (dto.planCode?.trim()) {
           const planCode = dto.planCode.trim().toUpperCase();
           const plan = await tx.subscriptionPlan.findFirst({
-            where: { code: planCode },
+            where: { code: planCode, status: 'ACTIVE' },
           });
+          if (!plan) {
+            throw new BadRequestException(
+              `Unknown or inactive plan "${planCode}".`,
+            );
+          }
           if (plan) {
             const activeSub = existing.subscriptions[0];
             if (activeSub) {

@@ -304,6 +304,8 @@ model Branch {
   name              String    @db.VarChar(180)
   displayCode       String?   @map("display_code") @db.VarChar(40)
   timezone          String    @db.VarChar(80)
+  /// RESTAURANT | BAKERY
+  serviceMode       String    @default("RESTAURANT") @map("service_mode") @db.VarChar(20)
   status            String    @db.VarChar(20)
   openingTime       DateTime? @map("opening_time") @db.Time(0)
   closingTime       DateTime? @map("closing_time") @db.Time(0)

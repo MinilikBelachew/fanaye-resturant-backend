@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
   IsEmail,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -59,6 +60,14 @@ export class CreateBranchDto {
   timezone?: string;
 
   @ApiPropertyOptional({
+    enum: ['RESTAURANT', 'BAKERY'],
+    default: 'RESTAURANT',
+  })
+  @IsOptional()
+  @IsIn(['RESTAURANT', 'BAKERY'])
+  serviceMode?: string;
+
+  @ApiPropertyOptional({
     description: 'Copy stations and a blank main floor from another branch',
   })
   @IsOptional()
@@ -99,6 +108,11 @@ export class UpdateBranchDto {
   @IsString()
   @MaxLength(40)
   displayCode?: string;
+
+  @ApiPropertyOptional({ enum: ['RESTAURANT', 'BAKERY'] })
+  @IsOptional()
+  @IsIn(['RESTAURANT', 'BAKERY'])
+  serviceMode?: string;
 
   @ApiPropertyOptional({ enum: ['ACTIVE', 'SUSPENDED', 'ARCHIVED'] })
   @IsOptional()

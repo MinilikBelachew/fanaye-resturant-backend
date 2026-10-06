@@ -42,6 +42,10 @@ export class BranchDto {
 
   @ApiProperty()
   @Expose()
+  serviceMode: string;
+
+  @ApiProperty()
+  @Expose()
   status: string;
 
   @ApiProperty()

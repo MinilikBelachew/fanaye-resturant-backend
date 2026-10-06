@@ -10,6 +10,12 @@ import { Prisma } from '@prisma/client';
 import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
+import {
+  addCalendarDays,
+  businessDateUtc,
+  calendarYmd,
+  localDayRange,
+} from '../common/business-date';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
@@ -160,39 +166,69 @@ export class CashCustodyService {
       }
     }
 
-    const whereClause: Prisma.CashDropWhereInput = {
-      branchId: context.branchId!,
-      status: { in: statuses },
-    };
-
-    const now = new Date();
-    const today = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    const pendingStatuses = ['INITIATED', 'DISPUTED'];
+    const closedStatuses = ['RECEIVED', 'RESOLVED'];
+    const pendingRequested = statuses.filter((s) =>
+      pendingStatuses.includes(s),
     );
-    const yesterday = new Date(today);
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const closedRequested = statuses.filter((s) => closedStatuses.includes(s));
 
-    if (dateFilter) {
-      const df = dateFilter.toUpperCase();
-      if (df === 'TODAY') {
-        whereClause.businessDate = today;
-      } else if (df === 'YESTERDAY') {
-        whereClause.businessDate = yesterday;
-      } else if (df === 'LAST_7_DAYS') {
-        const past7 = new Date(today);
-        past7.setUTCDate(past7.getUTCDate() - 6);
-        whereClause.businessDate = { gte: past7, lte: today };
+    const df = (dateFilter || '').trim().toUpperCase();
+    const todayYmd = calendarYmd();
+    let fromYmd: string | null = null;
+    let toYmd: string | null = null;
+    if (df === 'TODAY') {
+      fromYmd = todayYmd;
+      toYmd = todayYmd;
+    } else if (df === 'YESTERDAY') {
+      fromYmd = addCalendarDays(todayYmd, -1);
+      toYmd = fromYmd;
+    } else if (df === 'LAST_7_DAYS') {
+      fromYmd = addCalendarDays(todayYmd, -6);
+      toYmd = todayYmd;
+    }
+
+    const or: Prisma.CashDropWhereInput[] = [];
+    if (pendingRequested.length > 0) {
+      or.push({ status: { in: pendingRequested } });
+    }
+    if (closedRequested.length > 0) {
+      const closed: Prisma.CashDropWhereInput = {
+        status: { in: closedRequested },
+      };
+      if (fromYmd && toYmd) {
+        const fromDate = businessDateUtc(new Date(`${fromYmd}T12:00:00.000Z`));
+        const toDate = businessDateUtc(new Date(`${toYmd}T12:00:00.000Z`));
+        const fromRange = localDayRange(fromYmd);
+        const toRange = localDayRange(toYmd);
+        closed.AND = [
+          {
+            OR: [
+              { businessDate: { gte: fromDate, lte: toDate } },
+              {
+                initiatedAt: {
+                  gte: fromRange.start,
+                  lte: toRange.end,
+                },
+              },
+            ],
+          },
+        ];
       }
+      or.push(closed);
     }
 
     const drops = await this.prisma.cashDrop.findMany({
-      where: whereClause,
+      where: {
+        branchId: context.branchId!,
+        ...(or.length === 1 ? or[0] : { OR: or }),
+      },
       include: {
         waiter: true,
         dispute: true,
       },
       orderBy: { initiatedAt: 'desc' },
-      take: 100,
+      take: 200,
     });
     return {
       data: drops.map((drop) => ({

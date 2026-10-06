@@ -82,6 +82,7 @@ export class IdentityContextService {
     let branchId = branchAssignment?.branchId ?? null;
     let branchName =
       branchAssignment?.branch?.name ?? membership?.tenant.displayName ?? null;
+    let serviceMode = branchAssignment?.branch?.serviceMode ?? null;
 
     const preferredId = user.preferredBranchId;
     if (preferredId && membership?.tenantId) {
@@ -95,6 +96,7 @@ export class IdentityContextService {
       if (preferredOk && user.preferredBranch) {
         branchId = user.preferredBranch.id;
         branchName = user.preferredBranch.name;
+        serviceMode = user.preferredBranch.serviceMode;
       }
     }
 
@@ -106,6 +108,7 @@ export class IdentityContextService {
       if (defaultBranch) {
         branchId = defaultBranch.id;
         branchName = defaultBranch.name;
+        serviceMode = defaultBranch.serviceMode;
       }
     }
 
@@ -152,6 +155,7 @@ export class IdentityContextService {
       tenantId: membership?.tenantId ?? null,
       branchId,
       branchName,
+      serviceMode,
       staffMembershipId: membership?.id ?? null,
       roleCode,
       stationId: stationAssignment?.stationId ?? null,
