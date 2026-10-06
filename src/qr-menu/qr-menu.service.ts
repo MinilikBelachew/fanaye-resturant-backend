@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: QrMenuConfigDto = {
   welcomeMessage: 'Welcome to Our Dining Room',
   subtitle:
     'Scan to explore chef specials, drinks, and place your order directly',
-  wifiSsid: 'Fanaye_Guest',
+  wifiSsid: '',
   wifiPassword: '',
   featuredItemIds: [],
   allowGuestOrders: true,
@@ -850,24 +850,57 @@ export class QrMenuService {
 
     const slug = site?.slug ?? 'restaurant';
 
+    const membership = context.staffMembershipId
+      ? await this.prisma.tenantStaffMembership.findUnique({
+          where: { id: context.staffMembershipId },
+          include: {
+            branchAssignments: {
+              where: { status: 'ACTIVE' },
+              select: { branchId: true },
+            },
+          },
+        })
+      : null;
+
+    const assignedBranchIds =
+      membership?.branchAssignments.map((a) => a.branchId) ?? [];
+
+    // Owner / no single branch assignment / multi-branch → tenant-wide tables.
+    // Single-branch manager → only their branch.
+    const managesAllBranches =
+      context.roleCode === 'OWNER_ADMIN' || assignedBranchIds.length !== 1;
+
+    const scopedBranchId = managesAllBranches
+      ? null
+      : (assignedBranchIds[0] ?? context.branchId);
+
     const tables = await this.prisma.diningTable.findMany({
       where: {
         tenantId: context.tenantId,
         archivedAt: null,
+        ...(scopedBranchId ? { branchId: scopedBranchId } : {}),
       },
       include: {
         location: true,
+        branch: true,
       },
-      orderBy: [{ sortOrder: 'asc' }, { displayName: 'asc' }],
+      orderBy: [
+        { branch: { name: 'asc' } },
+        { sortOrder: 'asc' },
+        { displayName: 'asc' },
+      ],
     });
 
     return {
       slug,
+      managesAllBranches,
       tables: tables.map((t) => ({
         id: t.id,
         displayName: t.displayName,
         displayNumber: t.displayNumber,
         locationName: t.location.name,
+        // UI-only for multi-branch managers — never required for print.
+        branchName: managesAllBranches ? t.branch.name : null,
         status: t.status,
         qrRelativeUrl: `/r/${slug}/t/${t.id}`,
         qrFullUrl: `${slug}/t/${t.id}`,

@@ -20,6 +20,9 @@ import {
   DecideChangeDto,
 } from './dto/order-item-mutation.dto';
 import {
+  ApprovalDetailResponseDto,
+  ApprovalHistoryResponseDto,
+  ApprovalQueueItemDto,
   ApprovalQueueResponseDto,
   MutationDataResponseDto,
   OrderItemMutationResultDto,
@@ -29,8 +32,21 @@ const DIRECT_CANCEL_STATES = ['CONFIRMED', 'QUEUED', 'ACKNOWLEDGED'];
 const PROTECTED_CANCEL_STATES = ['IN_PREPARATION', 'READY'];
 const DIRECT_CHANGE_STATES = ['QUEUED', 'ACKNOWLEDGED'];
 const PROTECTED_CHANGE_STATES = ['IN_PREPARATION', 'READY'];
-const WAITER_ROLES = ['WAITER', 'MANAGER', 'OWNER_ADMIN'];
+const WAITER_ROLES = ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'];
+const SHIFT_OWNER_ROLES = ['WAITER', 'DISPATCHER'];
 const APPROVER_ROLES = ['MANAGER', 'OWNER_ADMIN'];
+
+type ApprovalPeriod = 'day' | 'week' | 'month';
+
+const approvalItemInclude = {
+  requestedBy: true,
+  decidedBy: true,
+  orderItem: {
+    include: {
+      tableSession: { include: { table: true } },
+    },
+  },
+} as const;
 
 @Injectable()
 export class OrderItemMutationsService {
@@ -287,67 +303,125 @@ export class OrderItemMutationsService {
     const [cancellations, changes] = await Promise.all([
       this.prisma.cancellationRequest.findMany({
         where: { branchId: context.branchId!, status: 'PENDING' },
-        include: {
-          requestedBy: true,
-          orderItem: {
-            include: {
-              tableSession: { include: { table: true } },
-            },
-          },
-        },
+        include: approvalItemInclude,
         orderBy: { requestedAt: 'asc' },
         take: 50,
       }),
       this.prisma.orderChangeRequest.findMany({
         where: { branchId: context.branchId!, status: 'PENDING' },
-        include: {
-          requestedBy: true,
-          orderItem: {
-            include: {
-              tableSession: { include: { table: true } },
-            },
-          },
-        },
+        include: approvalItemInclude,
         orderBy: { requestedAt: 'asc' },
         take: 50,
       }),
     ]);
 
-    const cancelRows = cancellations.map((row) => ({
-      type: 'CANCELLATION' as const,
-      requestId: row.id,
-      orderItemId: row.orderItemId,
-      itemName: row.orderItem.itemNameSnapshot,
-      tableDisplayName: row.orderItem.tableSession.table.displayName,
-      stationName: row.orderItem.stationNameSnapshot,
-      itemState: row.orderItem.state,
-      itemVersion: row.orderItem.version,
-      reason: row.reason,
-      requestedChange: null,
-      requestedByName: row.requestedBy.employeeDisplayName,
-      requestedAt: row.requestedAt,
-    }));
-
-    const changeRows = changes.map((row) => ({
-      type: 'CHANGE' as const,
-      requestId: row.id,
-      orderItemId: row.orderItemId,
-      itemName: row.orderItem.itemNameSnapshot,
-      tableDisplayName: row.orderItem.tableSession.table.displayName,
-      stationName: row.orderItem.stationNameSnapshot,
-      itemState: row.orderItem.state,
-      itemVersion: row.orderItem.version,
-      reason: row.reason,
-      requestedChange:
-        (row.requestedChangeJson as Record<string, unknown> | null) ?? null,
-      requestedByName: row.requestedBy.employeeDisplayName,
-      requestedAt: row.requestedAt,
-    }));
+    const data = [
+      ...cancellations.map((row) => this.mapCancellationApproval(row)),
+      ...changes.map((row) => this.mapChangeApproval(row)),
+    ].sort((a, b) => a.requestedAt.getTime() - b.requestedAt.getTime());
 
     return {
-      data: [...cancelRows, ...changeRows].sort(
-        (a, b) => a.requestedAt.getTime() - b.requestedAt.getTime(),
-      ),
+      data,
+      summary: {
+        pendingCount: data.length,
+        cancellationCount: data.filter((r) => r.type === 'CANCELLATION').length,
+        changeCount: data.filter((r) => r.type === 'CHANGE').length,
+      },
+    };
+  }
+
+  async getApprovalDetail(
+    userId: string,
+    typeRaw: string,
+    requestId: string,
+  ): Promise<ApprovalDetailResponseDto> {
+    const context = await this.requireApprover(userId);
+    const type = this.parseApprovalType(typeRaw);
+    if (type === 'CANCELLATION') {
+      const row = await this.prisma.cancellationRequest.findFirst({
+        where: { id: requestId, branchId: context.branchId! },
+        include: approvalItemInclude,
+      });
+      if (!row) throw new NotFoundException('Approval request not found.');
+      return { data: this.mapCancellationApproval(row) };
+    }
+
+    const row = await this.prisma.orderChangeRequest.findFirst({
+      where: { id: requestId, branchId: context.branchId! },
+      include: approvalItemInclude,
+    });
+    if (!row) throw new NotFoundException('Approval request not found.');
+    return { data: this.mapChangeApproval(row) };
+  }
+
+  async listApprovalHistory(
+    userId: string,
+    opts?: {
+      period?: string;
+      type?: string;
+      q?: string;
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<ApprovalHistoryResponseDto> {
+    const context = await this.requireApprover(userId);
+    const period = this.parseApprovalPeriod(opts?.period);
+    const { from, to } = this.approvalRangeFor(period);
+    const typeFilter = this.parseApprovalTypeFilter(opts?.type);
+    const q = opts?.q?.trim() || '';
+    const page = Math.max(1, opts?.page ?? 1);
+    const limit = Math.min(50, Math.max(1, opts?.limit ?? 20));
+
+    const baseWhere = {
+      branchId: context.branchId!,
+      status: { not: 'PENDING' },
+      requestedAt: { gte: from, lte: to },
+    };
+
+    const [cancellations, changes] = await Promise.all([
+      typeFilter === 'CHANGE'
+        ? Promise.resolve([])
+        : this.prisma.cancellationRequest.findMany({
+            where: baseWhere,
+            include: approvalItemInclude,
+            orderBy: { requestedAt: 'desc' },
+          }),
+      typeFilter === 'CANCELLATION'
+        ? Promise.resolve([])
+        : this.prisma.orderChangeRequest.findMany({
+            where: baseWhere,
+            include: approvalItemInclude,
+            orderBy: { requestedAt: 'desc' },
+          }),
+    ]);
+
+    let data = [
+      ...cancellations.map((row) => this.mapCancellationApproval(row)),
+      ...changes.map((row) => this.mapChangeApproval(row)),
+    ].sort((a, b) => b.requestedAt.getTime() - a.requestedAt.getTime());
+
+    if (q) {
+      const needle = q.toLowerCase();
+      data = data.filter(
+        (row) =>
+          row.itemName.toLowerCase().includes(needle) ||
+          row.tableDisplayName.toLowerCase().includes(needle) ||
+          row.requestedByName.toLowerCase().includes(needle) ||
+          (row.stationName || '').toLowerCase().includes(needle) ||
+          (row.reason || '').toLowerCase().includes(needle),
+      );
+    }
+
+    const total = data.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const slice = data.slice((page - 1) * limit, page * limit);
+
+    return {
+      period,
+      from: this.ymd(from),
+      to: this.ymd(to),
+      data: slice,
+      pagination: { page, limit, total, totalPages },
     };
   }
 
@@ -738,7 +812,7 @@ export class OrderItemMutationsService {
     });
     if (!item) throw new NotFoundException('Order item not found.');
     if (
-      context.roleCode === 'WAITER' &&
+      SHIFT_OWNER_ROLES.includes(context.roleCode) &&
       item.tableSession.primaryWaiterMembershipId !== context.staffMembershipId
     ) {
       throw new ForbiddenException('This is not your table.');
@@ -776,7 +850,10 @@ export class OrderItemMutationsService {
     if (!WAITER_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Only waiters can change or cancel items.');
     }
-    if (context.roleCode === 'WAITER' && !context.shiftSessionId) {
+    if (
+      SHIFT_OWNER_ROLES.includes(context.roleCode) &&
+      !context.shiftSessionId
+    ) {
       throw new ForbiddenException({
         status: 403,
         code: 'SHIFT_REQUIRED',
@@ -792,5 +869,184 @@ export class OrderItemMutationsService {
       throw new ForbiddenException('Approvals are for managers.');
     }
     return context;
+  }
+
+  private mapCancellationApproval(row: {
+    id: string;
+    orderItemId: string;
+    reason: string;
+    stateAtRequest: string;
+    status: string;
+    requestedAt: Date;
+    decidedAt: Date | null;
+    decisionReason: string | null;
+    requestedBy: { employeeDisplayName: string };
+    decidedBy: { employeeDisplayName: string } | null;
+    orderItem: {
+      orderId: string;
+      itemNameSnapshot: string;
+      quantity: number;
+      unitPriceSnapshot: Prisma.Decimal | number | string;
+      currencyCode: string;
+      state: string;
+      version: number;
+      specialInstruction: string | null;
+      stationNameSnapshot: string;
+      currentPreparationStationId: string;
+      tableSession: {
+        table: {
+          id: string;
+          displayName: string;
+          displayNumber: string | null;
+        };
+      };
+    };
+  }): ApprovalQueueItemDto {
+    const unit = new Prisma.Decimal(row.orderItem.unitPriceSnapshot);
+    const line = unit.mul(row.orderItem.quantity);
+    return {
+      type: 'CANCELLATION',
+      requestId: row.id,
+      orderItemId: row.orderItemId,
+      orderId: row.orderItem.orderId,
+      tableId: row.orderItem.tableSession.table.id,
+      itemName: row.orderItem.itemNameSnapshot,
+      quantity: row.orderItem.quantity,
+      unitPrice: unit.toFixed(2),
+      lineTotal: line.toFixed(2),
+      currencyCode: row.orderItem.currencyCode,
+      tableDisplayName: row.orderItem.tableSession.table.displayName,
+      tableDisplayNumber: row.orderItem.tableSession.table.displayNumber,
+      stationName: row.orderItem.stationNameSnapshot,
+      stationId: row.orderItem.currentPreparationStationId,
+      itemState: row.orderItem.state,
+      stateAtRequest: row.stateAtRequest,
+      itemVersion: row.orderItem.version,
+      status: row.status,
+      reason: row.reason,
+      specialInstruction: row.orderItem.specialInstruction,
+      requestedChange: null,
+      requestedByName: row.requestedBy.employeeDisplayName,
+      requestedAt: row.requestedAt,
+      decidedByName: row.decidedBy?.employeeDisplayName ?? null,
+      decidedAt: row.decidedAt,
+      decisionReason: row.decisionReason,
+    };
+  }
+
+  private mapChangeApproval(row: {
+    id: string;
+    orderItemId: string;
+    reason: string | null;
+    stateAtRequest: string;
+    status: string;
+    requestedAt: Date;
+    decidedAt: Date | null;
+    decisionReason: string | null;
+    requestedChangeJson: Prisma.JsonValue;
+    requestedBy: { employeeDisplayName: string };
+    decidedBy: { employeeDisplayName: string } | null;
+    orderItem: {
+      orderId: string;
+      itemNameSnapshot: string;
+      quantity: number;
+      unitPriceSnapshot: Prisma.Decimal | number | string;
+      currencyCode: string;
+      state: string;
+      version: number;
+      specialInstruction: string | null;
+      stationNameSnapshot: string;
+      currentPreparationStationId: string;
+      tableSession: {
+        table: {
+          id: string;
+          displayName: string;
+          displayNumber: string | null;
+        };
+      };
+    };
+  }): ApprovalQueueItemDto {
+    const unit = new Prisma.Decimal(row.orderItem.unitPriceSnapshot);
+    const line = unit.mul(row.orderItem.quantity);
+    return {
+      type: 'CHANGE',
+      requestId: row.id,
+      orderItemId: row.orderItemId,
+      orderId: row.orderItem.orderId,
+      tableId: row.orderItem.tableSession.table.id,
+      itemName: row.orderItem.itemNameSnapshot,
+      quantity: row.orderItem.quantity,
+      unitPrice: unit.toFixed(2),
+      lineTotal: line.toFixed(2),
+      currencyCode: row.orderItem.currencyCode,
+      tableDisplayName: row.orderItem.tableSession.table.displayName,
+      tableDisplayNumber: row.orderItem.tableSession.table.displayNumber,
+      stationName: row.orderItem.stationNameSnapshot,
+      stationId: row.orderItem.currentPreparationStationId,
+      itemState: row.orderItem.state,
+      stateAtRequest: row.stateAtRequest,
+      itemVersion: row.orderItem.version,
+      status: row.status,
+      reason: row.reason,
+      specialInstruction: row.orderItem.specialInstruction,
+      requestedChange:
+        (row.requestedChangeJson as Record<string, unknown> | null) ?? null,
+      requestedByName: row.requestedBy.employeeDisplayName,
+      requestedAt: row.requestedAt,
+      decidedByName: row.decidedBy?.employeeDisplayName ?? null,
+      decidedAt: row.decidedAt,
+      decisionReason: row.decisionReason,
+    };
+  }
+
+  private parseApprovalType(raw: string): 'CANCELLATION' | 'CHANGE' {
+    const normalized = raw.trim().toUpperCase();
+    if (normalized === 'CANCELLATION' || normalized === 'CANCEL') {
+      return 'CANCELLATION';
+    }
+    if (normalized === 'CHANGE' || normalized === 'CHANGES') {
+      return 'CHANGE';
+    }
+    throw new NotFoundException('Approval request not found.');
+  }
+
+  private parseApprovalTypeFilter(
+    raw?: string,
+  ): 'CANCELLATION' | 'CHANGE' | 'ALL' {
+    if (!raw) return 'ALL';
+    const normalized = raw.trim().toUpperCase();
+    if (normalized === 'CANCELLATION' || normalized === 'CANCEL') {
+      return 'CANCELLATION';
+    }
+    if (normalized === 'CHANGE' || normalized === 'CHANGES') {
+      return 'CHANGE';
+    }
+    return 'ALL';
+  }
+
+  private parseApprovalPeriod(raw?: string): ApprovalPeriod {
+    if (raw === 'week' || raw === 'month') return raw;
+    return 'day';
+  }
+
+  private approvalRangeFor(period: ApprovalPeriod): { from: Date; to: Date } {
+    const now = new Date();
+    const to = new Date(now);
+    to.setHours(23, 59, 59, 999);
+    const from = new Date(now);
+    from.setHours(0, 0, 0, 0);
+    if (period === 'week') {
+      from.setDate(from.getDate() - 6);
+    } else if (period === 'month') {
+      from.setDate(1);
+    }
+    return { from, to };
+  }
+
+  private ymd(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
 }

@@ -9,11 +9,17 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { StaffCoverageService } from './staff-coverage.service';
 import {
   CreateAdminStaffDto,
@@ -28,6 +34,7 @@ import {
   AdminShiftDefinitionListResponseDto,
   AdminShiftDefinitionResponseDto,
   AdminShiftFloorResponseDto,
+  AdminStaffDetailResponseDto,
   AdminStaffListResponseDto,
   AdminStaffMemberResponseDto,
   AdminWaiterCoverageResponseDto,
@@ -44,9 +51,33 @@ export class StaffCoverageController {
   constructor(private readonly staff: StaffCoverageService) {}
 
   @Get('staff')
+  @ApiQuery({
+    name: 'scope',
+    required: false,
+    enum: ['branch', 'all'],
+    description: 'Owner can pass all to list every branch',
+  })
+  @ApiQuery({
+    name: 'branchId',
+    required: false,
+    description: 'Owner can filter to one branch',
+  })
   @ApiOkResponse({ type: AdminStaffListResponseDto })
-  listStaff(@Request() request): Promise<AdminStaffListResponseDto> {
-    return this.staff.listStaff(String(request.user.id));
+  listStaff(
+    @Request() request,
+    @Query('scope') scope?: string,
+    @Query('branchId') branchId?: string,
+  ): Promise<AdminStaffListResponseDto> {
+    return this.staff.listStaff(String(request.user.id), { scope, branchId });
+  }
+
+  @Get('staff/:membershipId/detail')
+  @ApiOkResponse({ type: AdminStaffDetailResponseDto })
+  staffDetail(
+    @Request() request,
+    @Param('membershipId', ParseUUIDPipe) membershipId: string,
+  ): Promise<AdminStaffDetailResponseDto> {
+    return this.staff.getStaffDetail(String(request.user.id), membershipId);
   }
 
   @Post('staff')

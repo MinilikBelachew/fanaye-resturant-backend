@@ -155,6 +155,16 @@ export class CreateMenuItemDto {
   @ValidateNested({ each: true })
   @Type(() => RecipeLineInputDto)
   recipeLines?: RecipeLineInputDto[];
+
+  @ApiPropertyOptional({
+    description: 'Dietary / guest-filter tag for this dish (tenant-defined)',
+    example: 'FASTING',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  badge?: string | null;
 }
 
 export class UpdateMenuItemDto {
@@ -240,6 +250,16 @@ export class UpdateMenuItemDto {
   @ValidateNested({ each: true })
   @Type(() => RecipeLineInputDto)
   recipeLines?: RecipeLineInputDto[];
+
+  @ApiPropertyOptional({
+    description: 'Dietary / guest-filter tag for this dish (tenant-defined)',
+    example: 'Halal',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  badge?: string | null;
 }
 
 export class CreateModifierGroupDto extends ModifierGroupInputDto {}

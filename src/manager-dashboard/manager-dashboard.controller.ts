@@ -33,6 +33,12 @@ export class ManagerDashboardController {
   })
   @ApiQuery({ name: 'fromDate', required: false })
   @ApiQuery({ name: 'toDate', required: false })
+  @ApiQuery({
+    name: 'scope',
+    required: false,
+    enum: ['branch', 'all'],
+    description: 'Owner can pass all to total every branch',
+  })
   @ApiOkResponse({ type: ManagerDashboardResponseDto })
   getDashboard(
     @Request() request,
@@ -40,12 +46,14 @@ export class ManagerDashboardController {
     @Query('period') period?: string,
     @Query('fromDate') fromDate?: string,
     @Query('toDate') toDate?: string,
+    @Query('scope') scope?: string,
   ): Promise<ManagerDashboardResponseDto> {
     return this.managerDashboardService.getDashboard(String(request.user.id), {
       businessDate,
       period,
       fromDate,
       toDate,
+      scope,
     });
   }
 

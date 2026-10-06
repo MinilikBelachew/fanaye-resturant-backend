@@ -31,6 +31,18 @@ export class StationManagementResponseDto {
   @ApiProperty({ example: 12 })
   menuItemCount: number;
 
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Active station owners / assigned staff display names',
+  })
+  ownerNames?: string[];
+
+  @ApiPropertyOptional({
+    example: 14,
+    description: 'Order items confirmed today for this station',
+  })
+  ticketsToday?: number;
+
   @ApiProperty()
   createdAt: Date;
 

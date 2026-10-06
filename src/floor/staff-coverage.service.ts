@@ -23,6 +23,7 @@ import {
   AdminShiftDefinitionListResponseDto,
   AdminShiftDefinitionResponseDto,
   AdminShiftFloorResponseDto,
+  AdminStaffDetailResponseDto,
   AdminStaffListResponseDto,
   AdminStaffMemberDto,
   AdminStaffMemberResponseDto,
@@ -37,6 +38,7 @@ const ROLE_LABELS: Record<string, string> = {
   CASHIER: 'Cashier',
   WAITER: 'Waiter',
   STATION_OPERATOR: 'Station operator',
+  DISPATCHER: 'Dispatcher',
 };
 
 const UI_ROLE_TO_CODE: Record<string, string> = {
@@ -48,11 +50,13 @@ const UI_ROLE_TO_CODE: Record<string, string> = {
   barista: 'STATION_OPERATOR',
   cakes: 'STATION_OPERATOR',
   soft_drinks: 'STATION_OPERATOR',
+  dispatcher: 'DISPATCHER',
   WAITER: 'WAITER',
   MANAGER: 'MANAGER',
   CASHIER: 'CASHIER',
   OWNER_ADMIN: 'OWNER_ADMIN',
   STATION_OPERATOR: 'STATION_OPERATOR',
+  DISPATCHER: 'DISPATCHER',
 };
 
 const UI_ROLE_TO_STATION_CODE: Record<string, string> = {
@@ -96,17 +100,50 @@ export class StaffCoverageService {
     private readonly identity: IdentityContextService,
   ) {}
 
-  async listStaff(userId: string): Promise<AdminStaffListResponseDto> {
+  async listStaff(
+    userId: string,
+    opts?: { scope?: string; branchId?: string },
+  ): Promise<AdminStaffListResponseDto> {
     const context = await this.requireAdmin(userId);
+    const { branchIds, scopeAll } = await this.resolveStaffScope(context, opts);
+
+    const membershipWhere = scopeAll
+      ? {
+          tenantId: context.tenantId!,
+          status: 'ACTIVE' as const,
+          OR: [
+            {
+              branchAssignments: {
+                some: {
+                  branchId: { in: branchIds },
+                  status: 'ACTIVE',
+                },
+              },
+            },
+            {
+              roleAssignments: {
+                some: {
+                  status: 'ACTIVE',
+                  role: { code: 'OWNER_ADMIN' },
+                },
+              },
+            },
+          ],
+        }
+      : {
+          tenantId: context.tenantId!,
+          status: 'ACTIVE' as const,
+          branchAssignments: {
+            some: {
+              branchId: { in: branchIds },
+              status: 'ACTIVE',
+            },
+          },
+        };
+
     const [memberships, shifts] = await Promise.all([
       this.prisma.tenantStaffMembership.findMany({
-        where: {
-          tenantId: context.tenantId!,
-          status: 'ACTIVE',
-          branchAssignments: {
-            some: { branchId: context.branchId!, status: 'ACTIVE' },
-          },
-        },
+        where: membershipWhere,
         include: {
           user: { include: { credential: true } },
           roleAssignments: {
@@ -115,10 +152,20 @@ export class StaffCoverageService {
             orderBy: { grantedAt: 'desc' },
             take: 1,
           },
+          branchAssignments: {
+            where: {
+              status: 'ACTIVE',
+              ...(scopeAll ? {} : { branchId: { in: branchIds } }),
+            },
+            include: {
+              branch: { select: { id: true, name: true } },
+            },
+            orderBy: { assignedAt: 'asc' },
+          },
           stationAssignments: {
             where: {
               status: 'ACTIVE',
-              branchId: context.branchId!,
+              branchId: { in: branchIds },
               releasedAt: null,
             },
             include: { station: true },
@@ -126,7 +173,7 @@ export class StaffCoverageService {
             take: 1,
           },
           shiftTableCoverages: {
-            where: { branchId: context.branchId! },
+            where: { branchId: { in: branchIds } },
             include: {
               shiftDefinition: true,
               table: { include: { location: true } },
@@ -135,15 +182,50 @@ export class StaffCoverageService {
         },
         orderBy: { employeeDisplayName: 'asc' },
       }),
-      this.prisma.shiftDefinition.findMany({
-        where: { branchId: context.branchId!, status: 'ACTIVE' },
-        orderBy: { startLocalTime: 'asc' },
-      }),
+      scopeAll
+        ? Promise.resolve([])
+        : this.prisma.shiftDefinition.findMany({
+            where: { branchId: branchIds[0], status: 'ACTIVE' },
+            orderBy: { startLocalTime: 'asc' },
+          }),
     ]);
 
     return {
       data: memberships.map((member) => this.toStaffDto(member)),
       shifts: shifts.map((shift) => this.toShiftDto(shift)),
+    };
+  }
+
+  async getStaffDetail(
+    userId: string,
+    membershipId: string,
+  ): Promise<AdminStaffDetailResponseDto> {
+    const context = await this.requireAdmin(userId);
+    await this.requireTenantStaffAccess(context, membershipId);
+    const workingBranchId = await this.resolveMembershipBranchId(
+      context,
+      membershipId,
+    );
+
+    const member = await this.loadStaffMember(
+      context,
+      membershipId,
+      workingBranchId,
+    );
+    const base = this.toStaffDto(member);
+    const tablesCoveredCount = base.shiftCoverages.reduce(
+      (sum, coverage) => sum + coverage.tables.length,
+      0,
+    );
+
+    return {
+      data: {
+        ...base,
+        joinedAt: member.joinedAt?.toISOString() ?? null,
+        createdAt: member.createdAt.toISOString(),
+        tablesCoveredCount,
+        shiftsCoveredCount: base.shiftCoverages.length,
+      },
     };
   }
 
@@ -163,6 +245,11 @@ export class StaffCoverageService {
         errors: { role: 'invalid' },
       });
     }
+
+    const targetBranchId = await this.resolveCreateBranchId(
+      context,
+      dto.branchId,
+    );
 
     const name = dto.name.trim();
     const phone = dto.phone?.trim() || null;
@@ -207,6 +294,7 @@ export class StaffCoverageService {
             context,
             dto.preparationStationId,
             dto.stationCode || UI_ROLE_TO_STATION_CODE[dto.role],
+            targetBranchId,
           )
         : null;
 
@@ -248,7 +336,7 @@ export class StaffCoverageService {
       await tx.branchStaffAssignment.create({
         data: {
           tenantId: context.tenantId!,
-          branchId: context.branchId!,
+          branchId: targetBranchId,
           staffMembershipId: membership.id,
           status: 'ACTIVE',
         },
@@ -259,7 +347,7 @@ export class StaffCoverageService {
           tenantId: context.tenantId!,
           staffMembershipId: membership.id,
           roleId: role.id,
-          branchId: roleCode === 'OWNER_ADMIN' ? null : context.branchId!,
+          branchId: roleCode === 'OWNER_ADMIN' ? null : targetBranchId,
           status: 'ACTIVE',
           grantedByMembershipId: context.staffMembershipId,
         },
@@ -269,7 +357,7 @@ export class StaffCoverageService {
         await tx.stationStaffAssignment.create({
           data: {
             tenantId: context.tenantId!,
-            branchId: context.branchId!,
+            branchId: targetBranchId,
             stationId,
             staffMembershipId: membership.id,
             status: 'ACTIVE',
@@ -280,7 +368,7 @@ export class StaffCoverageService {
       await tx.auditEvent.create({
         data: {
           tenantId: context.tenantId!,
-          branchId: context.branchId!,
+          branchId: targetBranchId,
           actorUserId: context.userId,
           actorStaffMembershipId: context.staffMembershipId,
           actorRestaurantRole: context.roleCode,
@@ -292,6 +380,7 @@ export class StaffCoverageService {
             roleCode,
             email,
             phone,
+            branchId: targetBranchId,
           },
         },
       });
@@ -311,7 +400,11 @@ export class StaffCoverageService {
       });
     }
 
-    const member = await this.loadStaffMember(context, membershipId);
+    const member = await this.loadStaffMember(
+      context,
+      membershipId,
+      targetBranchId,
+    );
     return { data: this.toStaffDto(member) };
   }
 
@@ -321,13 +414,15 @@ export class StaffCoverageService {
     dto: UpdateAdminStaffDto,
   ): Promise<AdminStaffMemberResponseDto> {
     const context = await this.requireAdmin(userId);
+    await this.requireTenantStaffAccess(context, membershipId);
+    const workingBranchId = await this.resolveMembershipBranchId(
+      context,
+      membershipId,
+    );
     const existing = await this.prisma.tenantStaffMembership.findFirst({
       where: {
         id: membershipId,
         tenantId: context.tenantId!,
-        branchAssignments: {
-          some: { branchId: context.branchId!, status: 'ACTIVE' },
-        },
       },
       include: {
         user: { include: { credential: true } },
@@ -487,7 +582,7 @@ export class StaffCoverageService {
             tenantId: context.tenantId!,
             staffMembershipId: membershipId,
             roleId: role.id,
-            branchId: nextRoleCode === 'OWNER_ADMIN' ? null : context.branchId!,
+            branchId: nextRoleCode === 'OWNER_ADMIN' ? null : workingBranchId,
             status: 'ACTIVE',
             grantedByMembershipId: context.staffMembershipId,
           },
@@ -499,11 +594,12 @@ export class StaffCoverageService {
             dto.preparationStationId,
             dto.stationCode ||
               (dto.role ? UI_ROLE_TO_STATION_CODE[dto.role] : undefined),
+            workingBranchId,
           );
           await tx.stationStaffAssignment.updateMany({
             where: {
               staffMembershipId: membershipId,
-              branchId: context.branchId!,
+              branchId: workingBranchId,
               status: 'ACTIVE',
             },
             data: { status: 'INACTIVE', releasedAt: new Date() },
@@ -512,7 +608,7 @@ export class StaffCoverageService {
             await tx.stationStaffAssignment.create({
               data: {
                 tenantId: context.tenantId!,
-                branchId: context.branchId!,
+                branchId: workingBranchId,
                 stationId,
                 staffMembershipId: membershipId,
                 status: 'ACTIVE',
@@ -523,7 +619,11 @@ export class StaffCoverageService {
       }
     });
 
-    const member = await this.loadStaffMember(context, membershipId);
+    const member = await this.loadStaffMember(
+      context,
+      membershipId,
+      workingBranchId,
+    );
     return { data: this.toStaffDto(member) };
   }
 
@@ -668,12 +768,16 @@ export class StaffCoverageService {
     dto: SetWaiterTableCoverageDto,
   ): Promise<AdminWaiterCoverageResponseDto> {
     const context = await this.requireAdmin(userId);
-    await this.requireWaiter(context, waiterMembershipId);
+    const workingBranchId = await this.resolveMembershipBranchId(
+      context,
+      waiterMembershipId,
+    );
+    await this.requireWaiter(context, waiterMembershipId, workingBranchId);
 
     const shift = await this.prisma.shiftDefinition.findFirst({
       where: {
         id: dto.shiftDefinitionId,
-        branchId: context.branchId!,
+        branchId: workingBranchId,
         status: 'ACTIVE',
       },
     });
@@ -689,7 +793,7 @@ export class StaffCoverageService {
       const tables = await this.prisma.diningTable.findMany({
         where: {
           id: { in: uniqueTableIds },
-          branchId: context.branchId!,
+          branchId: workingBranchId,
           archivedAt: null,
         },
         select: { id: true },
@@ -706,7 +810,7 @@ export class StaffCoverageService {
       // Clear this waiter's previous rows for the shift, then replace.
       await tx.diningTableShiftCoverage.deleteMany({
         where: {
-          branchId: context.branchId!,
+          branchId: workingBranchId,
           shiftDefinitionId: shift.id,
           waiterMembershipId,
         },
@@ -716,7 +820,7 @@ export class StaffCoverageService {
       if (uniqueTableIds.length > 0) {
         await tx.diningTableShiftCoverage.deleteMany({
           where: {
-            branchId: context.branchId!,
+            branchId: workingBranchId,
             shiftDefinitionId: shift.id,
             diningTableId: { in: uniqueTableIds },
           },
@@ -724,7 +828,7 @@ export class StaffCoverageService {
         await tx.diningTableShiftCoverage.createMany({
           data: uniqueTableIds.map((diningTableId) => ({
             tenantId: context.tenantId!,
-            branchId: context.branchId!,
+            branchId: workingBranchId,
             diningTableId,
             shiftDefinitionId: shift.id,
             waiterMembershipId,
@@ -747,6 +851,10 @@ export class StaffCoverageService {
     workingDays: string[];
     user: { phone: string | null; email: string | null } | null;
     roleAssignments: Array<{ role: { code: string; name: string } }>;
+    branchAssignments?: Array<{
+      branchId: string;
+      branch?: { id: string; name: string } | null;
+    }>;
     stationAssignments?: Array<{
       stationId: string;
       station: { id: string; name: string };
@@ -770,6 +878,12 @@ export class StaffCoverageService {
     const role = member.roleAssignments[0]?.role;
     const roleCode = role?.code ?? 'WAITER';
     const station = member.stationAssignments?.[0]?.station ?? null;
+    const primaryBranch = member.branchAssignments?.[0] ?? null;
+    const branchId =
+      primaryBranch?.branchId ?? primaryBranch?.branch?.id ?? null;
+    const branchName =
+      primaryBranch?.branch?.name ??
+      (roleCode === 'OWNER_ADMIN' ? 'All branches' : null);
     const byShift = new Map<
       string,
       AdminStaffMemberDto['shiftCoverages'][number]
@@ -813,6 +927,8 @@ export class StaffCoverageService {
       hasPassword: hasCred,
       stationId: station?.id ?? null,
       stationName: station?.name ?? null,
+      branchId,
+      branchName,
       shiftCoverages: [...byShift.values()].sort((a, b) =>
         a.startLocalTime.localeCompare(b.startLocalTime),
       ),
@@ -825,13 +941,15 @@ export class StaffCoverageService {
     dto: ResetAdminStaffPinDto,
   ): Promise<AdminStaffMemberResponseDto> {
     const context = await this.requireAdmin(userId);
+    await this.requireTenantStaffAccess(context, membershipId);
+    const workingBranchId = await this.resolveMembershipBranchId(
+      context,
+      membershipId,
+    );
     const membership = await this.prisma.tenantStaffMembership.findFirst({
       where: {
         id: membershipId,
         tenantId: context.tenantId!,
-        branchAssignments: {
-          some: { branchId: context.branchId!, status: 'ACTIVE' },
-        },
       },
       include: { user: true },
     });
@@ -875,7 +993,7 @@ export class StaffCoverageService {
       await tx.auditEvent.create({
         data: {
           tenantId: context.tenantId!,
-          branchId: context.branchId!,
+          branchId: workingBranchId,
           actorUserId: context.userId,
           actorStaffMembershipId: context.staffMembershipId,
           actorRestaurantRole: context.roleCode,
@@ -887,7 +1005,11 @@ export class StaffCoverageService {
       });
     });
 
-    const member = await this.loadStaffMember(context, membershipId);
+    const member = await this.loadStaffMember(
+      context,
+      membershipId,
+      workingBranchId,
+    );
     return { data: this.toStaffDto(member) };
   }
 
@@ -897,6 +1019,11 @@ export class StaffCoverageService {
     dto: ResetAdminStaffPasswordDto,
   ): Promise<AdminStaffMemberResponseDto> {
     const context = await this.requireAdmin(userId);
+    await this.requireTenantStaffAccess(context, membershipId);
+    const workingBranchId = await this.resolveMembershipBranchId(
+      context,
+      membershipId,
+    );
     const password = dto.password?.trim();
     if (!password || password.length < 6) {
       throw new UnprocessableEntityException({
@@ -909,9 +1036,6 @@ export class StaffCoverageService {
       where: {
         id: membershipId,
         tenantId: context.tenantId!,
-        branchAssignments: {
-          some: { branchId: context.branchId!, status: 'ACTIVE' },
-        },
       },
       include: { user: true },
     });
@@ -949,7 +1073,7 @@ export class StaffCoverageService {
       await tx.auditEvent.create({
         data: {
           tenantId: context.tenantId!,
-          branchId: context.branchId!,
+          branchId: workingBranchId,
           actorUserId: context.userId,
           actorStaffMembershipId: context.staffMembershipId,
           actorRestaurantRole: context.roleCode,
@@ -961,7 +1085,11 @@ export class StaffCoverageService {
       });
     });
 
-    const member = await this.loadStaffMember(context, membershipId);
+    const member = await this.loadStaffMember(
+      context,
+      membershipId,
+      workingBranchId,
+    );
     return { data: this.toStaffDto(member) };
   }
 
@@ -998,12 +1126,14 @@ export class StaffCoverageService {
     context: AuthContextDto,
     preparationStationId?: string,
     stationCode?: string,
+    branchId?: string,
   ): Promise<string | null> {
+    const targetBranchId = branchId || context.branchId!;
     if (preparationStationId) {
       const station = await this.prisma.preparationStation.findFirst({
         where: {
           id: preparationStationId,
-          branchId: context.branchId!,
+          branchId: targetBranchId,
           status: 'ACTIVE',
         },
       });
@@ -1018,7 +1148,7 @@ export class StaffCoverageService {
     if (stationCode) {
       const station = await this.prisma.preparationStation.findFirst({
         where: {
-          branchId: context.branchId!,
+          branchId: targetBranchId,
           code: stationCode.toUpperCase(),
           status: 'ACTIVE',
         },
@@ -1032,13 +1162,18 @@ export class StaffCoverageService {
       return station.id;
     }
     const fallback = await this.prisma.preparationStation.findFirst({
-      where: { branchId: context.branchId!, status: 'ACTIVE' },
+      where: { branchId: targetBranchId, status: 'ACTIVE' },
       orderBy: { sortOrder: 'asc' },
     });
     return fallback?.id ?? null;
   }
 
-  private async loadStaffMember(context: AuthContextDto, membershipId: string) {
+  private async loadStaffMember(
+    context: AuthContextDto,
+    membershipId: string,
+    branchId?: string,
+  ) {
+    const targetBranchId = branchId || context.branchId!;
     const member = await this.prisma.tenantStaffMembership.findFirst({
       where: {
         id: membershipId,
@@ -1052,10 +1187,17 @@ export class StaffCoverageService {
           orderBy: { grantedAt: 'desc' },
           take: 1,
         },
+        branchAssignments: {
+          where: { status: 'ACTIVE' },
+          include: {
+            branch: { select: { id: true, name: true } },
+          },
+          orderBy: { assignedAt: 'asc' },
+        },
         stationAssignments: {
           where: {
             status: 'ACTIVE',
-            branchId: context.branchId!,
+            branchId: targetBranchId,
             releasedAt: null,
           },
           include: { station: true },
@@ -1063,7 +1205,7 @@ export class StaffCoverageService {
           take: 1,
         },
         shiftTableCoverages: {
-          where: { branchId: context.branchId! },
+          where: { branchId: targetBranchId },
           include: {
             shiftDefinition: true,
             table: { include: { location: true } },
@@ -1077,14 +1219,19 @@ export class StaffCoverageService {
     return member;
   }
 
-  private async requireWaiter(context: AuthContextDto, membershipId: string) {
+  private async requireWaiter(
+    context: AuthContextDto,
+    membershipId: string,
+    branchId?: string,
+  ) {
+    const targetBranchId = branchId || context.branchId!;
     const waiter = await this.prisma.tenantStaffMembership.findFirst({
       where: {
         id: membershipId,
         tenantId: context.tenantId!,
         status: 'ACTIVE',
         branchAssignments: {
-          some: { branchId: context.branchId!, status: 'ACTIVE' },
+          some: { branchId: targetBranchId, status: 'ACTIVE' },
         },
         roleAssignments: {
           some: { status: 'ACTIVE', role: { code: 'WAITER' } },
@@ -1098,6 +1245,118 @@ export class StaffCoverageService {
       });
     }
     return waiter;
+  }
+
+  private async resolveStaffScope(
+    context: AuthContextDto,
+    opts?: { scope?: string; branchId?: string },
+  ): Promise<{ branchIds: string[]; scopeAll: boolean }> {
+    const isOwner = context.roleCode === 'OWNER_ADMIN';
+    if (isOwner && opts?.branchId) {
+      const branch = await this.prisma.branch.findFirst({
+        where: {
+          id: opts.branchId,
+          tenantId: context.tenantId!,
+          status: 'ACTIVE',
+        },
+        select: { id: true },
+      });
+      if (!branch) {
+        throw new NotFoundException('Branch not found.');
+      }
+      return { branchIds: [branch.id], scopeAll: false };
+    }
+
+    const scopeAll =
+      isOwner && String(opts?.scope || '').toLowerCase() === 'all';
+    if (scopeAll) {
+      const branches = await this.prisma.branch.findMany({
+        where: { tenantId: context.tenantId!, status: 'ACTIVE' },
+        select: { id: true },
+      });
+      return {
+        branchIds: branches.map((branch) => branch.id),
+        scopeAll: true,
+      };
+    }
+
+    return { branchIds: [context.branchId!], scopeAll: false };
+  }
+
+  private async resolveCreateBranchId(
+    context: AuthContextDto,
+    branchId?: string,
+  ): Promise<string> {
+    if (!branchId || context.roleCode !== 'OWNER_ADMIN') {
+      return context.branchId!;
+    }
+    const branch = await this.prisma.branch.findFirst({
+      where: {
+        id: branchId,
+        tenantId: context.tenantId!,
+        status: 'ACTIVE',
+      },
+      select: { id: true },
+    });
+    if (!branch) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { branchId: 'invalid' },
+      });
+    }
+    return branch.id;
+  }
+
+  private async resolveMembershipBranchId(
+    context: AuthContextDto,
+    membershipId: string,
+  ): Promise<string> {
+    if (context.roleCode !== 'OWNER_ADMIN') {
+      return context.branchId!;
+    }
+    const assignment = await this.prisma.branchStaffAssignment.findFirst({
+      where: {
+        staffMembershipId: membershipId,
+        status: 'ACTIVE',
+        branch: { tenantId: context.tenantId! },
+      },
+      select: { branchId: true },
+      orderBy: { assignedAt: 'asc' },
+    });
+    return assignment?.branchId ?? context.branchId!;
+  }
+
+  private async requireTenantStaffAccess(
+    context: AuthContextDto,
+    membershipId: string,
+  ): Promise<void> {
+    if (context.roleCode === 'OWNER_ADMIN') {
+      const membership = await this.prisma.tenantStaffMembership.findFirst({
+        where: {
+          id: membershipId,
+          tenantId: context.tenantId!,
+        },
+        select: { id: true },
+      });
+      if (!membership) {
+        throw new NotFoundException('Staff member not found.');
+      }
+      return;
+    }
+
+    const membership = await this.prisma.tenantStaffMembership.findFirst({
+      where: {
+        id: membershipId,
+        tenantId: context.tenantId!,
+        branchAssignments: {
+          some: { branchId: context.branchId!, status: 'ACTIVE' },
+        },
+      },
+      select: { id: true },
+    });
+    if (!membership) {
+      throw new NotFoundException('Staff member not found.');
+    }
   }
 
   private async verifyPinUniqueInTenant(

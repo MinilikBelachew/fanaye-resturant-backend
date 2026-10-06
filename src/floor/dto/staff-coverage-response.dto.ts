@@ -91,8 +91,31 @@ export class AdminStaffMemberDto {
   @ApiPropertyOptional()
   stationName?: string | null;
 
+  @ApiPropertyOptional()
+  branchId?: string | null;
+
+  @ApiPropertyOptional()
+  branchName?: string | null;
+
   @ApiProperty({ type: [AdminStaffShiftCoverageDto] })
   shiftCoverages: AdminStaffShiftCoverageDto[];
+
+  @ApiPropertyOptional()
+  joinedAt?: string | null;
+
+  @ApiPropertyOptional()
+  createdAt?: string | null;
+
+  @ApiPropertyOptional()
+  tablesCoveredCount?: number;
+
+  @ApiPropertyOptional()
+  shiftsCoveredCount?: number;
+}
+
+export class AdminStaffDetailResponseDto {
+  @ApiProperty({ type: AdminStaffMemberDto })
+  data: AdminStaffMemberDto;
 }
 
 export class AdminStaffListResponseDto {

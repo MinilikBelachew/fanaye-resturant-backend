@@ -26,6 +26,10 @@ import {
   StationMenuItemDto,
   StationMenuResponseDto,
 } from './dto/station-menu.dto';
+import {
+  StationDetailResponseDto,
+  StationHistoryResponseDto,
+} from './dto/station-detail.dto';
 
 const DEFAULT_STATES = [
   'QUEUED',
@@ -36,6 +40,15 @@ const DEFAULT_STATES = [
 ];
 
 const ACTIVE_COOKING = ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'];
+const HISTORY_STATES = [
+  'QUEUED',
+  'ACKNOWLEDGED',
+  'IN_PREPARATION',
+  'READY',
+  'SERVED',
+  'CANCELLED',
+  'CANNOT_PREPARE',
+];
 
 @Injectable()
 export class StationsService {
@@ -78,6 +91,29 @@ export class StationsService {
       },
     });
 
+    const today = startOfLocalDay();
+    const todayTickets = await this.prisma.orderItem.groupBy({
+      by: ['currentPreparationStationId'],
+      where: {
+        branchId: context.branchId!,
+        businessDate: today,
+        cancelledAt: null,
+      },
+      _count: { _all: true },
+    });
+
+    const assignments = await this.prisma.stationStaffAssignment.findMany({
+      where: {
+        branchId: context.branchId!,
+        status: 'ACTIVE',
+        releasedAt: null,
+      },
+      include: {
+        membership: { select: { employeeDisplayName: true } },
+      },
+      orderBy: { assignedAt: 'asc' },
+    });
+
     const countMap = new Map<string, number>();
     for (const c of activeCounts) {
       countMap.set(c.currentPreparationStationId, c._count._all);
@@ -85,6 +121,17 @@ export class StationsService {
     const menuCountMap = new Map<string, number>();
     for (const c of menuCounts) {
       menuCountMap.set(c.preparationStationId, c._count._all);
+    }
+    const todayMap = new Map<string, number>();
+    for (const c of todayTickets) {
+      todayMap.set(c.currentPreparationStationId, c._count._all);
+    }
+    const ownerMap = new Map<string, string[]>();
+    for (const a of assignments) {
+      const list = ownerMap.get(a.stationId) ?? [];
+      const name = a.membership.employeeDisplayName?.trim();
+      if (name && !list.includes(name)) list.push(name);
+      ownerMap.set(a.stationId, list);
     }
 
     return stations.map((s) => ({
@@ -98,6 +145,8 @@ export class StationsService {
       sortOrder: s.sortOrder,
       ticketCount: countMap.get(s.id) ?? 0,
       menuItemCount: menuCountMap.get(s.id) ?? 0,
+      ownerNames: ownerMap.get(s.id) ?? [],
+      ticketsToday: todayMap.get(s.id) ?? 0,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
     }));
@@ -306,6 +355,244 @@ export class StationsService {
     return {
       success: true,
       message: 'Station deleted successfully.',
+    };
+  }
+
+  async getStationDetail(
+    userId: string,
+    stationId: string,
+  ): Promise<StationDetailResponseDto> {
+    const context = await this.requireManager(userId);
+    const station = await this.prisma.preparationStation.findFirst({
+      where: { id: stationId, branchId: context.branchId! },
+    });
+    if (!station) {
+      throw new NotFoundException('Station not found.');
+    }
+
+    const today = startOfLocalDay();
+
+    const [openTickets, ticketsToday, servedToday, menuItemCount, owners] =
+      await Promise.all([
+        this.prisma.orderItem.count({
+          where: {
+            branchId: context.branchId!,
+            currentPreparationStationId: stationId,
+            state: { in: ACTIVE_COOKING },
+            cancelledAt: null,
+          },
+        }),
+        this.prisma.orderItem.count({
+          where: {
+            branchId: context.branchId!,
+            currentPreparationStationId: stationId,
+            businessDate: today,
+            cancelledAt: null,
+          },
+        }),
+        this.prisma.orderItem.count({
+          where: {
+            branchId: context.branchId!,
+            currentPreparationStationId: stationId,
+            businessDate: today,
+            state: { in: ['READY', 'SERVED'] },
+            cancelledAt: null,
+          },
+        }),
+        this.prisma.menuItem.count({
+          where: {
+            tenantId: context.tenantId!,
+            preparationStationId: stationId,
+            status: { in: ['ACTIVE', 'DRAFT'] },
+          },
+        }),
+        this.prisma.stationStaffAssignment.findMany({
+          where: {
+            stationId,
+            branchId: context.branchId!,
+            status: 'ACTIVE',
+            releasedAt: null,
+          },
+          include: {
+            membership: { select: { id: true, employeeDisplayName: true } },
+          },
+          orderBy: { assignedAt: 'asc' },
+        }),
+      ]);
+
+    return {
+      id: station.id,
+      name: station.name,
+      code: station.code,
+      status: station.status,
+      enabled: station.status === 'ACTIVE',
+      defaultDelayThresholdMinutes: station.defaultDelayThresholdMinutes,
+      avgPrepMin: station.defaultDelayThresholdMinutes ?? 10,
+      sortOrder: station.sortOrder,
+      owners: owners.map((o) => ({
+        membershipId: o.membership.id,
+        displayName: o.membership.employeeDisplayName,
+        assignedAt: o.assignedAt,
+      })),
+      openTickets,
+      ticketsToday,
+      menuItemCount,
+      servedToday,
+      createdAt: station.createdAt,
+      updatedAt: station.updatedAt,
+    };
+  }
+
+  async getStationHistory(
+    userId: string,
+    stationId: string,
+    opts?: {
+      q?: string;
+      state?: string;
+      period?: string;
+      fromDate?: string;
+      toDate?: string;
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<StationHistoryResponseDto> {
+    const context = await this.requireManager(userId);
+    const station = await this.prisma.preparationStation.findFirst({
+      where: { id: stationId, branchId: context.branchId! },
+    });
+    if (!station) {
+      throw new NotFoundException('Station not found.');
+    }
+
+    const { period, rangeStart, rangeEnd, periodLabel } = resolveHistoryRange(
+      opts?.period,
+      opts?.fromDate,
+      opts?.toDate,
+    );
+
+    const page = Math.max(1, Number(opts?.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(opts?.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const stateFilter = opts?.state?.trim().toUpperCase();
+    const q = opts?.q?.trim();
+
+    const where: Prisma.OrderItemWhereInput = {
+      branchId: context.branchId!,
+      currentPreparationStationId: stationId,
+      businessDate: { gte: rangeStart, lte: rangeEnd },
+      ...(stateFilter && HISTORY_STATES.includes(stateFilter)
+        ? { state: stateFilter }
+        : {}),
+      ...(q
+        ? {
+            OR: [
+              { itemNameSnapshot: { contains: q, mode: 'insensitive' } },
+              { specialInstruction: { contains: q, mode: 'insensitive' } },
+              {
+                tableSession: {
+                  table: {
+                    OR: [
+                      { displayName: { contains: q, mode: 'insensitive' } },
+                      {
+                        displayNumber: {
+                          contains: q,
+                          mode: 'insensitive',
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+              {
+                order: {
+                  createdBy: {
+                    employeeDisplayName: {
+                      contains: q,
+                      mode: 'insensitive',
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const [total, rows] = await Promise.all([
+      this.prisma.orderItem.count({ where }),
+      this.prisma.orderItem.findMany({
+        where,
+        orderBy: [{ confirmedAt: 'desc' }],
+        skip,
+        take: limit,
+        include: {
+          tableSession: {
+            include: {
+              table: {
+                select: { displayName: true, displayNumber: true },
+              },
+            },
+          },
+          order: {
+            include: {
+              createdBy: { select: { employeeDisplayName: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    return {
+      stationId,
+      period,
+      periodLabel,
+      data: rows.map((item) => {
+        const table = item.tableSession.table;
+        const tableDisplayName =
+          table.displayName ||
+          (table.displayNumber ? `Table ${table.displayNumber}` : 'Table');
+        let prepMinutes: number | null = null;
+        if (item.readyAt && item.preparationStartedAt) {
+          prepMinutes = Math.max(
+            0,
+            Math.round(
+              (item.readyAt.getTime() - item.preparationStartedAt.getTime()) /
+                60000,
+            ),
+          );
+        } else if (item.readyAt && item.queuedAt) {
+          prepMinutes = Math.max(
+            0,
+            Math.round(
+              (item.readyAt.getTime() - item.queuedAt.getTime()) / 60000,
+            ),
+          );
+        }
+        return {
+          id: item.id,
+          itemName: item.itemNameSnapshot,
+          quantity: item.quantity,
+          state: item.state,
+          tableDisplayName,
+          waiterName: item.order.createdBy.employeeDisplayName ?? null,
+          specialInstruction: item.specialInstruction,
+          businessDate: localYmd(item.businessDate),
+          confirmedAt: item.confirmedAt,
+          queuedAt: item.queuedAt,
+          readyAt: item.readyAt,
+          servedAt: item.servedAt,
+          prepMinutes,
+        };
+      }),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
     };
   }
 
@@ -622,9 +909,7 @@ export class StationsService {
       });
     });
 
-    const tableName =
-      updated.tableSession.table.displayNumber ??
-      updated.tableSession.table.displayName;
+    const tableName = callPickupLabel(updated.tableSession);
     await this.opsNotify.notify({
       type: OpsEventType.PRODUCTION_EXCEPTION,
       tenantId: loaded.context.tenantId!,
@@ -933,9 +1218,7 @@ export class StationsService {
     item: TicketRecord,
     toState: string,
   ) {
-    const tableName =
-      item.tableSession.table.displayNumber ??
-      item.tableSession.table.displayName;
+    const tableName = callPickupLabel(item.tableSession);
     const stationId = item.currentPreparationStationId;
     const tableId = item.tableSession.tableId;
     const waiterMembershipId = item.tableSession.primaryWaiterMembershipId;
@@ -959,7 +1242,7 @@ export class StationsService {
         branchId: context.branchId!,
         severity: 'INFO',
         title: `${item.itemNameSnapshot} → READY`,
-        body: `Table ${tableName}`,
+        body: tableName,
         rooms: [managerRoom(context.branchId!)],
         relatedEntityType: 'OrderItem',
         relatedEntityId: item.id,
@@ -971,7 +1254,7 @@ export class StationsService {
         tenantId: context.tenantId!,
         branchId: context.branchId!,
         severity: 'ATTENTION',
-        title: `Ready · Table ${tableName}`,
+        title: `Ready · ${tableName}`,
         body: `${item.quantity}× ${item.itemNameSnapshot} from ${item.stationNameSnapshot}`,
         recipientMembershipId: waiterMembershipId,
         relatedEntityType: 'OrderItem',
@@ -987,7 +1270,7 @@ export class StationsService {
       branchId: context.branchId!,
       severity: 'INFO',
       title: `${item.itemNameSnapshot} → ${toState}`,
-      body: `Table ${tableName}`,
+      body: tableName,
       rooms: [stationRoom(stationId), managerRoom(context.branchId!)],
       relatedEntityType: 'OrderItem',
       relatedEntityId: item.id,
@@ -1085,6 +1368,105 @@ function slugify(text: string): string {
     .replace(/--+/g, '-');
 }
 
+function startOfLocalDay(date = new Date()): Date {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function localYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseBusinessDate(raw?: string): Date {
+  if (!raw) return startOfLocalDay();
+  const [y, m, d] = raw.split('-').map(Number);
+  if (!y || !m || !d) return startOfLocalDay();
+  const date = new Date(y, m - 1, d);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function addLocalDays(date: Date, days: number): Date {
+  const d = startOfLocalDay(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function resolveHistoryRange(
+  periodRaw?: string,
+  fromRaw?: string,
+  toRaw?: string,
+): {
+  period: string;
+  rangeStart: Date;
+  rangeEnd: Date;
+  periodLabel: string;
+} {
+  const today = startOfLocalDay();
+  const period = (periodRaw || 'today').toLowerCase();
+
+  if (period === 'custom' && fromRaw && toRaw) {
+    const from = parseBusinessDate(fromRaw);
+    const to = parseBusinessDate(toRaw);
+    const rangeStart = from <= to ? from : to;
+    const rangeEnd = from <= to ? to : from;
+    return {
+      period: 'custom',
+      rangeStart,
+      rangeEnd,
+      periodLabel: `${localYmd(rangeStart)} → ${localYmd(rangeEnd)}`,
+    };
+  }
+
+  if (period === 'week') {
+    return {
+      period: 'week',
+      rangeStart: addLocalDays(today, -6),
+      rangeEnd: today,
+      periodLabel: 'Last 7 days',
+    };
+  }
+
+  if (period === 'month') {
+    return {
+      period: 'month',
+      rangeStart: addLocalDays(today, -29),
+      rangeEnd: today,
+      periodLabel: 'Last 30 days',
+    };
+  }
+
+  if (period === 'quarter') {
+    return {
+      period: 'quarter',
+      rangeStart: addLocalDays(today, -89),
+      rangeEnd: today,
+      periodLabel: 'Last 90 days',
+    };
+  }
+
+  if (period === 'year') {
+    const rangeStart = new Date(today.getFullYear(), 0, 1);
+    return {
+      period: 'year',
+      rangeStart,
+      rangeEnd: today,
+      periodLabel: String(today.getFullYear()),
+    };
+  }
+
+  return {
+    period: 'today',
+    rangeStart: today,
+    rangeEnd: today,
+    periodLabel: 'Today',
+  };
+}
+
 const ticketInclude = {
   tableSession: {
     include: {
@@ -1117,6 +1499,21 @@ function money(value: Prisma.Decimal | number | string): string {
   return new Prisma.Decimal(value).toFixed(2);
 }
 
+function callPickupLabel(session: {
+  sessionKind?: string | null;
+  customerName?: string | null;
+  table: { displayName: string; displayNumber: string | null };
+}): string {
+  if (session.sessionKind === 'CALL_PICKUP') {
+    const name = session.customerName?.trim();
+    return name ? `Call · ${name}` : 'Call pickup';
+  }
+  return (
+    session.table.displayNumber ??
+    session.table.displayName.replace(/^Table\s+/i, '')
+  );
+}
+
 function toTicketDto(item: TicketRecord): StationQueueItemDto {
   const queuedAt = item.queuedAt ?? item.confirmedAt;
   const elapsedSeconds = Math.max(
@@ -1129,13 +1526,11 @@ function toTicketDto(item: TicketRecord): StationQueueItemDto {
     expectedPrepMinutes > 0 &&
     elapsedSeconds > expectedPrepMinutes * 60;
   const exception = item.productionExceptions[0];
-  const table = item.tableSession.table;
 
   return {
     orderItemId: item.id,
     tableSessionId: item.tableSessionId,
-    tableDisplayName:
-      table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''),
+    tableDisplayName: callPickupLabel(item.tableSession),
     itemName: item.itemNameSnapshot,
     quantity: item.quantity,
     unitPrice: money(item.unitPriceSnapshot),

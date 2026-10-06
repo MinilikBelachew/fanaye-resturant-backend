@@ -7,11 +7,17 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { OrderItemMutationsService } from './order-item-mutations.service';
 import {
   CancelOrderItemDto,
@@ -20,6 +26,8 @@ import {
   DecideChangeDto,
 } from './dto/order-item-mutation.dto';
 import {
+  ApprovalDetailResponseDto,
+  ApprovalHistoryResponseDto,
   ApprovalQueueResponseDto,
   MutationDataResponseDto,
 } from './dto/order-item-mutation-response.dto';
@@ -82,6 +90,52 @@ export class OrderApprovalsController {
   @ApiOkResponse({ type: ApprovalQueueResponseDto })
   list(@Request() request): Promise<ApprovalQueueResponseDto> {
     return this.mutations.listApprovals(String(request.user.id));
+  }
+
+  @Get('order-mutations/history')
+  @ApiQuery({
+    name: 'period',
+    required: false,
+    enum: ['day', 'week', 'month'],
+  })
+  @ApiQuery({
+    name: 'type',
+    required: false,
+    enum: ['CANCELLATION', 'CHANGE', 'ALL'],
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiOkResponse({ type: ApprovalHistoryResponseDto })
+  history(
+    @Request() request,
+    @Query('period') period?: string,
+    @Query('type') type?: string,
+    @Query('q') q?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<ApprovalHistoryResponseDto> {
+    return this.mutations.listApprovalHistory(String(request.user.id), {
+      period,
+      type,
+      q,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('order-mutations/:type/:requestId')
+  @ApiOkResponse({ type: ApprovalDetailResponseDto })
+  detail(
+    @Request() request,
+    @Param('type') type: string,
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+  ): Promise<ApprovalDetailResponseDto> {
+    return this.mutations.getApprovalDetail(
+      String(request.user.id),
+      type,
+      requestId,
+    );
   }
 
   @Get('cancellations')

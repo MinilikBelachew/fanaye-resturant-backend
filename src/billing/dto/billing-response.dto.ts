@@ -221,6 +221,20 @@ export class TransferPaymentResponseDto {
   @Type(() => PaymentDto)
   payment: PaymentDto;
 
+  @ApiPropertyOptional({
+    description: 'Verified bank amount above bill due (tip).',
+    example: '20.00',
+  })
+  @Expose()
+  tipAmount?: string;
+
+  @ApiPropertyOptional({
+    description: 'Amount confirmed by the bank.',
+    example: '180.00',
+  })
+  @Expose()
+  verifiedAmount?: string;
+
   @ApiProperty()
   @Expose()
   bill: {
@@ -287,4 +301,100 @@ export class SessionBillResponseDto {
   @Expose()
   @Type(() => PaymentDto)
   payments: PaymentDto[];
+}
+
+export class PublicReceiptLineDto {
+  @ApiProperty()
+  @Expose()
+  itemName: string;
+
+  @ApiProperty()
+  @Expose()
+  quantity: number;
+
+  @ApiProperty()
+  @Expose()
+  unitPrice: string;
+
+  @ApiProperty()
+  @Expose()
+  lineTotal: string;
+}
+
+export class PublicReceiptPaymentDto {
+  @ApiProperty()
+  @Expose()
+  method: string;
+
+  @ApiProperty()
+  @Expose()
+  amount: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  channel: string | null;
+
+  @ApiProperty()
+  @Expose()
+  status: string;
+}
+
+export class PublicReceiptDto {
+  @ApiProperty()
+  @Expose()
+  billId: string;
+
+  @ApiProperty()
+  @Expose()
+  billNumber: string;
+
+  @ApiProperty()
+  @Expose()
+  status: string;
+
+  @ApiProperty()
+  @Expose()
+  currencyCode: string;
+
+  @ApiProperty()
+  @Expose()
+  restaurantName: string;
+
+  @ApiProperty()
+  @Expose()
+  branchName: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  tableName: string | null;
+
+  @ApiProperty()
+  @Expose()
+  subtotal: string;
+
+  @ApiProperty()
+  @Expose()
+  total: string;
+
+  @ApiProperty()
+  @Expose()
+  amountPaid: string;
+
+  @ApiProperty()
+  @Expose()
+  generatedAt: Date;
+
+  @ApiPropertyOptional()
+  @Expose()
+  paidAt: Date | null;
+
+  @ApiProperty({ type: () => [PublicReceiptLineDto] })
+  @Expose()
+  @Type(() => PublicReceiptLineDto)
+  lines: PublicReceiptLineDto[];
+
+  @ApiProperty({ type: () => [PublicReceiptPaymentDto] })
+  @Expose()
+  @Type(() => PublicReceiptPaymentDto)
+  payments: PublicReceiptPaymentDto[];
 }

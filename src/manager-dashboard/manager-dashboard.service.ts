@@ -6,19 +6,28 @@ import {
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
+  ActNowInsightDto,
   HourlySalesPointDto,
   ManagerDashboardDataDto,
   ManagerDashboardResponseDto,
   ManagerKpiDto,
   OrderVolumePointDto,
   PaymentChannelBreakdownItemDto,
+  PaymentMixPointDto,
   PrepDurationBucketDto,
   RevenueVsCollectionsPointDto,
+  StationPrepPointDto,
   StationThroughputPointDto,
   TopSellingDishDto,
+  WaiterPerformancePointDto,
   WeeklyCashMovementPointDto,
   BranchRevenueResponseDto,
 } from './dto/manager-dashboard-response.dto';
+
+/** READY tickets older than this count as "sitting too long". */
+const READY_STALE_MS = 5 * 60 * 1000;
+/** Floor for late-prep threshold when avg prep is missing/very low. */
+const LATE_PREP_FLOOR_MIN = 8;
 
 export type BranchRevenuePeriod = 'month' | 'quarter' | 'year';
 
@@ -256,6 +265,8 @@ export class ManagerDashboardService {
       period?: string;
       fromDate?: string;
       toDate?: string;
+      /** Owner-only: aggregate every active branch in the tenant. */
+      scope?: string;
     },
   ): Promise<ManagerDashboardResponseDto> {
     const businessDateRaw = opts?.businessDate;
@@ -309,6 +320,35 @@ export class ManagerDashboardService {
       );
     }
 
+    const scopeAll =
+      String(opts?.scope || '').toLowerCase() === 'all' &&
+      role === 'OWNER_ADMIN';
+
+    const tenantBranches = await this.prisma.branch.findMany({
+      where: { tenantId: context.tenantId!, status: 'ACTIVE' },
+      select: { id: true, name: true, timezone: true },
+    });
+
+    const branchIds = scopeAll
+      ? tenantBranches.map((b) => b.id)
+      : branchId
+        ? [branchId]
+        : [];
+
+    if (!branchIds.length) {
+      throw new NotFoundException(
+        'No active branch found for this restaurant.',
+      );
+    }
+
+    if (scopeAll) {
+      branchName = 'All branches';
+      branchTimezone =
+        tenantBranches[0]?.timezone || branchTimezone || 'Africa/Addis_Ababa';
+    }
+
+    const bid = { in: branchIds } as const;
+
     const { period, rangeStart, rangeEnd, periodLabel, isSingleDay } =
       resolveDashboardRange(
         opts?.period,
@@ -323,6 +363,7 @@ export class ManagerDashboardService {
     const priorStart = addLocalDays(rangeStart, -(periodDays.length || 1));
     const priorEnd = addLocalDays(rangeStart, -1);
 
+    const now = new Date();
     const [
       tables,
       activeSessions,
@@ -338,14 +379,23 @@ export class ManagerDashboardService {
       periodOrders,
       pendingBillRequests,
       pendingCashDrops,
+      pendingCancellations,
+      pendingOrderChanges,
+      openProductionExceptions,
+      todayBills,
+      inventoryIngredients,
+      dueShiftAssignments,
+      openShiftSessions,
+      prepStations,
     ] = await Promise.all([
       this.prisma.diningTable.findMany({
-        where: { branchId, status: 'ACTIVE' },
+        // Floor tables use AVAILABLE / OCCUPIED / etc. — not ACTIVE.
+        where: { branchId: bid, NOT: { status: 'ARCHIVED' } },
         select: { id: true },
       }),
       this.prisma.tableSession.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: liveDate,
           status: { not: 'CLOSED' },
         },
@@ -353,7 +403,7 @@ export class ManagerDashboardService {
       }),
       this.prisma.tableSession.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: rangeStart, lte: rangeEnd },
         },
         select: {
@@ -361,11 +411,12 @@ export class ManagerDashboardService {
           guestCount: true,
           status: true,
           businessDate: true,
+          primaryWaiterMembershipId: true,
         },
       }),
       this.prisma.bill.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: rangeStart, lte: rangeEnd },
         },
         select: {
@@ -375,11 +426,12 @@ export class ManagerDashboardService {
           amountPaid: true,
           generatedAt: true,
           businessDate: true,
+          tableSessionId: true,
         },
       }),
       this.prisma.payment.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: rangeStart, lte: rangeEnd },
           status: { notIn: ['CANCELLED', 'FAILED', 'VOID'] },
         },
@@ -397,7 +449,7 @@ export class ManagerDashboardService {
       }),
       this.prisma.payment.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: priorStart, lte: priorEnd },
           status: { notIn: ['CANCELLED', 'FAILED', 'VOID'] },
         },
@@ -409,25 +461,25 @@ export class ManagerDashboardService {
       }),
       this.prisma.bill.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: priorStart, lte: priorEnd },
         },
         select: { totalAmount: true, amountPaid: true },
       }),
       this.prisma.orderItem.findMany({
-        where: { branchId, businessDate: liveDate },
+        where: { branchId: bid, businessDate: liveDate },
         include: { currentStation: true },
       }),
       this.prisma.orderItem.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: rangeStart, lte: rangeEnd },
         },
         include: { currentStation: true },
       }),
       this.prisma.orderItem.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: priorStart, lte: priorEnd },
         },
         select: {
@@ -438,7 +490,7 @@ export class ManagerDashboardService {
       }),
       this.prisma.cashDrop.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: rangeStart, lte: rangeEnd },
           status: { in: ['CONFIRMED', 'COLLECTED', 'RECEIVED'] },
         },
@@ -450,19 +502,74 @@ export class ManagerDashboardService {
       }),
       this.prisma.order.findMany({
         where: {
-          branchId,
+          branchId: bid,
           businessDate: { gte: rangeStart, lte: rangeEnd },
         },
         select: { id: true, businessDate: true },
       }),
       this.prisma.billRequest.count({
-        where: { branchId, status: 'PENDING' },
+        where: { branchId: bid, status: 'PENDING' },
       }),
       this.prisma.cashDrop.count({
         where: {
-          branchId,
+          branchId: bid,
           status: { in: ['INITIATED', 'DISPUTED'] },
         },
+      }),
+      this.prisma.cancellationRequest.count({
+        where: { branchId: bid, status: 'PENDING' },
+      }),
+      this.prisma.orderChangeRequest.count({
+        where: { branchId: bid, status: 'PENDING' },
+      }),
+      this.prisma.productionException.count({
+        where: { branchId: bid, status: 'OPEN' },
+      }),
+      this.prisma.bill.findMany({
+        where: {
+          branchId: bid,
+          businessDate: liveDate,
+          status: { notIn: ['CANCELLED', 'VOID'] },
+        },
+        select: { totalAmount: true, amountPaid: true },
+      }),
+      this.prisma.inventoryIngredient.findMany({
+        where: { branchId: bid, status: 'ACTIVE' },
+        select: {
+          parLevel: true,
+          balance: { select: { onHandQty: true } },
+        },
+      }),
+      this.prisma.shiftAssignment.findMany({
+        where: {
+          branchId: bid,
+          status: { in: ['SCHEDULED', 'ACTIVE'] },
+          scheduledStartAt: { lte: now },
+          scheduledEndAt: { gte: now },
+          membership: {
+            status: 'ACTIVE',
+            roleAssignments: {
+              some: {
+                status: 'ACTIVE',
+                role: { code: { in: ['WAITER', 'CASHIER'] } },
+              },
+            },
+          },
+        },
+        select: { staffMembershipId: true },
+      }),
+      this.prisma.shiftSession.findMany({
+        where: {
+          branchId: bid,
+          businessDate: liveDate,
+          state: 'OPEN',
+        },
+        select: { staffMembershipId: true },
+      }),
+      this.prisma.preparationStation.findMany({
+        where: { branchId: bid, status: 'ACTIVE' },
+        select: { id: true, name: true, sortOrder: true },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       }),
     ]);
 
@@ -623,10 +730,79 @@ export class ManagerDashboardService {
     const readyItemCount = liveOrderItems.filter(
       (item) => item.state === 'READY',
     ).length;
+
+    const readyTooLongCount = liveOrderItems.filter((item) => {
+      if (item.state !== 'READY' || !item.readyAt) return false;
+      return now.getTime() - item.readyAt.getTime() >= READY_STALE_MS;
+    }).length;
+    const latePrepThresholdMs =
+      Math.max(avgPrepMinutes || 0, LATE_PREP_FLOOR_MIN) * 60 * 1000;
+    const latePrepCount = liveOrderItems.filter((item) => {
+      if (!['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'].includes(item.state)) {
+        return false;
+      }
+      const start = item.preparationStartedAt ?? item.queuedAt;
+      if (!start) return false;
+      return now.getTime() - start.getTime() >= latePrepThresholdMs;
+    }).length;
+    const clockedInIds = new Set(
+      openShiftSessions.map((s) => s.staffMembershipId),
+    );
+    const staffOfflineCount = new Set(
+      dueShiftAssignments
+        .map((a) => a.staffMembershipId)
+        .filter((id) => !clockedInIds.has(id)),
+    ).size;
+    const lowStockCount = inventoryIngredients.filter((ing) => {
+      const onHand = Number(ing.balance?.onHandQty ?? 0);
+      const par = Number(ing.parLevel ?? 0);
+      return par > 0 && onHand <= par;
+    }).length;
+    let unpaidGapValue = 0;
+    let unpaidBillsCount = 0;
+    for (const bill of todayBills) {
+      const due = Number(bill.totalAmount) - Number(bill.amountPaid);
+      if (due > 0.009) {
+        unpaidGapValue += due;
+        unpaidBillsCount += 1;
+      }
+    }
+    const actNow: ActNowInsightDto = {
+      readyTooLongCount,
+      readyTooLongHint:
+        readyTooLongCount > 0
+          ? `${readyTooLongCount} ready > 5 min`
+          : 'no stale ready tickets',
+      latePrepCount,
+      latePrepHint:
+        latePrepCount > 0
+          ? `${latePrepCount} past ${Math.max(avgPrepMinutes || 0, LATE_PREP_FLOOR_MIN)} min prep`
+          : 'prep on pace',
+      staffOfflineCount,
+      staffOfflineHint:
+        staffOfflineCount > 0
+          ? `${staffOfflineCount} scheduled not clocked in`
+          : 'scheduled staff clocked in',
+      lowStockCount,
+      lowStockHint:
+        lowStockCount > 0 ? `${lowStockCount} at/below par` : 'stock levels ok',
+      unpaidBillsCount,
+      unpaidGapValue,
+      unpaidGapFormatted: formatK(unpaidGapValue),
+      unpaidGapHint:
+        unpaidBillsCount > 0
+          ? `${unpaidBillsCount} unpaid bill${unpaidBillsCount === 1 ? '' : 's'} today`
+          : 'no unpaid bills today',
+    };
     const cancelledItemsCount = periodOrderItems.filter(
       (item) => item.state === 'CANCELLED' || item.cancelledAt,
     ).length;
-    const pendingActionsCount = pendingBillRequests + pendingCashDrops;
+    const pendingActionsCount =
+      pendingBillRequests +
+      pendingCashDrops +
+      pendingCancellations +
+      pendingOrderChanges +
+      openProductionExceptions;
 
     const coversCount = periodSessions.reduce(
       (sum, s) => sum + (s.guestCount ?? 0),
@@ -678,14 +854,22 @@ export class ManagerDashboardService {
       pendingActionsFormatted: String(pendingActionsCount),
       pendingBillRequests,
       pendingCashDrops,
+      pendingCancellations,
+      pendingOrderChanges,
+      openProductionExceptions,
       pendingActionsHint:
         pendingActionsCount === 0
           ? 'nothing waiting'
           : [
-              pendingBillRequests > 0
-                ? `${pendingBillRequests} bill req`
+              pendingBillRequests > 0 ? `${pendingBillRequests} bill` : null,
+              pendingCashDrops > 0 ? `${pendingCashDrops} cash` : null,
+              pendingCancellations > 0
+                ? `${pendingCancellations} cancel`
                 : null,
-              pendingCashDrops > 0 ? `${pendingCashDrops} cash drop` : null,
+              pendingOrderChanges > 0 ? `${pendingOrderChanges} change` : null,
+              openProductionExceptions > 0
+                ? `${openProductionExceptions} kitchen`
+                : null,
             ]
               .filter(Boolean)
               .join(' · '),
@@ -763,6 +947,27 @@ export class ManagerDashboardService {
       else prepBuckets[4].tickets++;
     }
 
+    const stationPrepSecs = new Map<string, number[]>();
+    for (const station of prepStations) {
+      stationPrepSecs.set(station.name, []);
+    }
+    for (const item of periodOrderItems) {
+      const sec = prepSeconds(item);
+      if (sec == null) continue;
+      const name =
+        item.currentStation?.name || item.stationNameSnapshot || 'Station';
+      const arr = stationPrepSecs.get(name) ?? [];
+      arr.push(sec);
+      stationPrepSecs.set(name, arr);
+    }
+    const stationPrepAvg: StationPrepPointDto[] = Array.from(
+      stationPrepSecs.entries(),
+    ).map(([station, secs]) => ({
+      station,
+      avgMinutes: avgMinutes(secs),
+      tickets: secs.length,
+    }));
+
     const dishMap = new Map<
       string,
       { name: string; category: string; revenue: number; orders: number }
@@ -799,6 +1004,7 @@ export class ManagerDashboardService {
     const salesTrend: RevenueVsCollectionsPointDto[] = [];
     const weeklyCashMovement: WeeklyCashMovementPointDto[] = [];
     const orderVolumeTrend: OrderVolumePointDto[] = [];
+    const paymentMixTrend: PaymentMixPointDto[] = [];
 
     const useWeeklyBuckets = periodDays.length > 45;
     if (useWeeklyBuckets) {
@@ -833,6 +1039,9 @@ export class ManagerDashboardService {
         const dayDigital = dayPayments
           .filter((p) => p.method !== 'CASH')
           .reduce((acc, p) => acc + Number(p.amount), 0);
+        const dayCash = dayPayments
+          .filter((p) => p.method === 'CASH')
+          .reduce((acc, p) => acc + Number(p.amount), 0);
         const dayDropAmt = periodCashDrops
           .filter((c) => inWeek(c.businessDate))
           .reduce(
@@ -863,6 +1072,11 @@ export class ManagerDashboardService {
           orders: dayOrders,
           covers: dayCovers,
           avgCheck: Math.round(dayAvgCheck),
+        });
+        paymentMixTrend.push({
+          period: label,
+          cash: dayCash,
+          digital: dayDigital,
         });
       }
     } else {
@@ -896,6 +1110,9 @@ export class ManagerDashboardService {
         const dayDigital = dayPayments
           .filter((p) => p.method !== 'CASH')
           .reduce((acc, p) => acc + Number(p.amount), 0);
+        const dayCash = dayPayments
+          .filter((p) => p.method === 'CASH')
+          .reduce((acc, p) => acc + Number(p.amount), 0);
 
         const dayDropAmt = periodCashDrops
           .filter((c) => localYmd(c.businessDate) === targetYmd)
@@ -928,6 +1145,11 @@ export class ManagerDashboardService {
           orders: dayOrders,
           covers: dayCovers,
           avgCheck: Math.round(dayAvgCheck),
+        });
+        paymentMixTrend.push({
+          period: dayLabel,
+          cash: dayCash,
+          digital: dayDigital,
         });
       }
     }
@@ -1011,16 +1233,65 @@ export class ManagerDashboardService {
 
     void periodGross;
 
+    const billBySession = new Map(
+      periodBills.map((b) => [b.tableSessionId, Number(b.totalAmount)]),
+    );
+    const waiterAgg = new Map<
+      string,
+      { covers: number; tables: number; revenue: number }
+    >();
+    for (const session of periodSessions) {
+      const waiterId = session.primaryWaiterMembershipId;
+      if (!waiterId) continue;
+      const row = waiterAgg.get(waiterId) ?? {
+        covers: 0,
+        tables: 0,
+        revenue: 0,
+      };
+      row.covers += session.guestCount ?? 0;
+      row.tables += 1;
+      row.revenue += billBySession.get(session.id) ?? 0;
+      waiterAgg.set(waiterId, row);
+    }
+    const waiterIds = Array.from(waiterAgg.keys());
+    const waiterMemberships =
+      waiterIds.length > 0
+        ? await this.prisma.tenantStaffMembership.findMany({
+            where: { id: { in: waiterIds } },
+            select: { id: true, employeeDisplayName: true },
+          })
+        : [];
+    const waiterNameById = new Map(
+      waiterMemberships.map((m) => [m.id, m.employeeDisplayName]),
+    );
+    const waiterPerformance: WaiterPerformancePointDto[] = Array.from(
+      waiterAgg.entries(),
+    )
+      .map(([id, row]) => ({
+        name: waiterNameById.get(id) ?? 'Waiter',
+        covers: row.covers,
+        tables: row.tables,
+        revenue: row.revenue,
+        revenueFormatted: formatK(row.revenue),
+        avgCheck: row.tables > 0 ? row.revenue / row.tables : 0,
+      }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 8);
+
     const data: ManagerDashboardDataDto = {
       kpis,
+      actNow,
       salesTrend,
       paymentChannels,
       prepBuckets,
+      stationPrepAvg,
       weeklyCashMovement,
       topDishes,
       hourlySales,
       stationThroughput,
       orderVolumeTrend,
+      paymentMixTrend,
+      waiterPerformance,
       businessDate: localYmd(rangeEnd),
       fromDate: localYmd(rangeStart),
       toDate: localYmd(rangeEnd),

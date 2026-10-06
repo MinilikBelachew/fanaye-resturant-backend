@@ -9,11 +9,17 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { FloorLayoutService } from './floor-layout.service';
 import {
   CreateDiningTableDto,
@@ -26,6 +32,10 @@ import {
   AdminFloorLayoutResponseDto,
   AdminTableLocationResponseDto,
 } from './dto/floor-layout-response.dto';
+import {
+  TableDetailResponseDto,
+  TableVisitHistoryResponseDto,
+} from './dto/table-detail.dto';
 
 @ApiTags('Floor layout admin')
 @ApiBearerAuth()
@@ -80,6 +90,43 @@ export class FloorLayoutController {
     @Body() dto: CreateDiningTableDto,
   ): Promise<AdminDiningTableResponseDto> {
     return this.layout.createTable(String(request.user.id), dto);
+  }
+
+  @Get('dining-tables/:id/detail')
+  @ApiOkResponse({ type: TableDetailResponseDto })
+  tableDetail(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<TableDetailResponseDto> {
+    return this.layout.getTableDetail(String(request.user.id), id);
+  }
+
+  @Get('dining-tables/:id/sessions')
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'period', required: false })
+  @ApiQuery({ name: 'fromDate', required: false })
+  @ApiQuery({ name: 'toDate', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiOkResponse({ type: TableVisitHistoryResponseDto })
+  tableSessions(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('q') q?: string,
+    @Query('period') period?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<TableVisitHistoryResponseDto> {
+    return this.layout.listTableVisits(String(request.user.id), id, {
+      q,
+      period,
+      fromDate,
+      toDate,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   @Patch('dining-tables/:id')

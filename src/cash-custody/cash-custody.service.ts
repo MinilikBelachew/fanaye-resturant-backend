@@ -678,7 +678,7 @@ export class CashCustodyService {
 
   private async requireWaiterOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (context.roleCode !== 'WAITER') {
+    if (!['WAITER', 'DISPATCHER'].includes(context.roleCode)) {
       throw new ForbiddenException('Cash pouch is for waiters.');
     }
     if (!context.staffMembershipId || !context.shiftSessionId) {

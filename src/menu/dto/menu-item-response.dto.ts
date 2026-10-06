@@ -106,6 +106,9 @@ export class AdminMenuItemDto {
   @ApiPropertyOptional()
   imageUrl: string | null;
 
+  @ApiPropertyOptional({ nullable: true })
+  badge: string | null;
+
   @ApiProperty({ type: [AdminModifierGroupDto] })
   modifierGroups: AdminModifierGroupDto[];
 

@@ -24,7 +24,8 @@ import {
 } from './dto/order-response.dto';
 import { WaiterMenuResponseDto } from './dto/waiter-menu-response.dto';
 
-const SERVE_ROLES = ['WAITER', 'MANAGER', 'OWNER_ADMIN'];
+const SERVE_ROLES = ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'];
+const ORDER_ROLES = ['WAITER', 'DISPATCHER'];
 const READY_STATE = 'READY';
 const CONFIRM_COMMAND = 'order.confirm';
 const ORDERABLE = ['OPEN', 'ACTIVE_ORDER'];
@@ -691,7 +692,7 @@ export class OrdersService {
     if (!SERVE_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Only the waiter can mark this served.');
     }
-    if (context.roleCode === 'WAITER' && !context.shiftSessionId) {
+    if (ORDER_ROLES.includes(context.roleCode) && !context.shiftSessionId) {
       throw new ForbiddenException({
         status: 403,
         code: 'SHIFT_REQUIRED',
@@ -707,7 +708,7 @@ export class OrdersService {
       throw new NotFoundException('Order item not found.');
     }
     if (
-      context.roleCode === 'WAITER' &&
+      ORDER_ROLES.includes(context.roleCode) &&
       item.tableSession.primaryWaiterMembershipId !== context.staffMembershipId
     ) {
       throw new ForbiddenException('This is not your table.');
@@ -750,7 +751,11 @@ export class OrdersService {
     orderId?: string,
   ): Promise<{ success: boolean; count: number; message: string }> {
     const context = await this.requireBranch(userId);
-    if (!['WAITER', 'MANAGER', 'OWNER'].includes(context.roleCode)) {
+    if (
+      !['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER', 'OWNER_ADMIN'].includes(
+        context.roleCode,
+      )
+    ) {
       throw new ForbiddenException('Only staff can send orders to kitchen.');
     }
 
@@ -866,7 +871,7 @@ export class OrdersService {
 
   private async requireWaiter(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (context.roleCode !== 'WAITER') {
+    if (!ORDER_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Waiter menu is for waiters only.');
     }
     return context;

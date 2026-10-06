@@ -37,6 +37,34 @@ export class InventoryService {
 
   // ─── Ingredients ───────────────────────────────────────────────────────────
 
+  async listUnits() {
+    const units = await this.prisma.inventoryUnit.findMany({
+      where: { status: 'ACTIVE' },
+      orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
+    });
+    return {
+      data: units.map((u) => ({
+        id: u.id,
+        code: u.code,
+        name: u.name,
+        category: u.category,
+        sortOrder: u.sortOrder,
+      })),
+    };
+  }
+
+  private async assertKnownUnit(code: string) {
+    const unit = await this.prisma.inventoryUnit.findFirst({
+      where: { code, status: 'ACTIVE' },
+    });
+    if (!unit) {
+      throw new BadRequestException(
+        `Unknown unit "${code}". Pick a unit from the inventory unit catalog.`,
+      );
+    }
+    return unit.code;
+  }
+
   async listIngredients(userId: string, query: InventoryListQueryDto) {
     const ctx = await this.requireManager(userId);
     const { page, limit, skip } = this.pageOf(query);
@@ -67,6 +95,7 @@ export class InventoryService {
   async createIngredient(userId: string, dto: CreateIngredientDto) {
     const ctx = await this.requireManager(userId);
     const name = dto.name.trim();
+    const unit = await this.assertKnownUnit(dto.unit.trim());
     const existing = await this.prisma.inventoryIngredient.findFirst({
       where: {
         branchId: ctx.branchId!,
@@ -86,7 +115,7 @@ export class InventoryService {
           tenantId: ctx.tenantId!,
           branchId: ctx.branchId!,
           name,
-          unit: dto.unit.trim(),
+          unit,
           unitCost: dec(dto.unitCost ?? 0),
           parLevel: dec(dto.parLevel ?? 0),
           status: 'ACTIVE',
@@ -139,11 +168,15 @@ export class InventoryService {
         );
       }
     }
+    const unit =
+      dto.unit?.trim() != null && dto.unit.trim() !== ''
+        ? await this.assertKnownUnit(dto.unit.trim())
+        : undefined;
     const updated = await this.prisma.inventoryIngredient.update({
       where: { id },
       data: {
         ...(dto.name?.trim() ? { name: dto.name.trim() } : {}),
-        ...(dto.unit?.trim() ? { unit: dto.unit.trim() } : {}),
+        ...(unit ? { unit } : {}),
         ...(dto.unitCost !== undefined ? { unitCost: dec(dto.unitCost) } : {}),
         ...(dto.parLevel !== undefined ? { parLevel: dec(dto.parLevel) } : {}),
         ...(dto.status?.trim() ? { status: dto.status.trim() } : {}),
@@ -176,11 +209,14 @@ export class InventoryService {
     let rows = ingredients.map((ing) => {
       const onHand = num(ing.balance?.onHandQty);
       const par = num(ing.parLevel);
+      const unitCost = num(ing.unitCost);
+      const stockValue = roundMoney(onHand * unitCost);
       return {
         ingredientId: ing.id,
         name: ing.name,
         unit: ing.unit,
-        unitCost: num(ing.unitCost),
+        unitCost,
+        stockValue,
         parLevel: par,
         onHandQty: onHand,
         isLowStock: onHand <= par,
@@ -190,11 +226,28 @@ export class InventoryService {
     });
     if (lowStock) rows = rows.filter((r) => r.isLowStock);
 
+    const totalStockValue = roundMoney(
+      rows.reduce((sum, r) => sum + r.stockValue, 0),
+    );
+    const lowStockValue = roundMoney(
+      rows
+        .filter((r) => r.isLowStock)
+        .reduce((sum, r) => sum + r.stockValue, 0),
+    );
+    const lowStockCount = rows.filter((r) => r.isLowStock).length;
+
     const total = rows.length;
     const data = rows.slice(skip, skip + limit);
     return {
       data,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
+      summary: {
+        currencyCode: 'ETB',
+        skuCount: total,
+        lowStockCount,
+        totalStockValue,
+        lowStockValue,
+      },
     };
   }
 
@@ -250,6 +303,7 @@ export class InventoryService {
       dec(dto.quantity).negated(),
       {
         entryType: 'WASTE',
+        unitCost: num(ingredient.unitCost),
         note: dto.note ?? 'Waste',
       },
     );
@@ -310,24 +364,33 @@ export class InventoryService {
       }),
     ]);
     return {
-      data: rows.map((r) => ({
-        id: r.id,
-        entryType: r.entryType,
-        quantityDelta: num(r.quantityDelta),
-        unitCostSnapshot:
-          r.unitCostSnapshot != null ? num(r.unitCostSnapshot) : null,
-        note: r.note,
-        supplierNote: r.supplierNote,
-        invoiceRef: r.invoiceRef,
-        orderItemId: r.orderItemId,
-        countSessionId: r.countSessionId,
-        createdAt: r.createdAt.toISOString(),
-        ingredient: {
-          id: r.ingredient.id,
-          name: r.ingredient.name,
-          unit: r.ingredient.unit,
-        },
-      })),
+      data: rows.map((r) => {
+        const quantityDelta = num(r.quantityDelta);
+        const unitCost =
+          r.unitCostSnapshot != null
+            ? num(r.unitCostSnapshot)
+            : num(r.ingredient.unitCost);
+        return {
+          id: r.id,
+          entryType: r.entryType,
+          quantityDelta,
+          unitCostSnapshot:
+            r.unitCostSnapshot != null ? num(r.unitCostSnapshot) : null,
+          unitCost,
+          lineValue: roundMoney(quantityDelta * unitCost),
+          note: r.note,
+          supplierNote: r.supplierNote,
+          invoiceRef: r.invoiceRef,
+          orderItemId: r.orderItemId,
+          countSessionId: r.countSessionId,
+          createdAt: r.createdAt.toISOString(),
+          ingredient: {
+            id: r.ingredient.id,
+            name: r.ingredient.name,
+            unit: r.ingredient.unit,
+          },
+        };
+      }),
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
     };
   }
@@ -760,11 +823,13 @@ export class InventoryService {
   }) {
     const onHand = num(row.balance?.onHandQty);
     const par = num(row.parLevel);
+    const unitCost = num(row.unitCost);
     return {
       id: row.id,
       name: row.name,
       unit: row.unit,
-      unitCost: num(row.unitCost),
+      unitCost,
+      stockValue: roundMoney(onHand * unitCost),
       parLevel: par,
       onHandQty: onHand,
       isLowStock: onHand <= par,
@@ -773,4 +838,9 @@ export class InventoryService {
       updatedAt: row.updatedAt.toISOString(),
     };
   }
+}
+
+function roundMoney(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 100) / 100;
 }

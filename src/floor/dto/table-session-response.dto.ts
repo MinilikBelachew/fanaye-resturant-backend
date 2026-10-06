@@ -26,6 +26,18 @@ export class TableSessionResponseDto {
   @Expose()
   status: string;
 
+  @ApiProperty({ enum: ['DINE_IN', 'CALL_PICKUP'] })
+  @Expose()
+  sessionKind: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  customerName: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  customerPhone: string | null;
+
   @ApiProperty()
   @Expose()
   primaryWaiterMembershipId: string;

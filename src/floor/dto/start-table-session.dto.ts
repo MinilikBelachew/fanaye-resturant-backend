@@ -1,6 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsUUID, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class StartTableSessionDto {
   @ApiProperty()
@@ -13,4 +21,21 @@ export class StartTableSessionDto {
   @IsInt()
   @Min(1)
   guestCount?: number;
+
+  @ApiPropertyOptional({ enum: ['DINE_IN', 'CALL_PICKUP'] })
+  @IsOptional()
+  @IsIn(['DINE_IN', 'CALL_PICKUP'])
+  sessionKind?: 'DINE_IN' | 'CALL_PICKUP';
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  customerName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  customerPhone?: string;
 }

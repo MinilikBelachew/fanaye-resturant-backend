@@ -1,4 +1,4 @@
-generator client {
+0p-generator client {
   provider      = "prisma-client-js"
   binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
@@ -946,6 +946,10 @@ model TableSession {
   businessDate               DateTime  @map("business_date") @db.Date
   primaryWaiterMembershipId  String    @map("primary_waiter_membership_id") @db.Uuid
   primaryWaiterShiftSessionId String   @map("primary_waiter_shift_session_id") @db.Uuid
+  /// DINE_IN | CALL_PICKUP
+  sessionKind                String    @default("DINE_IN") @map("session_kind") @db.VarChar(32)
+  customerName               String?   @map("customer_name") @db.VarChar(120)
+  customerPhone              String?   @map("customer_phone") @db.VarChar(40)
   guestCount                 Int?      @map("guest_count")
   status                     String    @default("OPEN") @db.VarChar(32)
   openedAt                   DateTime  @default(now()) @map("opened_at") @db.Timestamptz(6)
@@ -969,6 +973,7 @@ model TableSession {
   bill           Bill?
 
   @@index([tenantId, branchId, businessDate, openedAt], map: "ix_table_sessions__branch_business_date")
+  @@index([branchId, sessionKind, status], map: "ix_table_sessions__branch_session_kind")
   @@map("table_sessions")
 }
 
@@ -1641,6 +1646,20 @@ model IdempotencyCommand {
 // =============================================================================
 // Inventory — recipe-based stock (ingredients, balances, ledger, counts)
 // =============================================================================
+
+model InventoryUnit {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique @db.VarChar(20)
+  name      String   @db.VarChar(80)
+  category  String   @db.VarChar(40)
+  sortOrder Int      @default(0) @map("sort_order")
+  status    String   @default("ACTIVE") @db.VarChar(20)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, sortOrder], map: "ix_inventory_units__status_sort")
+  @@map("inventory_units")
+}
 
 model InventoryIngredient {
   id        String   @id @default(uuid()) @db.Uuid

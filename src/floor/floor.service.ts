@@ -12,10 +12,15 @@ import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { StartTableSessionDto } from './dto/start-table-session.dto';
 import { CloseTableSessionDto } from './dto/close-table-session.dto';
+import { OpenCallPickupDto } from './dto/open-call-pickup.dto';
 import {
   FloorTableDto,
   FloorTablesResponseDto,
 } from './dto/floor-tables-response.dto';
+import {
+  DispatcherBoardResponseDto,
+  DispatcherCallDto,
+} from './dto/dispatcher-board.dto';
 import { TableSessionResponseDto } from './dto/table-session-response.dto';
 
 const OPEN_SESSION = {
@@ -27,6 +32,8 @@ const COOKING_STATES = ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'];
 const READY_STATE = 'READY';
 const START_COMMAND = 'table_session.start';
 const CLOSE_COMMAND = 'table_session.close';
+const CALL_PICKUP_LOCATION = 'CALL_PICKUP';
+const FLOOR_OPEN_ROLES = ['WAITER', 'DISPATCHER'];
 
 @Injectable()
 export class FloorService {
@@ -129,7 +136,17 @@ export class FloorService {
       throw new NotFoundException('Table not found.');
     }
 
-    if (
+    const isCallPickup =
+      dto.sessionKind === 'CALL_PICKUP' ||
+      table.location.code === CALL_PICKUP_LOCATION;
+
+    if (isCallPickup) {
+      if (context.roleCode !== 'DISPATCHER') {
+        throw new ForbiddenException('Only a dispatcher can open call pickup.');
+      }
+    } else if (context.roleCode === 'DISPATCHER') {
+      throw new ForbiddenException('Dispatchers only open call pickup slots.');
+    } else if (
       !(await this.canWaiterOpenTable(
         context,
         table.id,
@@ -168,6 +185,13 @@ export class FloorService {
             businessDate,
             primaryWaiterMembershipId: context.staffMembershipId!,
             primaryWaiterShiftSessionId: context.shiftSessionId!,
+            sessionKind: isCallPickup ? 'CALL_PICKUP' : 'DINE_IN',
+            customerName: isCallPickup
+              ? dto.customerName?.trim() || null
+              : null,
+            customerPhone: isCallPickup
+              ? dto.customerPhone?.trim() || null
+              : null,
             guestCount: dto.guestCount ?? null,
             status: 'OPEN',
             openedAt: now,
@@ -364,6 +388,167 @@ export class FloorService {
     return closed;
   }
 
+  async listDispatcherBoard(
+    userId: string,
+  ): Promise<DispatcherBoardResponseDto> {
+    const context = await this.requireDispatcherOnShift(userId);
+    await this.ensureCallPickupSlots(context);
+
+    const sessions = await this.prisma.tableSession.findMany({
+      where: {
+        branchId: context.branchId!,
+        sessionKind: 'CALL_PICKUP',
+        ...OPEN_SESSION,
+      },
+      include: {
+        table: true,
+        bill: true,
+        orderItems: { select: { state: true, cancelledAt: true } },
+      },
+      orderBy: { openedAt: 'desc' },
+    });
+
+    const data: DispatcherCallDto[] = sessions.map((session) => {
+      const activeItems = session.orderItems.filter(
+        (item) => !item.cancelledAt && item.state !== 'CANCELLED',
+      );
+      const cookingItemCount = activeItems.filter((item) =>
+        COOKING_STATES.includes(item.state),
+      ).length;
+      const readyItemCount = activeItems.filter(
+        (item) => item.state === READY_STATE,
+      ).length;
+      const hasBill = Boolean(session.bill);
+      const billStatus = session.bill?.status ?? null;
+      let boardColumn = 'OPEN';
+      if (
+        session.status === 'PAID' ||
+        billStatus === 'PAID' ||
+        billStatus === 'CLOSED'
+      ) {
+        boardColumn = 'PAID';
+      } else if (hasBill || session.status === 'BILL_REQUESTED') {
+        boardColumn = 'READY_TO_PAY';
+      } else if (
+        cookingItemCount > 0 ||
+        readyItemCount > 0 ||
+        activeItems.length > 0
+      ) {
+        boardColumn = 'IN_KITCHEN';
+      }
+
+      return {
+        tableSessionId: session.id,
+        tableId: session.tableId,
+        slotName: session.table.displayName,
+        customerName: session.customerName || 'Guest',
+        customerPhone: session.customerPhone,
+        status: session.status,
+        boardColumn,
+        openedAt: session.openedAt,
+        version: session.version,
+        cookingItemCount,
+        readyItemCount,
+        hasBill,
+        billStatus,
+        mine: session.primaryWaiterMembershipId === context.staffMembershipId,
+      };
+    });
+
+    return { data };
+  }
+
+  async openCallPickup(
+    userId: string,
+    dto: OpenCallPickupDto,
+    idempotencyKey?: string,
+  ): Promise<TableSessionResponseDto> {
+    const context = await this.requireDispatcherOnShift(userId);
+    await this.ensureCallPickupSlots(context);
+
+    const freeSlot = await this.prisma.diningTable.findFirst({
+      where: {
+        branchId: context.branchId!,
+        archivedAt: null,
+        status: 'AVAILABLE',
+        location: { code: CALL_PICKUP_LOCATION, status: 'ACTIVE' },
+        sessions: { none: OPEN_SESSION },
+      },
+      include: { location: true },
+      orderBy: { sortOrder: 'asc' },
+    });
+    if (!freeSlot) {
+      throw new ConflictException({
+        status: 409,
+        code: 'NO_CALL_SLOT',
+        errors: { table: 'NO_CALL_SLOT' },
+      });
+    }
+
+    return this.startSession(
+      userId,
+      {
+        tableId: freeSlot.id,
+        sessionKind: 'CALL_PICKUP',
+        customerName: dto.customerName,
+        customerPhone: dto.customerPhone,
+      },
+      idempotencyKey,
+    );
+  }
+
+  private async ensureCallPickupSlots(context: AuthContextDto): Promise<void> {
+    const existing = await this.prisma.tableLocation.findFirst({
+      where: {
+        branchId: context.branchId!,
+        code: CALL_PICKUP_LOCATION,
+        archivedAt: null,
+      },
+    });
+    if (existing) {
+      const count = await this.prisma.diningTable.count({
+        where: { locationId: existing.id, archivedAt: null },
+      });
+      if (count > 0) return;
+    }
+
+    const location =
+      existing ??
+      (await this.prisma.tableLocation.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          name: 'Call pickup',
+          code: CALL_PICKUP_LOCATION,
+          sortOrder: 99,
+          status: 'ACTIVE',
+        },
+      }));
+
+    for (let n = 1; n <= 8; n++) {
+      const already = await this.prisma.diningTable.findFirst({
+        where: {
+          branchId: context.branchId!,
+          locationId: location.id,
+          displayName: `Call ${n}`,
+          archivedAt: null,
+        },
+      });
+      if (already) continue;
+      await this.prisma.diningTable.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          locationId: location.id,
+          displayName: `Call ${n}`,
+          displayNumber: `C${n}`,
+          status: 'AVAILABLE',
+          sortOrder: n - 1,
+        },
+      });
+    }
+  }
+
   private async loadFloor(
     context: AuthContextDto,
   ): Promise<FloorTablesResponseDto> {
@@ -372,6 +557,7 @@ export class FloorService {
         branchId: context.branchId!,
         status: 'ACTIVE',
         archivedAt: null,
+        NOT: { code: CALL_PICKUP_LOCATION },
       },
       orderBy: { sortOrder: 'asc' },
     });
@@ -380,6 +566,7 @@ export class FloorService {
       where: {
         branchId: context.branchId!,
         archivedAt: null,
+        location: { NOT: { code: CALL_PICKUP_LOCATION } },
       },
       include: {
         location: true,
@@ -512,8 +699,25 @@ export class FloorService {
 
   private async requireWaiterOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (context.roleCode !== 'WAITER') {
+    if (!FLOOR_OPEN_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Only a waiter can take a table.');
+    }
+    if (!context.staffMembershipId || !context.shiftSessionId) {
+      throw new ForbiddenException({
+        status: 403,
+        code: 'SHIFT_REQUIRED',
+        errors: { shift: 'SHIFT_REQUIRED' },
+      });
+    }
+    return context;
+  }
+
+  private async requireDispatcherOnShift(
+    userId: string,
+  ): Promise<AuthContextDto> {
+    const context = await this.requireBranch(userId);
+    if (context.roleCode !== 'DISPATCHER') {
+      throw new ForbiddenException('Call pickup board is for dispatchers.');
     }
     if (!context.staffMembershipId || !context.shiftSessionId) {
       throw new ForbiddenException({
@@ -613,6 +817,9 @@ export class FloorService {
       id: string;
       tableId: string;
       status: string;
+      sessionKind?: string | null;
+      customerName?: string | null;
+      customerPhone?: string | null;
       primaryWaiterMembershipId: string;
       guestCount: number | null;
       openedAt: Date;
@@ -635,6 +842,9 @@ export class FloorService {
       displayNumber: session.table.displayNumber,
       locationName: session.table.location.name,
       status: session.status,
+      sessionKind: session.sessionKind || 'DINE_IN',
+      customerName: session.customerName ?? null,
+      customerPhone: session.customerPhone ?? null,
       primaryWaiterMembershipId: session.primaryWaiterMembershipId,
       waiterName: session.primaryWaiter.employeeDisplayName,
       guestCount: session.guestCount,

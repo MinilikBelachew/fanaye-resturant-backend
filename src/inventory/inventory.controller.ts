@@ -33,6 +33,11 @@ import { InventoryService } from './inventory.service';
 export class InventoryController {
   constructor(private readonly inventory: InventoryService) {}
 
+  @Get('units')
+  listUnits() {
+    return this.inventory.listUnits();
+  }
+
   @Get('ingredients')
   listIngredients(@Request() req, @Query() query: InventoryListQueryDto) {
     return this.inventory.listIngredients(String(req.user.id), query);

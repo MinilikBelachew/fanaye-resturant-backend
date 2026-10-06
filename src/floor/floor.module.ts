@@ -7,6 +7,7 @@ import { FloorService } from './floor.service';
 import { StaffCoverageController } from './staff-coverage.controller';
 import { StaffCoverageService } from './staff-coverage.service';
 import { TableSessionsController } from './table-sessions.controller';
+import { DispatcherController } from './dispatcher.controller';
 import { WaiterPerformanceController } from './waiter-performance.controller';
 import { WaiterPerformanceService } from './waiter-performance.service';
 import { WaiterTablesController } from './waiter-tables.controller';
@@ -19,6 +20,7 @@ import { WaiterTablesController } from './waiter-tables.controller';
     StaffCoverageController,
     WaiterTablesController,
     TableSessionsController,
+    DispatcherController,
     WaiterPerformanceController,
   ],
   providers: [

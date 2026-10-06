@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Request,
   UploadedFile,
   UseGuards,
@@ -21,6 +22,7 @@ import {
   ApiBody,
   ApiConsumes,
   ApiOkResponse,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
@@ -82,9 +84,15 @@ export class MenuAdminController {
   }
 
   @Get('menu-items')
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'stationId', required: false })
   @ApiOkResponse({ type: AdminMenuItemListResponseDto })
-  list(@Request() request): Promise<AdminMenuItemListResponseDto> {
-    return this.menu.list(String(request.user.id));
+  list(
+    @Request() request,
+    @Query('q') q?: string,
+    @Query('stationId') stationId?: string,
+  ): Promise<AdminMenuItemListResponseDto> {
+    return this.menu.list(String(request.user.id), { q, stationId });
   }
 
   // Static paths must be registered BEFORE :id routes

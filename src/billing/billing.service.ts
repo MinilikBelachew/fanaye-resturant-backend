@@ -6,6 +6,9 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
+import { basename, join } from 'path';
 import { Prisma } from '@prisma/client';
 import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
@@ -13,6 +16,8 @@ import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
+import { VerifyEtService } from '../verify-et/verify-et.service';
+import { VerifyEtBank } from '../verify-et/verify-et.types';
 import { ExpectedTableSessionVersionDto } from './dto/expected-table-session-version.dto';
 import { CashPaymentDto, TransferPaymentDto } from './dto/payment.dto';
 import {
@@ -22,6 +27,7 @@ import {
   CashierBillRequestsResponseDto,
   CashPaymentResponseDto,
   PaymentDto,
+  PublicReceiptDto,
   SessionBillResponseDto,
   TransferPaymentResponseDto,
 } from './dto/billing-response.dto';
@@ -32,9 +38,11 @@ const CASH_COMMAND = 'payment.cash';
 const TRANSFER_COMMAND = 'payment.transfer';
 
 const REQUESTABLE = ['OPEN', 'ACTIVE_ORDER', 'ATTENTION_REQUIRED'];
-const GENERATE_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN'];
+const GENERATE_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN', 'DISPATCHER'];
+const CASHIER_QUEUE_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN'];
 const VIEW_PAYMENT_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN'];
-const COLLECT_ROLES = ['WAITER', 'MANAGER', 'OWNER_ADMIN'];
+const COLLECT_ROLES = ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'];
+const SHIFT_OWNER_ROLES = ['WAITER', 'DISPATCHER'];
 const CHARGEABLE_ITEM = (state: string, cancelledAt: Date | null) =>
   !cancelledAt && state !== 'CANCELLED';
 
@@ -45,6 +53,7 @@ export class BillingService {
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
     private readonly dailyClose: DailyCloseService,
+    private readonly verifyEt: VerifyEtService,
   ) {}
 
   async requestBill(
@@ -238,7 +247,7 @@ export class BillingService {
     userId: string,
   ): Promise<CashierBillRequestsResponseDto> {
     const context = await this.requireBranch(userId);
-    if (!GENERATE_ROLES.includes(context.roleCode)) {
+    if (!CASHIER_QUEUE_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Bill request queue is for cashiers.');
     }
 
@@ -357,6 +366,17 @@ export class BillingService {
       },
     });
     if (!request) throw new NotFoundException('Bill request not found.');
+    if (context.roleCode === 'DISPATCHER') {
+      if (
+        request.tableSession.sessionKind !== 'CALL_PICKUP' ||
+        request.tableSession.primaryWaiterMembershipId !==
+          context.staffMembershipId
+      ) {
+        throw new ForbiddenException(
+          'Dispatchers can only generate bills for their call pickup orders.',
+        );
+      }
+    }
     if (request.status !== 'PENDING') {
       throw new UnprocessableEntityException({
         status: 422,
@@ -525,6 +545,55 @@ export class BillingService {
     });
     if (!bill) throw new NotFoundException('Bill not found.');
     return toBillDto(bill);
+  }
+
+  /** Guest-facing receipt for QR scan — no auth, safe fields only. */
+  async getPublicReceipt(billId: string): Promise<PublicReceiptDto> {
+    const bill = await this.prisma.bill.findFirst({
+      where: { id: billId },
+      include: {
+        tenant: true,
+        branch: true,
+        lines: {
+          where: { chargeStatus: { not: 'CANCELLED_NO_CHARGE' } },
+          orderBy: { sortOrder: 'asc' },
+        },
+        payments: {
+          orderBy: { initiatedAt: 'asc' },
+        },
+        tableSession: {
+          include: { table: true },
+        },
+      },
+    });
+    if (!bill) throw new NotFoundException('Receipt not found.');
+
+    return {
+      billId: bill.id,
+      billNumber: bill.billNumber,
+      status: bill.status,
+      currencyCode: bill.currencyCode,
+      restaurantName: bill.tenant.displayName,
+      branchName: bill.branch.name,
+      tableName: bill.tableSession.table.displayName ?? null,
+      subtotal: money(bill.subtotalAmount),
+      total: money(bill.totalAmount),
+      amountPaid: money(bill.amountPaid),
+      generatedAt: bill.generatedAt,
+      paidAt: bill.paidAt,
+      lines: bill.lines.map((line) => ({
+        itemName: line.itemNameSnapshot,
+        quantity: line.quantity,
+        unitPrice: money(line.unitPriceSnapshot),
+        lineTotal: money(line.lineTotal),
+      })),
+      payments: bill.payments.map((payment) => ({
+        method: payment.method,
+        amount: money(payment.amount),
+        channel: payment.transferChannel,
+        status: payment.status,
+      })),
+    };
   }
 
   async sendBillToWaiter(
@@ -750,13 +819,25 @@ export class BillingService {
     }
 
     const due = new Prisma.Decimal(bill.totalAmount).minus(bill.amountPaid);
-    const amount = new Prisma.Decimal(dto.amount);
-    if (!amount.equals(due) || due.lte(0)) {
+    if (due.lte(0)) {
       throw new UnprocessableEntityException({
         status: 422,
         code: 'PAYMENT_AMOUNT_INVALID',
         errors: { amount: money(due) },
       });
+    }
+
+    // Without bank verify, client must still post the full due.
+    // With Verify.ET, the bank amount is the source of truth (tip / under-due).
+    if (!this.verifyEt.isEnabled()) {
+      const claimed = new Prisma.Decimal(dto.amount);
+      if (!claimed.equals(due)) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'PAYMENT_AMOUNT_INVALID',
+          errors: { amount: money(due) },
+        });
+      }
     }
 
     const pending = await this.prisma.payment.findFirst({
@@ -774,6 +855,88 @@ export class BillingService {
       });
     }
 
+    let settleAmount = due;
+    let tipAmount: Prisma.Decimal | null = null;
+    let verifiedAmountLabel: string | undefined;
+    let verifiedAt: Date | null = null;
+
+    const reference = dto.reference?.trim();
+    if (this.verifyEt.isEnabled()) {
+      const bank = resolveVerifyBank(dto);
+      if (!reference && bank === 'cbebirr' && !dto.phoneNumber?.trim()) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'VERIFY_PHONE_REQUIRED',
+          errors: { phoneNumber: 'VERIFY_PHONE_REQUIRED' },
+        });
+      }
+      if (!reference && bank === 'boa' && !dto.accountSuffix?.trim()) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'VERIFY_SUFFIX_REQUIRED',
+          errors: { accountSuffix: 'VERIFY_SUFFIX_REQUIRED' },
+        });
+      }
+
+      const verified = await this.verifyEt.verifyPayment({
+        bank,
+        reference,
+        accountSuffix: dto.accountSuffix,
+        phoneNumber: dto.phoneNumber,
+        idempotencyKey: `transfer:${bill.id}:${key}`,
+        image: await loadReceiptImage(file.path),
+      });
+
+      if (!verified.verified) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'TRANSFER_NOT_VERIFIED',
+          message: verified.message || 'Bank could not verify this transfer.',
+          errors: { reference: 'TRANSFER_NOT_VERIFIED' },
+          verifyRequestId: verified.requestId,
+          verifyStatus: verified.status,
+        });
+      }
+
+      if (verified.amount == null || !Number.isFinite(verified.amount)) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'TRANSFER_AMOUNT_UNKNOWN',
+          message:
+            'Bank verified the transfer but did not return an amount. Type a clearer reference or try again.',
+          errors: { amount: 'TRANSFER_AMOUNT_UNKNOWN' },
+          verifyRequestId: verified.requestId,
+        });
+      }
+
+      const verifiedAmount = new Prisma.Decimal(
+        verified.amount,
+      ).toDecimalPlaces(2);
+      verifiedAmountLabel = money(verifiedAmount);
+      verifiedAt = new Date();
+
+      if (verifiedAmount.lt(due)) {
+        const remaining = due.minus(verifiedAmount);
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'TRANSFER_UNDER_DUE',
+          message: `Verified ${money(verifiedAmount)} ETB. Bill still needs ${money(remaining)} ETB — collect cash or another transfer.`,
+          errors: { amount: 'TRANSFER_UNDER_DUE' },
+          verifiedAmount: money(verifiedAmount),
+          dueAmount: money(due),
+          remainingAmount: money(remaining),
+          verifyRequestId: verified.requestId,
+        });
+      }
+
+      settleAmount = due;
+      if (verifiedAmount.gt(due)) {
+        tipAmount = verifiedAmount.minus(due);
+      }
+    } else {
+      settleAmount = due;
+    }
+
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
       const payment = await tx.payment.create({
@@ -786,10 +949,11 @@ export class BillingService {
           transferChannel: dto.transferChannel,
           status: 'SETTLED',
           currencyCode: bill.currencyCode,
-          amount,
+          amount: settleAmount,
           collectorMembershipId: context.staffMembershipId!,
           collectorShiftSessionId: context.shiftSessionId!,
           collectedAt: now,
+          verifiedAt,
           settledAt: now,
           receipt: {
             create: {
@@ -819,6 +983,8 @@ export class BillingService {
       });
       const payload: TransferPaymentResponseDto = {
         payment: toPaymentDto(payment),
+        tipAmount: tipAmount ? money(tipAmount) : undefined,
+        verifiedAmount: verifiedAmountLabel,
         bill: {
           billId: updatedBill.id,
           status: updatedBill.status,
@@ -853,6 +1019,8 @@ export class BillingService {
         waiterName: string;
         sessionStatus: string;
         tableClosed: boolean;
+        hasTransferReceipt: boolean;
+        receiptImagePath: string | null;
       }
     >;
   }> {
@@ -867,6 +1035,7 @@ export class BillingService {
       },
       include: {
         collector: true,
+        receipt: { include: { file: true } },
         bill: {
           include: {
             tableSession: { include: { table: true } },
@@ -880,6 +1049,7 @@ export class BillingService {
       data: payments.map((payment) => {
         const table = payment.bill.tableSession.table;
         const session = payment.bill.tableSession;
+        const receiptPath = payment.receipt?.file?.path ?? null;
         return {
           ...toPaymentDto(payment),
           billId: payment.billId,
@@ -890,8 +1060,58 @@ export class BillingService {
           waiterName: payment.collector.employeeDisplayName,
           sessionStatus: session.status,
           tableClosed: session.status === 'CLOSED' || Boolean(session.closedAt),
+          hasTransferReceipt: Boolean(receiptPath),
+          receiptImagePath: receiptPath,
         };
       }),
+    };
+  }
+
+  async getPaymentDetail(userId: string, paymentId: string) {
+    const context = await this.requireBranch(userId);
+    if (!VIEW_PAYMENT_ROLES.includes(context.roleCode)) {
+      throw new ForbiddenException('Payment detail is for cashiers.');
+    }
+
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        id: paymentId,
+        branchId: context.branchId!,
+        status: 'SETTLED',
+      },
+      include: {
+        collector: true,
+        receipt: { include: { file: true } },
+        bill: {
+          include: {
+            lines: { orderBy: { sortOrder: 'asc' } },
+            tableSession: { include: { table: true } },
+          },
+        },
+      },
+    });
+    if (!payment) throw new NotFoundException('Payment not found.');
+
+    const table = payment.bill.tableSession.table;
+    const session = payment.bill.tableSession;
+    const receiptPath = payment.receipt?.file?.path ?? null;
+
+    return {
+      payment: {
+        ...toPaymentDto(payment),
+        billId: payment.billId,
+        billNumber: payment.bill.billNumber,
+        tableSessionId: payment.bill.tableSessionId,
+        tableDisplayName:
+          table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''),
+        waiterName: payment.collector.employeeDisplayName,
+        sessionStatus: session.status,
+        tableClosed: session.status === 'CLOSED' || Boolean(session.closedAt),
+        hasTransferReceipt: Boolean(receiptPath),
+        receiptImagePath: receiptPath,
+        receiptCapturedAt: payment.receipt?.capturedAt ?? null,
+      },
+      bill: toBillDto(payment.bill),
     };
   }
 
@@ -915,7 +1135,7 @@ export class BillingService {
     context: AuthContextDto,
     bill: { tableSession: { primaryWaiterMembershipId: string } },
   ) {
-    if (context.roleCode === 'WAITER') {
+    if (SHIFT_OWNER_ROLES.includes(context.roleCode)) {
       if (
         bill.tableSession.primaryWaiterMembershipId !==
         context.staffMembershipId
@@ -931,7 +1151,7 @@ export class BillingService {
   ) {
     if (
       session.primaryWaiterMembershipId !== context.staffMembershipId &&
-      context.roleCode === 'WAITER'
+      SHIFT_OWNER_ROLES.includes(context.roleCode)
     ) {
       throw new ForbiddenException('This is not your table.');
     }
@@ -947,7 +1167,7 @@ export class BillingService {
 
   private async requireWaiterOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (context.roleCode !== 'WAITER') {
+    if (!SHIFT_OWNER_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Only the waiter can request the bill.');
     }
     if (!context.staffMembershipId || !context.shiftSessionId) {
@@ -1072,6 +1292,43 @@ export class BillingService {
 
 function money(value: Prisma.Decimal | number | string): string {
   return new Prisma.Decimal(value).toFixed(2);
+}
+
+function resolveVerifyBank(dto: TransferPaymentDto): VerifyEtBank {
+  if (dto.bankProvider) return dto.bankProvider;
+  if (dto.transferChannel === 'TELEBIRR') return 'telebirr';
+  return 'cbe';
+}
+
+async function loadReceiptImage(
+  storedPath: string,
+): Promise<{ buffer: Buffer; mimeType: string; filename: string } | undefined> {
+  if (/^https?:\/\//i.test(storedPath)) {
+    const response = await fetch(storedPath);
+    if (!response.ok) return undefined;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const mimeType =
+      response.headers.get('content-type')?.split(';')[0] || 'image/jpeg';
+    return {
+      buffer: bytes,
+      mimeType,
+      filename: basename(new URL(storedPath).pathname) || 'receipt.jpg',
+    };
+  }
+
+  const filename = basename(storedPath);
+  const candidates = [
+    join(process.cwd(), 'files', filename),
+    join(process.cwd(), storedPath.replace(/^[/\\]+/, '')),
+  ];
+  const diskPath = candidates.find((candidate) => existsSync(candidate));
+  if (!diskPath) return undefined;
+
+  const buffer = await readFile(diskPath);
+  const ext = filename.split('.').pop()?.toLowerCase();
+  const mimeType =
+    ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+  return { buffer, mimeType, filename };
 }
 
 function lineTotal(item: {

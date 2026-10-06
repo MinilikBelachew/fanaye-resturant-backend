@@ -73,13 +73,39 @@ export class MenuService {
     };
   }
 
-  async list(userId: string): Promise<AdminMenuItemListResponseDto> {
+  async list(
+    userId: string,
+    opts?: { q?: string; stationId?: string },
+  ): Promise<AdminMenuItemListResponseDto> {
     const context = await this.requireAdmin(userId);
     const menu = await this.resolveMenu(context);
+    const q = opts?.q?.trim();
+    const stationId = opts?.stationId?.trim();
     const items = await this.prisma.menuItem.findMany({
       where: {
         menuId: menu.id,
         status: { in: ['ACTIVE', 'DRAFT'] },
+        ...(stationId && stationId !== 'all'
+          ? { preparationStationId: stationId }
+          : {}),
+        ...(q
+          ? {
+              OR: [
+                { name: { contains: q, mode: 'insensitive' } },
+                { description: { contains: q, mode: 'insensitive' } },
+                {
+                  category: {
+                    name: { contains: q, mode: 'insensitive' },
+                  },
+                },
+                {
+                  station: {
+                    name: { contains: q, mode: 'insensitive' },
+                  },
+                },
+              ],
+            }
+          : {}),
       },
       include: this.itemInclude(),
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
@@ -234,6 +260,7 @@ export class MenuService {
           sortOrder,
           imageKey: dto.imageFileId ? null : (dto.imageKey ?? null),
           imageFileId: dto.imageFileId ?? null,
+          badge: dto.badge?.trim() ? dto.badge.trim().slice(0, 40) : null,
           periods: {
             create: periodIds.map((menuPeriodId) => ({
               menuPeriodId,
@@ -371,6 +398,11 @@ export class MenuService {
             ? { expectedPrepMinutes: dto.expectedPrepMinutes }
             : {}),
           ...(dto.available !== undefined ? { soldOut: !dto.available } : {}),
+          ...(dto.badge !== undefined
+            ? {
+                badge: dto.badge?.trim() ? dto.badge.trim().slice(0, 40) : null,
+              }
+            : {}),
           ...imagePatch,
           version: { increment: 1 },
         },
@@ -685,6 +717,7 @@ export class MenuService {
     version: number;
     imageFileId: string | null;
     imageKey: string | null;
+    badge?: string | null;
     imageFile?: { path: string } | null;
     category: { name: string } | null;
     station: { name: string };
@@ -740,6 +773,7 @@ export class MenuService {
       imageUrl: item.imageFile?.path
         ? item.imageFile.path.replace(/\\/g, '/')
         : null,
+      badge: item.badge ?? null,
       modifierGroups: item.modifiers
         .filter((assignment) => assignment.group.status === 'ACTIVE')
         .map((assignment) => toModifierGroupDto(assignment)),

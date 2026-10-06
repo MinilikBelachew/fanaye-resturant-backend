@@ -56,16 +56,22 @@ export class CreateDiningTableDto {
   @IsUUID()
   locationId: string;
 
-  @ApiProperty({ example: 'Table 17' })
-  @IsString()
-  @MaxLength(100)
-  displayName: string;
-
-  @ApiPropertyOptional({ example: '17' })
-  @IsOptional()
+  @ApiProperty({
+    example: '17',
+    description: 'Short floor code staff use to identify the table',
+  })
   @IsString()
   @MaxLength(40)
-  displayNumber?: string;
+  displayNumber: string;
+
+  @ApiPropertyOptional({
+    example: 'Table 17',
+    description: 'Friendly label; defaults to Table {number} when omitted',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  displayName?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

@@ -98,7 +98,7 @@ export class CreateAdminStaffDto {
   @ApiProperty({
     example: 'WAITER',
     description:
-      'WAITER | MANAGER | CASHIER | OWNER_ADMIN | STATION_OPERATOR | or UI codes kitchen/barista/cakes/soft_drinks',
+      'WAITER | DISPATCHER | MANAGER | CASHIER | OWNER_ADMIN | STATION_OPERATOR | or UI codes kitchen/barista/cakes/soft_drinks/dispatcher',
   })
   @IsString()
   @MaxLength(40)
@@ -175,6 +175,14 @@ export class CreateAdminStaffDto {
   @IsArray()
   @IsUUID('4', { each: true })
   tableIds?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Owner can create staff into a specific branch (defaults to session branch)',
+  })
+  @IsOptional()
+  @IsUUID()
+  branchId?: string;
 }
 
 export class UpdateAdminStaffDto {

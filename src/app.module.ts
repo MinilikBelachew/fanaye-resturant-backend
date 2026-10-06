@@ -15,6 +15,7 @@ import fileConfig from './files/config/file.config';
 import facebookConfig from './auth-facebook/config/facebook.config';
 import googleConfig from './auth-google/config/google.config';
 import appleConfig from './auth-apple/config/apple.config';
+import verifyEtConfig from './verify-et/config/verify-et.config';
 
 import { UsersModule } from './users/users.module';
 import { FilesModule } from './files/files.module';
@@ -61,6 +62,7 @@ import { InventoryModule } from './inventory/inventory.module';
         facebookConfig,
         googleConfig,
         appleConfig,
+        verifyEtConfig,
       ],
       envFilePath: ['.env'],
     }),

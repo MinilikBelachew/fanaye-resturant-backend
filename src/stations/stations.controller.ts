@@ -30,6 +30,10 @@ import {
   StationMenuItemDto,
   StationMenuResponseDto,
 } from './dto/station-menu.dto';
+import {
+  StationDetailResponseDto,
+  StationHistoryResponseDto,
+} from './dto/station-detail.dto';
 
 @ApiTags('Stations')
 @ApiBearerAuth()
@@ -84,6 +88,53 @@ export class StationsController {
     return this.stationsService.deleteStation(
       String(request.user.id),
       stationId,
+    );
+  }
+
+  @Get(':stationId/detail')
+  @ApiOkResponse({ type: StationDetailResponseDto })
+  stationDetail(
+    @Request() request,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+  ): Promise<StationDetailResponseDto> {
+    return this.stationsService.getStationDetail(
+      String(request.user.id),
+      stationId,
+    );
+  }
+
+  @Get(':stationId/history')
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'state', required: false })
+  @ApiQuery({ name: 'period', required: false })
+  @ApiQuery({ name: 'fromDate', required: false })
+  @ApiQuery({ name: 'toDate', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiOkResponse({ type: StationHistoryResponseDto })
+  stationHistory(
+    @Request() request,
+    @Param('stationId', ParseUUIDPipe) stationId: string,
+    @Query('q') q?: string,
+    @Query('state') state?: string,
+    @Query('period') period?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<StationHistoryResponseDto> {
+    return this.stationsService.getStationHistory(
+      String(request.user.id),
+      stationId,
+      {
+        q,
+        state,
+        period,
+        fromDate,
+        toDate,
+        page: page ? Number(page) : undefined,
+        limit: limit ? Number(limit) : undefined,
+      },
     );
   }
 

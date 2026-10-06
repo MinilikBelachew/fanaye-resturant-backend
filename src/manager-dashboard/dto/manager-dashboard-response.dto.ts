@@ -79,6 +79,15 @@ export class ManagerKpiDto {
   @ApiProperty({ example: 1 })
   pendingCashDrops: number;
 
+  @ApiProperty({ example: 0 })
+  pendingCancellations: number;
+
+  @ApiProperty({ example: 0 })
+  pendingOrderChanges: number;
+
+  @ApiProperty({ example: 0 })
+  openProductionExceptions: number;
+
   @ApiProperty({ example: '1 bill · 1 cash drop' })
   pendingActionsHint: string;
 
@@ -164,6 +173,17 @@ export class PrepDurationBucketDto {
   label: string;
 }
 
+export class StationPrepPointDto {
+  @ApiProperty({ example: 'Kitchen' })
+  station: string;
+
+  @ApiProperty({ example: 11.2 })
+  avgMinutes: number;
+
+  @ApiProperty({ example: 45 })
+  tickets: number;
+}
+
 export class WeeklyCashMovementPointDto {
   @ApiProperty({ example: 'Mon' })
   day: string;
@@ -173,6 +193,17 @@ export class WeeklyCashMovementPointDto {
 
   @ApiProperty({ example: 4.8 })
   cashDrop: number;
+}
+
+export class PaymentMixPointDto {
+  @ApiProperty({ example: 'Mon' })
+  period: string;
+
+  @ApiProperty({ example: 18200 })
+  cash: number;
+
+  @ApiProperty({ example: 24600 })
+  digital: number;
 }
 
 export class TopSellingDishDto {
@@ -240,9 +271,70 @@ export class OrderVolumePointDto {
   avgCheck: number;
 }
 
+export class WaiterPerformancePointDto {
+  @ApiProperty({ example: 'Karim Tesfaye' })
+  name: string;
+
+  @ApiProperty({ example: 18 })
+  covers: number;
+
+  @ApiProperty({ example: 12 })
+  tables: number;
+
+  @ApiProperty({ example: 14200 })
+  revenue: number;
+
+  @ApiProperty({ example: 'ETB 14.2k' })
+  revenueFormatted: string;
+
+  @ApiProperty({ example: 1183 })
+  avgCheck: number;
+}
+
+export class ActNowInsightDto {
+  @ApiProperty({ example: 2 })
+  readyTooLongCount: number;
+
+  @ApiProperty({ example: '2 tickets ready > 5 min' })
+  readyTooLongHint: string;
+
+  @ApiProperty({ example: 3 })
+  latePrepCount: number;
+
+  @ApiProperty({ example: '3 tickets past avg prep' })
+  latePrepHint: string;
+
+  @ApiProperty({ example: 1 })
+  staffOfflineCount: number;
+
+  @ApiProperty({ example: '1 scheduled waiter not clocked in' })
+  staffOfflineHint: string;
+
+  @ApiProperty({ example: 4 })
+  lowStockCount: number;
+
+  @ApiProperty({ example: '4 ingredients at/below par' })
+  lowStockHint: string;
+
+  @ApiProperty({ example: 2 })
+  unpaidBillsCount: number;
+
+  @ApiProperty({ example: 1850 })
+  unpaidGapValue: number;
+
+  @ApiProperty({ example: 'ETB 1.9k' })
+  unpaidGapFormatted: string;
+
+  @ApiProperty({ example: '2 unpaid bills today' })
+  unpaidGapHint: string;
+}
+
 export class ManagerDashboardDataDto {
   @ApiProperty({ type: () => ManagerKpiDto })
   kpis: ManagerKpiDto;
+
+  @ApiProperty({ type: () => ActNowInsightDto })
+  actNow: ActNowInsightDto;
 
   @ApiProperty({ type: () => [RevenueVsCollectionsPointDto] })
   salesTrend: RevenueVsCollectionsPointDto[];
@@ -252,6 +344,9 @@ export class ManagerDashboardDataDto {
 
   @ApiProperty({ type: () => [PrepDurationBucketDto] })
   prepBuckets: PrepDurationBucketDto[];
+
+  @ApiProperty({ type: () => [StationPrepPointDto] })
+  stationPrepAvg: StationPrepPointDto[];
 
   @ApiProperty({ type: () => [WeeklyCashMovementPointDto] })
   weeklyCashMovement: WeeklyCashMovementPointDto[];
@@ -268,6 +363,11 @@ export class ManagerDashboardDataDto {
   @ApiProperty({ type: () => [OrderVolumePointDto] })
   orderVolumeTrend: OrderVolumePointDto[];
 
+  @ApiProperty({ type: () => [PaymentMixPointDto] })
+  paymentMixTrend: PaymentMixPointDto[];
+
+  @ApiProperty({ type: () => [WaiterPerformancePointDto] })
+  waiterPerformance: WaiterPerformancePointDto[];
   @ApiProperty({ example: '2026-09-08' })
   businessDate: string;
 
