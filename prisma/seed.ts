@@ -172,58 +172,74 @@ async function main() {
   await seedInventoryUnits();
   const roleIdByCode = new Map(roles.map((role) => [role.code, role.id]));
 
+  const userMap = new Map<string, string>();
+
   for (const person of STAFF) {
     const passwordPlain = person.platformAdmin ? 'demo123' : person.pin;
     const passwordHash = await bcrypt.hash(passwordPlain, 10);
 
-    await prisma.appUser.upsert({
-      where: { id: person.id },
-      update: {
-        email: person.email,
-        phone: person.phone,
-        displayName: person.displayName,
-        accountStatus: 'ACTIVE',
-        credential: {
-          upsert: {
-            create: { passwordHash, authProvider: 'email' },
-            update: { passwordHash, authProvider: 'email' },
-          },
-        },
-      },
-      create: {
-        id: person.id,
-        email: person.email,
-        phone: person.phone,
-        displayName: person.displayName,
-        accountStatus: 'ACTIVE',
-        authProvider: 'email',
-        credential: {
-          create: { passwordHash, authProvider: 'email' },
-        },
-        platformRoles: person.platformAdmin
-          ? {
-              create: {
-                roleCode: 'PLATFORM_SUPER_ADMIN',
-                status: 'ACTIVE',
-              },
-            }
-          : undefined,
+    let dbUser = await prisma.appUser.findFirst({
+      where: {
+        OR: [{ id: person.id }, { email: person.email }],
       },
     });
+
+    if (dbUser) {
+      dbUser = await prisma.appUser.update({
+        where: { id: dbUser.id },
+        data: {
+          email: person.email,
+          phone: person.phone,
+          displayName: person.displayName,
+          accountStatus: 'ACTIVE',
+          credential: {
+            upsert: {
+              create: { passwordHash, authProvider: 'email' },
+              update: { passwordHash, authProvider: 'email' },
+            },
+          },
+        },
+      });
+    } else {
+      dbUser = await prisma.appUser.create({
+        data: {
+          id: person.id,
+          email: person.email,
+          phone: person.phone,
+          displayName: person.displayName,
+          accountStatus: 'ACTIVE',
+          authProvider: 'email',
+          credential: {
+            create: { passwordHash, authProvider: 'email' },
+          },
+          platformRoles: person.platformAdmin
+            ? {
+                create: {
+                  roleCode: 'PLATFORM_SUPER_ADMIN',
+                  status: 'ACTIVE',
+                },
+              }
+            : undefined,
+        },
+      });
+    }
+
+    userMap.set(person.id, dbUser.id);
   }
   console.log('Users seeded.');
 
-  for (const person of STAFF.filter(entry => entry.platformAdmin)) {
+  for (const person of STAFF.filter((entry) => entry.platformAdmin)) {
+    const dbUserId = userMap.get(person.id)!;
     await prisma.platformUserRole.upsert({
       where: {
         userId_roleCode: {
-          userId: person.id,
+          userId: dbUserId,
           roleCode: 'PLATFORM_SUPER_ADMIN',
         },
       },
       update: { status: 'ACTIVE' },
       create: {
-        userId: person.id,
+        userId: dbUserId,
         roleCode: 'PLATFORM_SUPER_ADMIN',
         status: 'ACTIVE',
       },
@@ -378,12 +394,16 @@ async function main() {
   console.log('Branches and shift definitions seeded.');
 
   // Staff memberships before tables / station assignments (FK)
+  const membershipMap = new Map<string, string>();
+
   for (const person of STAFF) {
     if (!person.restaurantRole) continue;
+    const dbUserId = userMap.get(person.id) || person.id;
     const membershipId = membershipIdForUser(person.id);
-    await prisma.tenantStaffMembership.upsert({
+
+    const dbMembership = await prisma.tenantStaffMembership.upsert({
       where: {
-        tenantId_userId: { tenantId: TENANT_ID, userId: person.id },
+        tenantId_userId: { tenantId: TENANT_ID, userId: dbUserId },
       },
       update: {
         employeeDisplayName: person.displayName,
@@ -392,7 +412,7 @@ async function main() {
       create: {
         id: membershipId,
         tenantId: TENANT_ID,
-        userId: person.id,
+        userId: dbUserId,
         employeeDisplayName: person.displayName,
         status: 'ACTIVE',
         joinedAt: new Date(),
@@ -400,27 +420,29 @@ async function main() {
       },
     });
 
+    membershipMap.set(person.id, dbMembership.id);
+
     const roleId = roleIdByCode.get(person.restaurantRole)!;
     if (person.branchKey && person.branchKey !== 'ALL') {
       const branchDbId = branchMap.get(person.branchKey)!;
       await prisma.branchStaffAssignment.upsert({
         where: { id: id(`bsa:${person.id}`) },
-        update: { branchId: branchDbId, status: 'ACTIVE' },
+        update: { branchId: branchDbId, staffMembershipId: dbMembership.id, status: 'ACTIVE' },
         create: {
           id: id(`bsa:${person.id}`),
           tenantId: TENANT_ID,
           branchId: branchDbId,
-          staffMembershipId: membershipId,
+          staffMembershipId: dbMembership.id,
           status: 'ACTIVE',
         },
       });
       await prisma.staffRoleAssignment.upsert({
         where: { id: id(`sra:${person.id}`) },
-        update: { branchId: branchDbId, status: 'ACTIVE' },
+        update: { branchId: branchDbId, staffMembershipId: dbMembership.id, status: 'ACTIVE' },
         create: {
           id: id(`sra:${person.id}`),
           tenantId: TENANT_ID,
-          staffMembershipId: membershipId,
+          staffMembershipId: dbMembership.id,
           roleId,
           branchId: branchDbId,
           status: 'ACTIVE',
@@ -429,11 +451,11 @@ async function main() {
     } else {
       await prisma.staffRoleAssignment.upsert({
         where: { id: id(`sra:${person.id}`) },
-        update: { status: 'ACTIVE' },
+        update: { staffMembershipId: dbMembership.id, status: 'ACTIVE' },
         create: {
           id: id(`sra:${person.id}`),
           tenantId: TENANT_ID,
-          staffMembershipId: membershipId,
+          staffMembershipId: dbMembership.id,
           roleId,
           branchId: null,
           status: 'ACTIVE',
@@ -472,9 +494,9 @@ async function main() {
     for (let n = 1; n <= 12; n++) {
       const tableId = id(`table:${branch.key}:${n}`);
       tableIds.push(tableId);
-      const assignedWaiterMembershipId = membershipIdForUser(
-        waiters[n <= 6 ? 0 : 1].id,
-      );
+      const assignedWaiterMembershipId =
+        membershipMap.get(waiters[n <= 6 ? 0 : 1].id) ||
+        membershipIdForUser(waiters[n <= 6 ? 0 : 1].id);
       await prisma.diningTable.upsert({
         where: { id: tableId },
         update: { assignedWaiterMembershipId, status: 'AVAILABLE', branchId: branchDbId },
@@ -567,7 +589,8 @@ async function main() {
           tenantId: TENANT_ID,
           branchId: branchDbId,
           stationId: stationIdByCode.get(stationCode)!,
-          staffMembershipId: membershipIdForUser(op.id),
+          staffMembershipId:
+            membershipMap.get(op.id) || membershipIdForUser(op.id),
           status: 'ACTIVE',
         },
       });
@@ -671,6 +694,7 @@ async function main() {
         menuItems,
         morningShiftId,
         eveningShiftId,
+        membershipMap,
       ),
     );
   }
