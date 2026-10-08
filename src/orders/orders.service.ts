@@ -432,6 +432,15 @@ export class OrdersService {
       return { line, item, selected };
     });
 
+    const branchSettings = await this.prisma.branchSettings.findUnique({
+      where: { branchId: context.branchId! },
+    });
+    const rushBuffer =
+      branchSettings?.rushModeEnabled &&
+      branchSettings.rushModeBufferMinutes > 0
+        ? branchSettings.rushModeBufferMinutes
+        : 0;
+
     const now = new Date();
     const created = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
@@ -458,7 +467,8 @@ export class OrdersService {
               originalPreparationStationId: item.station.id,
               currentPreparationStationId: item.station.id,
               stationNameSnapshot: item.station.name,
-              expectedPrepMinutesSnapshot: item.expectedPrepMinutes,
+              expectedPrepMinutesSnapshot:
+                (item.expectedPrepMinutes ?? 15) + rushBuffer,
               specialInstruction: line.specialInstruction?.trim() || null,
               state: 'QUEUED',
               confirmedAt: now,

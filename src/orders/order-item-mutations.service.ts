@@ -726,6 +726,15 @@ export class OrderItemMutationsService {
           errors: { menuItemId: change.menuItemId },
         });
       }
+      const branchSettings = await this.prisma.branchSettings.findUnique({
+        where: { branchId: context.branchId! },
+      });
+      const rushBuffer =
+        branchSettings?.rushModeEnabled &&
+        branchSettings.rushModeBufferMinutes > 0
+          ? branchSettings.rushModeBufferMinutes
+          : 0;
+
       menuPatch = {
         menuItem: { connect: { id: menuItem.id } },
         itemNameSnapshot: menuItem.name,
@@ -734,13 +743,16 @@ export class OrderItemMutationsService {
         originalStation: { connect: { id: menuItem.station.id } },
         currentStation: { connect: { id: menuItem.station.id } },
         stationNameSnapshot: menuItem.station.name,
-        expectedPrepMinutesSnapshot: menuItem.expectedPrepMinutes,
+        expectedPrepMinutesSnapshot:
+          (menuItem.expectedPrepMinutes ?? 15) + rushBuffer,
         // New dish goes back to queue so kitchen sees burger instead of pizza.
         state: 'QUEUED',
         queuedAt: new Date(),
         acknowledgedAt: null,
         preparationStartedAt: null,
         readyAt: null,
+        unacknowledgedAlertSentAt: null,
+        delayAlertSentAt: null,
         modifiers: { deleteMany: {} },
       };
     }

@@ -16,6 +16,9 @@ export const OpsEventType = {
   FLOOR_UPDATED: 'floor.updated',
   STATION_STATUS_CHANGED: 'station.status.changed',
   MENU_ITEM_AVAILABILITY: 'menu.item.availability',
+  TICKET_UNACKNOWLEDGED: 'ticket.unacknowledged',
+  ITEM_DELAYED: 'item.delayed',
+  RUSH_MODE_TOGGLED: 'branch.rush_mode.toggled',
 } as const;
 
 export type OpsEventTypeName = (typeof OpsEventType)[keyof typeof OpsEventType];

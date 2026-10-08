@@ -363,6 +363,9 @@ model BranchSettings {
   waiterMayClosePaidTableOverride         Boolean? @map("waiter_may_close_paid_table_override")
   cashierMayCollectCustomerPaymentOverride Boolean? @map("cashier_may_collect_customer_payment_override")
   stationDelayDefaultMinutes              Int?     @map("station_delay_default_minutes")
+  rushModeEnabled                         Boolean  @default(false) @map("rush_mode_enabled")
+  rushModeBufferMinutes                   Int      @default(10) @map("rush_mode_buffer_minutes")
+  unacknowledgedAlertMinutes              Int      @default(3) @map("unacknowledged_alert_minutes")
   shiftEndWarningMinutes                  Int      @default(15) @map("shift_end_warning_minutes")
   billUnresolvedProductionPolicyOverride  String?  @map("bill_unresolved_production_policy_override") @db.VarChar(40)
   settingsVersion                         Int      @default(1) @map("settings_version")
@@ -1054,6 +1057,8 @@ model OrderItem {
   cancelledAt                   DateTime? @map("cancelled_at") @db.Timestamptz(6)
   cancelledByMembershipId       String?   @map("cancelled_by_membership_id") @db.Uuid
   cancellationReason            String?   @map("cancellation_reason") @db.Text
+  unacknowledgedAlertSentAt     DateTime? @map("unacknowledged_alert_sent_at") @db.Timestamptz(6)
+  delayAlertSentAt              DateTime? @map("delay_alert_sent_at") @db.Timestamptz(6)
   version                       Int       @default(1)
   createdAt                     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)

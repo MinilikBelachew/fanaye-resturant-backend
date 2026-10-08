@@ -143,3 +143,31 @@ export class BranchListQueryDto {
   @Type(() => Boolean)
   activeOnly?: boolean;
 }
+
+export class UpdateBranchSettingsDto {
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  rushModeEnabled?: boolean;
+
+  @ApiPropertyOptional({ example: 10 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(60)
+  rushModeBufferMinutes?: number;
+
+  @ApiPropertyOptional({ example: 3 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  unacknowledgedAlertMinutes?: number;
+}
+
+export class ToggleRushModeDto {
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+}

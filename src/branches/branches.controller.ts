@@ -21,7 +21,9 @@ import { BranchesService } from './branches.service';
 import {
   CreateBranchDto,
   SwitchBranchDto,
+  ToggleRushModeDto,
   UpdateBranchDto,
+  UpdateBranchSettingsDto,
 } from './dto/branch.dto';
 import {
   BranchListResponseDto,
@@ -75,6 +77,43 @@ export class BranchesController {
       String(request.user.id),
       branchId,
       dto,
+    );
+  }
+
+  @Get(':branchId/settings')
+  getSettings(
+    @Request() request,
+    @Param('branchId', ParseUUIDPipe) branchId: string,
+  ) {
+    return this.branchesService.getBranchSettings(
+      String(request.user.id),
+      branchId,
+    );
+  }
+
+  @Patch(':branchId/settings')
+  updateSettings(
+    @Request() request,
+    @Param('branchId', ParseUUIDPipe) branchId: string,
+    @Body() dto: UpdateBranchSettingsDto,
+  ) {
+    return this.branchesService.updateBranchSettings(
+      String(request.user.id),
+      branchId,
+      dto,
+    );
+  }
+
+  @Post(':branchId/rush-mode')
+  toggleRushMode(
+    @Request() request,
+    @Param('branchId', ParseUUIDPipe) branchId: string,
+    @Body() dto: ToggleRushModeDto,
+  ) {
+    return this.branchesService.toggleRushMode(
+      String(request.user.id),
+      branchId,
+      dto.enabled,
     );
   }
 

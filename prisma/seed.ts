@@ -274,7 +274,7 @@ async function main() {
       slug: TENANT_SLUG,
       status: 'PUBLISHED',
       themeJson: { primary: '#C45C26' },
-      draftDataJson: { name: "Mama's Kitchen" },
+      draftDataJson: { name: "Mama's BulKitchen" },
       publishedDataJson: { name: "Mama's Kitchen" },
       publishedAt: new Date(),
     },

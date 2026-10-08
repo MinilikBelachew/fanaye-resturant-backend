@@ -12,6 +12,7 @@ import {
 } from './order-item-mutations.controller';
 import { OrderItemMutationsService } from './order-item-mutations.service';
 import { OrdersController } from './orders.controller';
+import { OrderSlaMonitorService } from './order-sla-monitor.service';
 import { OrdersService } from './orders.service';
 import { TableSessionOrdersController } from './table-session-orders.controller';
 import { WaiterMenuController } from './waiter-menu.controller';
@@ -28,7 +29,7 @@ import { WaiterMenuController } from './waiter-menu.controller';
     CancellationRequestsController,
     ChangeRequestsController,
   ],
-  providers: [OrdersService, OrderItemMutationsService],
-  exports: [OrdersService, OrderItemMutationsService],
+  providers: [OrdersService, OrderItemMutationsService, OrderSlaMonitorService],
+  exports: [OrdersService, OrderItemMutationsService, OrderSlaMonitorService],
 })
 export class OrdersModule {}

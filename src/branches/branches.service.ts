@@ -11,12 +11,19 @@ import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { PLATFORM_ROLE_CODE } from '../identity/identity.constants';
-import { CreateBranchDto, UpdateBranchDto } from './dto/branch.dto';
+import {
+  CreateBranchDto,
+  UpdateBranchDto,
+  UpdateBranchSettingsDto,
+} from './dto/branch.dto';
 import {
   BranchDto,
   BranchListResponseDto,
   BranchResponseDto,
 } from './dto/branch-response.dto';
+import { OpsEventType } from '../realtime/ops-events';
+import { OpsNotifyService } from '../realtime/ops-notify.service';
+import { branchRoom, managerRoom } from '../realtime/ops-rooms';
 
 const BRANCH_MAX_KEY = 'branch.max_count';
 
@@ -25,6 +32,7 @@ export class BranchesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly opsNotify: OpsNotifyService,
   ) {}
 
   async listBranches(
@@ -631,5 +639,125 @@ export class BranchesService {
       stationCount: branch._count.stations,
       staffCount: branch._count.staffAssignments,
     };
+  }
+
+  async getBranchSettings(userId: string, branchId: string) {
+    const context = await this.identity.getByUserId(userId);
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+    });
+    if (
+      !branch ||
+      (context.roleCode !== PLATFORM_ROLE_CODE &&
+        branch.tenantId !== context.tenantId)
+    ) {
+      throw new NotFoundException('Branch not found.');
+    }
+
+    let settings = await this.prisma.branchSettings.findUnique({
+      where: { branchId },
+    });
+    if (!settings) {
+      settings = await this.prisma.branchSettings.create({
+        data: {
+          branchId,
+          tenantId: branch.tenantId,
+          rushModeEnabled: false,
+          rushModeBufferMinutes: 10,
+          unacknowledgedAlertMinutes: 3,
+        },
+      });
+    }
+
+    return {
+      branchId: settings.branchId,
+      rushModeEnabled: settings.rushModeEnabled,
+      rushModeBufferMinutes: settings.rushModeBufferMinutes,
+      unacknowledgedAlertMinutes: settings.unacknowledgedAlertMinutes,
+      stationDelayDefaultMinutes: settings.stationDelayDefaultMinutes,
+      shiftEndWarningMinutes: settings.shiftEndWarningMinutes,
+    };
+  }
+
+  async updateBranchSettings(
+    userId: string,
+    branchId: string,
+    dto: UpdateBranchSettingsDto,
+  ) {
+    const context = await this.identity.getByUserId(userId);
+    if (
+      !['OWNER_ADMIN', 'MANAGER', PLATFORM_ROLE_CODE].includes(context.roleCode)
+    ) {
+      throw new ForbiddenException('Only managers can update branch settings.');
+    }
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+    });
+    if (
+      !branch ||
+      (context.roleCode !== PLATFORM_ROLE_CODE &&
+        branch.tenantId !== context.tenantId)
+    ) {
+      throw new NotFoundException('Branch not found.');
+    }
+
+    const updated = await this.prisma.branchSettings.upsert({
+      where: { branchId },
+      create: {
+        branchId,
+        tenantId: branch.tenantId,
+        rushModeEnabled: dto.rushModeEnabled ?? false,
+        rushModeBufferMinutes: dto.rushModeBufferMinutes ?? 10,
+        unacknowledgedAlertMinutes: dto.unacknowledgedAlertMinutes ?? 3,
+        updatedByMembershipId: context.staffMembershipId,
+      },
+      update: {
+        ...(dto.rushModeEnabled !== undefined
+          ? { rushModeEnabled: dto.rushModeEnabled }
+          : {}),
+        ...(dto.rushModeBufferMinutes !== undefined
+          ? { rushModeBufferMinutes: dto.rushModeBufferMinutes }
+          : {}),
+        ...(dto.unacknowledgedAlertMinutes !== undefined
+          ? { unacknowledgedAlertMinutes: dto.unacknowledgedAlertMinutes }
+          : {}),
+        updatedByMembershipId: context.staffMembershipId,
+      },
+    });
+
+    if (dto.rushModeEnabled !== undefined) {
+      await this.opsNotify.notify({
+        type: OpsEventType.RUSH_MODE_TOGGLED,
+        tenantId: branch.tenantId,
+        branchId,
+        severity: dto.rushModeEnabled ? 'ATTENTION' : 'INFO',
+        title: `Rush Mode ${dto.rushModeEnabled ? 'Activated' : 'Deactivated'}`,
+        body: `Rush buffer (+${updated.rushModeBufferMinutes}m) is now ${dto.rushModeEnabled ? 'active' : 'inactive'} at ${branch.name}.`,
+        rooms: [managerRoom(branchId), branchRoom(branchId)],
+        payload: {
+          branchId,
+          rushModeEnabled: updated.rushModeEnabled,
+          rushModeBufferMinutes: updated.rushModeBufferMinutes,
+        },
+      });
+    }
+
+    return {
+      branchId: updated.branchId,
+      rushModeEnabled: updated.rushModeEnabled,
+      rushModeBufferMinutes: updated.rushModeBufferMinutes,
+      unacknowledgedAlertMinutes: updated.unacknowledgedAlertMinutes,
+      stationDelayDefaultMinutes: updated.stationDelayDefaultMinutes,
+      shiftEndWarningMinutes: updated.shiftEndWarningMinutes,
+    };
+  }
+
+  async toggleRushMode(userId: string, branchId: string, enabled?: boolean) {
+    const current = await this.getBranchSettings(userId, branchId);
+    const nextState =
+      enabled !== undefined ? enabled : !current.rushModeEnabled;
+    return this.updateBranchSettings(userId, branchId, {
+      rushModeEnabled: nextState,
+    });
   }
 }
