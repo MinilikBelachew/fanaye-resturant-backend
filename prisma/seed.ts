@@ -401,63 +401,108 @@ async function main() {
     const dbUserId = userMap.get(person.id) || person.id;
     const membershipId = membershipIdForUser(person.id);
 
-    const dbMembership = await prisma.tenantStaffMembership.upsert({
+    let dbMembership = await prisma.tenantStaffMembership.findFirst({
       where: {
-        tenantId_userId: { tenantId: TENANT_ID, userId: dbUserId },
-      },
-      update: {
-        employeeDisplayName: person.displayName,
-        status: 'ACTIVE',
-      },
-      create: {
-        id: membershipId,
-        tenantId: TENANT_ID,
-        userId: dbUserId,
-        employeeDisplayName: person.displayName,
-        status: 'ACTIVE',
-        joinedAt: new Date(),
-        workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+        OR: [
+          { id: membershipId },
+          { tenantId: TENANT_ID, userId: dbUserId },
+        ],
       },
     });
 
-    membershipMap.set(person.id, dbMembership.id);
-
-    const roleId = roleIdByCode.get(person.restaurantRole)!;
-    if (person.branchKey && person.branchKey !== 'ALL') {
-      const branchDbId = branchMap.get(person.branchKey)!;
-      await prisma.branchStaffAssignment.upsert({
-        where: { id: id(`bsa:${person.id}`) },
-        update: { branchId: branchDbId, staffMembershipId: dbMembership.id, status: 'ACTIVE' },
-        create: {
-          id: id(`bsa:${person.id}`),
-          tenantId: TENANT_ID,
-          branchId: branchDbId,
-          staffMembershipId: dbMembership.id,
-          status: 'ACTIVE',
-        },
-      });
-      await prisma.staffRoleAssignment.upsert({
-        where: { id: id(`sra:${person.id}`) },
-        update: { branchId: branchDbId, staffMembershipId: dbMembership.id, status: 'ACTIVE' },
-        create: {
-          id: id(`sra:${person.id}`),
-          tenantId: TENANT_ID,
-          staffMembershipId: dbMembership.id,
-          roleId,
-          branchId: branchDbId,
+    if (dbMembership) {
+      dbMembership = await prisma.tenantStaffMembership.update({
+        where: { id: dbMembership.id },
+        data: {
+          employeeDisplayName: person.displayName,
           status: 'ACTIVE',
         },
       });
     } else {
-      await prisma.staffRoleAssignment.upsert({
-        where: { id: id(`sra:${person.id}`) },
-        update: { staffMembershipId: dbMembership.id, status: 'ACTIVE' },
-        create: {
+      dbMembership = await prisma.tenantStaffMembership.create({
+        data: {
+          id: membershipId,
+          tenantId: TENANT_ID,
+          userId: dbUserId,
+          employeeDisplayName: person.displayName,
+          status: 'ACTIVE',
+          joinedAt: new Date(),
+          workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+        },
+      });
+    }
+
+    membershipMap.set(person.id, dbMembership.id);
+
+    const roleId = roleIdByCode.get(person.restaurantRole)!;
+    const branchScopeId =
+      person.branchKey && person.branchKey !== 'ALL'
+        ? branchMap.get(person.branchKey)!
+        : null;
+
+    if (branchScopeId) {
+      let bsa = await prisma.branchStaffAssignment.findFirst({
+        where: {
+          OR: [
+            { id: id(`bsa:${person.id}`) },
+            { branchId: branchScopeId, staffMembershipId: dbMembership.id },
+          ],
+        },
+      });
+
+      if (bsa) {
+        await prisma.branchStaffAssignment.update({
+          where: { id: bsa.id },
+          data: {
+            branchId: branchScopeId,
+            staffMembershipId: dbMembership.id,
+            status: 'ACTIVE',
+          },
+        });
+      } else {
+        await prisma.branchStaffAssignment.create({
+          data: {
+            id: id(`bsa:${person.id}`),
+            tenantId: TENANT_ID,
+            branchId: branchScopeId,
+            staffMembershipId: dbMembership.id,
+            status: 'ACTIVE',
+          },
+        });
+      }
+    }
+
+    let sra = await prisma.staffRoleAssignment.findFirst({
+      where: {
+        OR: [
+          { id: id(`sra:${person.id}`) },
+          {
+            staffMembershipId: dbMembership.id,
+            roleId,
+            branchId: branchScopeId,
+          },
+        ],
+      },
+    });
+
+    if (sra) {
+      await prisma.staffRoleAssignment.update({
+        where: { id: sra.id },
+        data: {
+          staffMembershipId: dbMembership.id,
+          roleId,
+          branchId: branchScopeId,
+          status: 'ACTIVE',
+        },
+      });
+    } else {
+      await prisma.staffRoleAssignment.create({
+        data: {
           id: id(`sra:${person.id}`),
           tenantId: TENANT_ID,
           staffMembershipId: dbMembership.id,
           roleId,
-          branchId: null,
+          branchId: branchScopeId,
           status: 'ACTIVE',
         },
       });
@@ -580,20 +625,42 @@ async function main() {
     const stationCodes = ['KITCHEN', 'BARISTA'];
     for (let i = 0; i < operators.length; i++) {
       const op = operators[i];
+      const opMembershipId =
+        membershipMap.get(op.id) || membershipIdForUser(op.id);
       const stationCode = stationCodes[i % stationCodes.length];
-      await prisma.stationStaffAssignment.upsert({
-        where: { id: id(`station-assign:${op.id}`) },
-        update: { branchId: branchDbId, stationId: stationIdByCode.get(stationCode)! },
-        create: {
-          id: id(`station-assign:${op.id}`),
-          tenantId: TENANT_ID,
-          branchId: branchDbId,
-          stationId: stationIdByCode.get(stationCode)!,
-          staffMembershipId:
-            membershipMap.get(op.id) || membershipIdForUser(op.id),
-          status: 'ACTIVE',
+      const stId = stationIdByCode.get(stationCode)!;
+
+      let ssa = await prisma.stationStaffAssignment.findFirst({
+        where: {
+          OR: [
+            { id: id(`station-assign:${op.id}`) },
+            { stationId: stId, staffMembershipId: opMembershipId },
+          ],
         },
       });
+
+      if (ssa) {
+        await prisma.stationStaffAssignment.update({
+          where: { id: ssa.id },
+          data: {
+            branchId: branchDbId,
+            stationId: stId,
+            staffMembershipId: opMembershipId,
+            status: 'ACTIVE',
+          },
+        });
+      } else {
+        await prisma.stationStaffAssignment.create({
+          data: {
+            id: id(`station-assign:${op.id}`),
+            tenantId: TENANT_ID,
+            branchId: branchDbId,
+            stationId: stId,
+            staffMembershipId: opMembershipId,
+            status: 'ACTIVE',
+          },
+        });
+      }
     }
 
     const menuId = id(`menu:${branch.key}`);
