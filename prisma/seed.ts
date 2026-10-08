@@ -295,10 +295,14 @@ async function main() {
   // Branches first (needed for staff branch assignments)
   for (const branch of BRANCHES) {
     await prisma.branch.upsert({
-      where: { id: branch.id },
+      where: {
+        tenantId_displayCode: {
+          tenantId: TENANT_ID,
+          displayCode: branch.displayCode,
+        },
+      },
       update: {
         name: branch.name,
-        displayCode: branch.displayCode,
         status: 'ACTIVE',
       },
       create: {
