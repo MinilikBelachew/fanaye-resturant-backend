@@ -296,36 +296,47 @@ async function main() {
   const branchMap = new Map<string, string>();
 
   for (const branch of BRANCHES) {
-    const dbBranch = await prisma.branch.upsert({
+    let dbBranch = await prisma.branch.findFirst({
       where: {
-        tenantId_displayCode: {
-          tenantId: TENANT_ID,
-          displayCode: branch.displayCode,
-        },
-      },
-      update: {
-        name: branch.name,
-        status: 'ACTIVE',
-      },
-      create: {
-        id: branch.id,
-        tenantId: TENANT_ID,
-        name: branch.name,
-        displayCode: branch.displayCode,
-        timezone: 'Africa/Addis_Ababa',
-        status: 'ACTIVE',
-        openingTime: new Date('1970-01-01T07:00:00.000Z'),
-        closingTime: new Date('1970-01-01T23:00:00.000Z'),
-        businessDayCutoff: new Date('1970-01-01T03:00:00.000Z'),
-        settings: {
-          create: {
-            tenantId: TENANT_ID,
-            shiftEndWarningMinutes: 15,
-            settingsVersion: 1,
-          },
-        },
+        OR: [
+          { id: branch.id },
+          { tenantId: TENANT_ID, displayCode: branch.displayCode },
+        ],
       },
     });
+
+    if (dbBranch) {
+      dbBranch = await prisma.branch.update({
+        where: { id: dbBranch.id },
+        data: {
+          tenantId: TENANT_ID,
+          name: branch.name,
+          displayCode: branch.displayCode,
+          status: 'ACTIVE',
+        },
+      });
+    } else {
+      dbBranch = await prisma.branch.create({
+        data: {
+          id: branch.id,
+          tenantId: TENANT_ID,
+          name: branch.name,
+          displayCode: branch.displayCode,
+          timezone: 'Africa/Addis_Ababa',
+          status: 'ACTIVE',
+          openingTime: new Date('1970-01-01T07:00:00.000Z'),
+          closingTime: new Date('1970-01-01T23:00:00.000Z'),
+          businessDayCutoff: new Date('1970-01-01T03:00:00.000Z'),
+          settings: {
+            create: {
+              tenantId: TENANT_ID,
+              shiftEndWarningMinutes: 15,
+              settingsVersion: 1,
+            },
+          },
+        },
+      });
+    }
 
     branchMap.set(branch.key, dbBranch.id);
 
