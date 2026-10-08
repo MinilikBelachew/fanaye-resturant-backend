@@ -6,8 +6,8 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
-import { CreateMenuItemDto } from './dto/create-menu-item.dto';
-import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
+import { CatalogCreateMenuItemDto } from './dto/create-menu-item.dto';
+import { CatalogUpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import {
   MenuItemDto,
@@ -207,7 +207,7 @@ export class CatalogService {
 
   async create(
     userId: string,
-    dto: CreateMenuItemDto,
+    dto: CatalogCreateMenuItemDto,
   ): Promise<MenuItemSingleResponseDto> {
     const { tenantId, branchId, menu } = await this.getContextAndMenu(userId);
     const station = await this.resolveStation(
@@ -324,7 +324,7 @@ export class CatalogService {
   async update(
     userId: string,
     id: string,
-    dto: UpdateMenuItemDto,
+    dto: CatalogUpdateMenuItemDto,
   ): Promise<MenuItemSingleResponseDto> {
     const { tenantId, branchId } = await this.getContextAndMenu(userId);
 

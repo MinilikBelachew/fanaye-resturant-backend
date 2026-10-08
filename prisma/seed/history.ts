@@ -497,6 +497,7 @@ export function buildBranchRuntime(
   menuItems: BranchRuntime['menuItems'],
   morningShiftId: string,
   eveningShiftId: string,
+  membershipMap?: Map<string, string>,
 ): BranchRuntime {
   const waiters = STAFF.filter(
     (s) => s.branchKey === branchKey && s.restaurantRole === 'WAITER',
@@ -507,12 +508,15 @@ export function buildBranchRuntime(
   if (!cashier || waiters.length < 2) {
     throw new Error(`Missing staff for branch ${branchKey}`);
   }
+  const resolveMembership = (userId: string) =>
+    membershipMap?.get(userId) || membershipIdForUser(userId);
+
   return {
     key: branchKey,
     branchId,
     tableIds,
-    waiterMembershipIds: waiters.map((w) => membershipIdForUser(w.id)),
-    cashierMembershipId: membershipIdForUser(cashier.id),
+    waiterMembershipIds: waiters.map((w) => resolveMembership(w.id)),
+    cashierMembershipId: resolveMembership(cashier.id),
     menuItems,
     morningShiftId,
     eveningShiftId,

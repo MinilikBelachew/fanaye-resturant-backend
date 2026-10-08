@@ -169,60 +169,77 @@ async function main() {
   console.log("Seeding Mama's Kitchen demo...");
 
   const roles = await seedRolesAndPlans();
+  await seedInventoryUnits();
   const roleIdByCode = new Map(roles.map((role) => [role.code, role.id]));
+
+  const userMap = new Map<string, string>();
 
   for (const person of STAFF) {
     const passwordPlain = person.platformAdmin ? 'demo123' : person.pin;
     const passwordHash = await bcrypt.hash(passwordPlain, 10);
 
-    await prisma.appUser.upsert({
-      where: { id: person.id },
-      update: {
-        email: person.email,
-        phone: person.phone,
-        displayName: person.displayName,
-        accountStatus: 'ACTIVE',
-        credential: {
-          upsert: {
-            create: { passwordHash, authProvider: 'email' },
-            update: { passwordHash, authProvider: 'email' },
-          },
-        },
-      },
-      create: {
-        id: person.id,
-        email: person.email,
-        phone: person.phone,
-        displayName: person.displayName,
-        accountStatus: 'ACTIVE',
-        authProvider: 'email',
-        credential: {
-          create: { passwordHash, authProvider: 'email' },
-        },
-        platformRoles: person.platformAdmin
-          ? {
-              create: {
-                roleCode: 'PLATFORM_SUPER_ADMIN',
-                status: 'ACTIVE',
-              },
-            }
-          : undefined,
+    let dbUser = await prisma.appUser.findFirst({
+      where: {
+        OR: [{ id: person.id }, { email: person.email }],
       },
     });
+
+    if (dbUser) {
+      dbUser = await prisma.appUser.update({
+        where: { id: dbUser.id },
+        data: {
+          email: person.email,
+          phone: person.phone,
+          displayName: person.displayName,
+          accountStatus: 'ACTIVE',
+          credential: {
+            upsert: {
+              create: { passwordHash, authProvider: 'email' },
+              update: { passwordHash, authProvider: 'email' },
+            },
+          },
+        },
+      });
+    } else {
+      dbUser = await prisma.appUser.create({
+        data: {
+          id: person.id,
+          email: person.email,
+          phone: person.phone,
+          displayName: person.displayName,
+          accountStatus: 'ACTIVE',
+          authProvider: 'email',
+          credential: {
+            create: { passwordHash, authProvider: 'email' },
+          },
+          platformRoles: person.platformAdmin
+            ? {
+                create: {
+                  roleCode: 'PLATFORM_SUPER_ADMIN',
+                  status: 'ACTIVE',
+                },
+              }
+            : undefined,
+        },
+      });
+    }
+
+    userMap.set(person.id, dbUser.id);
   }
   console.log('Users seeded.');
 
-  for (const person of STAFF.filter(entry => entry.platformAdmin)) {
+  for (const person of STAFF.filter((entry) => entry.platformAdmin)) {
+    const dbUserId = userMap.get(person.id)!;
     await prisma.platformUserRole.upsert({
       where: {
         userId_roleCode: {
-          userId: person.id,
+          userId: dbUserId,
           roleCode: 'PLATFORM_SUPER_ADMIN',
         },
       },
       update: { status: 'ACTIVE' },
       create: {
-        userId: person.id,
+        userId: dbUserId,
         roleCode: 'PLATFORM_SUPER_ADMIN',
         status: 'ACTIVE',
       },
@@ -292,126 +309,247 @@ async function main() {
   console.log("Mama's Kitchen tenant + site seeded (slug: mamas-kitchen).");
 
   // Branches first (needed for staff branch assignments)
+  const branchMap = new Map<string, string>();
+  const shiftDefMap = new Map<
+    string,
+    { morningId: string; eveningId: string }
+  >();
+
   for (const branch of BRANCHES) {
-    await prisma.branch.upsert({
-      where: { id: branch.id },
-      update: {
-        name: branch.name,
-        displayCode: branch.displayCode,
-        status: 'ACTIVE',
-      },
-      create: {
-        id: branch.id,
-        tenantId: TENANT_ID,
-        name: branch.name,
-        displayCode: branch.displayCode,
-        timezone: 'Africa/Addis_Ababa',
-        status: 'ACTIVE',
-        openingTime: new Date('1970-01-01T07:00:00.000Z'),
-        closingTime: new Date('1970-01-01T23:00:00.000Z'),
-        businessDayCutoff: new Date('1970-01-01T03:00:00.000Z'),
-        settings: {
-          create: {
-            tenantId: TENANT_ID,
-            shiftEndWarningMinutes: 15,
-            settingsVersion: 1,
-          },
-        },
+    let dbBranch = await prisma.branch.findFirst({
+      where: {
+        OR: [
+          { id: branch.id },
+          { tenantId: TENANT_ID, displayCode: branch.displayCode },
+        ],
       },
     });
 
+    if (dbBranch) {
+      dbBranch = await prisma.branch.update({
+        where: { id: dbBranch.id },
+        data: {
+          tenantId: TENANT_ID,
+          name: branch.name,
+          displayCode: branch.displayCode,
+          status: 'ACTIVE',
+        },
+      });
+    } else {
+      dbBranch = await prisma.branch.create({
+        data: {
+          id: branch.id,
+          tenantId: TENANT_ID,
+          name: branch.name,
+          displayCode: branch.displayCode,
+          timezone: 'Africa/Addis_Ababa',
+          status: 'ACTIVE',
+          openingTime: new Date('1970-01-01T07:00:00.000Z'),
+          closingTime: new Date('1970-01-01T23:00:00.000Z'),
+          businessDayCutoff: new Date('1970-01-01T03:00:00.000Z'),
+          settings: {
+            create: {
+              tenantId: TENANT_ID,
+              shiftEndWarningMinutes: 15,
+              settingsVersion: 1,
+            },
+          },
+        },
+      });
+    }
+
+    branchMap.set(branch.key, dbBranch.id);
+
     const morningShiftId = id(`shift-def:${branch.key}:morning`);
     const eveningShiftId = id(`shift-def:${branch.key}:evening`);
-    await prisma.shiftDefinition.upsert({
-      where: { id: morningShiftId },
-      update: {},
-      create: {
-        id: morningShiftId,
-        tenantId: TENANT_ID,
-        branchId: branch.id,
-        name: 'Morning',
-        startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
-        endLocalTime: new Date('1970-01-01T15:00:00.000Z'),
-        graceMinutes: 15,
-        status: 'ACTIVE',
+
+    let dbMorningShift = await prisma.shiftDefinition.findFirst({
+      where: {
+        OR: [
+          { id: morningShiftId },
+          { branchId: dbBranch.id, name: 'Morning' },
+        ],
       },
     });
-    await prisma.shiftDefinition.upsert({
-      where: { id: eveningShiftId },
-      update: {},
-      create: {
-        id: eveningShiftId,
-        tenantId: TENANT_ID,
-        branchId: branch.id,
-        name: 'Evening',
-        startLocalTime: new Date('1970-01-01T15:00:00.000Z'),
-        endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
-        graceMinutes: 15,
-        status: 'ACTIVE',
+    if (dbMorningShift) {
+      dbMorningShift = await prisma.shiftDefinition.update({
+        where: { id: dbMorningShift.id },
+        data: {
+          branchId: dbBranch.id,
+          name: 'Morning',
+          startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
+          endLocalTime: new Date('1970-01-01T15:00:00.000Z'),
+          graceMinutes: 15,
+          status: 'ACTIVE',
+        },
+      });
+    } else {
+      dbMorningShift = await prisma.shiftDefinition.create({
+        data: {
+          id: morningShiftId,
+          tenantId: TENANT_ID,
+          branchId: dbBranch.id,
+          name: 'Morning',
+          startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
+          endLocalTime: new Date('1970-01-01T15:00:00.000Z'),
+          graceMinutes: 15,
+          status: 'ACTIVE',
+        },
+      });
+    }
+
+    let dbEveningShift = await prisma.shiftDefinition.findFirst({
+      where: {
+        OR: [
+          { id: eveningShiftId },
+          { branchId: dbBranch.id, name: 'Evening' },
+        ],
       },
+    });
+    if (dbEveningShift) {
+      dbEveningShift = await prisma.shiftDefinition.update({
+        where: { id: dbEveningShift.id },
+        data: {
+          branchId: dbBranch.id,
+          name: 'Evening',
+          startLocalTime: new Date('1970-01-01T15:00:00.000Z'),
+          endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
+          graceMinutes: 15,
+          status: 'ACTIVE',
+        },
+      });
+    } else {
+      dbEveningShift = await prisma.shiftDefinition.create({
+        data: {
+          id: eveningShiftId,
+          tenantId: TENANT_ID,
+          branchId: dbBranch.id,
+          name: 'Evening',
+          startLocalTime: new Date('1970-01-01T15:00:00.000Z'),
+          endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
+          graceMinutes: 15,
+          status: 'ACTIVE',
+        },
+      });
+    }
+
+    shiftDefMap.set(branch.key, {
+      morningId: dbMorningShift.id,
+      eveningId: dbEveningShift.id,
     });
   }
   console.log('Branches and shift definitions seeded.');
 
   // Staff memberships before tables / station assignments (FK)
+  const membershipMap = new Map<string, string>();
+
   for (const person of STAFF) {
     if (!person.restaurantRole) continue;
+    const dbUserId = userMap.get(person.id) || person.id;
     const membershipId = membershipIdForUser(person.id);
-    await prisma.tenantStaffMembership.upsert({
+
+    let dbMembership = await prisma.tenantStaffMembership.findFirst({
       where: {
-        tenantId_userId: { tenantId: TENANT_ID, userId: person.id },
-      },
-      update: {
-        employeeDisplayName: person.displayName,
-        status: 'ACTIVE',
-      },
-      create: {
-        id: membershipId,
-        tenantId: TENANT_ID,
-        userId: person.id,
-        employeeDisplayName: person.displayName,
-        status: 'ACTIVE',
-        joinedAt: new Date(),
-        workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+        OR: [
+          { id: membershipId },
+          { tenantId: TENANT_ID, userId: dbUserId },
+        ],
       },
     });
 
-    const roleId = roleIdByCode.get(person.restaurantRole)!;
-    if (person.branchKey && person.branchKey !== 'ALL') {
-      const branch = BRANCHES.find((b) => b.key === person.branchKey)!;
-      await prisma.branchStaffAssignment.upsert({
-        where: { id: id(`bsa:${person.id}`) },
-        update: { status: 'ACTIVE' },
-        create: {
-          id: id(`bsa:${person.id}`),
-          tenantId: TENANT_ID,
-          branchId: branch.id,
-          staffMembershipId: membershipId,
-          status: 'ACTIVE',
-        },
-      });
-      await prisma.staffRoleAssignment.upsert({
-        where: { id: id(`sra:${person.id}`) },
-        update: { status: 'ACTIVE' },
-        create: {
-          id: id(`sra:${person.id}`),
-          tenantId: TENANT_ID,
-          staffMembershipId: membershipId,
-          roleId,
-          branchId: branch.id,
+    if (dbMembership) {
+      dbMembership = await prisma.tenantStaffMembership.update({
+        where: { id: dbMembership.id },
+        data: {
+          employeeDisplayName: person.displayName,
           status: 'ACTIVE',
         },
       });
     } else {
-      await prisma.staffRoleAssignment.upsert({
-        where: { id: id(`sra:${person.id}`) },
-        update: { status: 'ACTIVE' },
-        create: {
+      dbMembership = await prisma.tenantStaffMembership.create({
+        data: {
+          id: membershipId,
+          tenantId: TENANT_ID,
+          userId: dbUserId,
+          employeeDisplayName: person.displayName,
+          status: 'ACTIVE',
+          joinedAt: new Date(),
+          workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+        },
+      });
+    }
+
+    membershipMap.set(person.id, dbMembership.id);
+
+    const roleId = roleIdByCode.get(person.restaurantRole)!;
+    const branchScopeId =
+      person.branchKey && person.branchKey !== 'ALL'
+        ? branchMap.get(person.branchKey)!
+        : null;
+
+    if (branchScopeId) {
+      let bsa = await prisma.branchStaffAssignment.findFirst({
+        where: {
+          OR: [
+            { id: id(`bsa:${person.id}`) },
+            { branchId: branchScopeId, staffMembershipId: dbMembership.id },
+          ],
+        },
+      });
+
+      if (bsa) {
+        await prisma.branchStaffAssignment.update({
+          where: { id: bsa.id },
+          data: {
+            branchId: branchScopeId,
+            staffMembershipId: dbMembership.id,
+            status: 'ACTIVE',
+          },
+        });
+      } else {
+        await prisma.branchStaffAssignment.create({
+          data: {
+            id: id(`bsa:${person.id}`),
+            tenantId: TENANT_ID,
+            branchId: branchScopeId,
+            staffMembershipId: dbMembership.id,
+            status: 'ACTIVE',
+          },
+        });
+      }
+    }
+
+    let sra = await prisma.staffRoleAssignment.findFirst({
+      where: {
+        OR: [
+          { id: id(`sra:${person.id}`) },
+          {
+            staffMembershipId: dbMembership.id,
+            roleId,
+            branchId: branchScopeId,
+          },
+        ],
+      },
+    });
+
+    if (sra) {
+      await prisma.staffRoleAssignment.update({
+        where: { id: sra.id },
+        data: {
+          staffMembershipId: dbMembership.id,
+          roleId,
+          branchId: branchScopeId,
+          status: 'ACTIVE',
+        },
+      });
+    } else {
+      await prisma.staffRoleAssignment.create({
+        data: {
           id: id(`sra:${person.id}`),
           tenantId: TENANT_ID,
-          staffMembershipId: membershipId,
+          staffMembershipId: dbMembership.id,
           roleId,
-          branchId: null,
+          branchId: branchScopeId,
           status: 'ACTIVE',
         },
       });
@@ -422,23 +560,36 @@ async function main() {
   const branchRuntimes: BranchRuntime[] = [];
 
   for (const branch of BRANCHES) {
-    const morningShiftId = id(`shift-def:${branch.key}:morning`);
-    const eveningShiftId = id(`shift-def:${branch.key}:evening`);
+    const branchDbId = branchMap.get(branch.key)!;
 
     const locId = id(`loc:${branch.key}:main`);
-    await prisma.tableLocation.upsert({
-      where: { id: locId },
-      update: {},
-      create: {
-        id: locId,
-        tenantId: TENANT_ID,
-        branchId: branch.id,
-        name: 'Main Floor',
-        code: 'MAIN',
-        sortOrder: 0,
-        status: 'ACTIVE',
+    let mainLoc = await prisma.tableLocation.findFirst({
+      where: {
+        OR: [
+          { id: locId },
+          { branchId: branchDbId, name: 'Main Floor' },
+        ],
       },
     });
+
+    if (mainLoc) {
+      mainLoc = await prisma.tableLocation.update({
+        where: { id: mainLoc.id },
+        data: { branchId: branchDbId, name: 'Main Floor', code: 'MAIN', status: 'ACTIVE' },
+      });
+    } else {
+      mainLoc = await prisma.tableLocation.create({
+        data: {
+          id: locId,
+          tenantId: TENANT_ID,
+          branchId: branchDbId,
+          name: 'Main Floor',
+          code: 'MAIN',
+          sortOrder: 0,
+          status: 'ACTIVE',
+        },
+      });
+    }
 
     const tableIds: string[] = [];
     const waiters = STAFF.filter(
@@ -446,58 +597,118 @@ async function main() {
     );
     for (let n = 1; n <= 12; n++) {
       const tableId = id(`table:${branch.key}:${n}`);
-      tableIds.push(tableId);
-      const assignedWaiterMembershipId = membershipIdForUser(
-        waiters[n <= 6 ? 0 : 1].id,
-      );
-      await prisma.diningTable.upsert({
-        where: { id: tableId },
-        update: { assignedWaiterMembershipId, status: 'AVAILABLE' },
-        create: {
-          id: tableId,
+      const assignedWaiterMembershipId =
+        membershipMap.get(waiters[n <= 6 ? 0 : 1].id) ||
+        membershipIdForUser(waiters[n <= 6 ? 0 : 1].id);
+      const displayName = `Table ${n}`;
+
+      let dbTable = await prisma.diningTable.findFirst({
+        where: {
+          OR: [
+            { id: tableId },
+            { branchId: branchDbId, displayName },
+          ],
+        },
+      });
+
+      if (dbTable) {
+        dbTable = await prisma.diningTable.update({
+          where: { id: dbTable.id },
+          data: {
+            assignedWaiterMembershipId,
+            status: 'AVAILABLE',
+            branchId: branchDbId,
+            locationId: mainLoc.id,
+            displayName,
+            displayNumber: String(n),
+          },
+        });
+      } else {
+        dbTable = await prisma.diningTable.create({
+          data: {
+            id: tableId,
+            tenantId: TENANT_ID,
+            branchId: branchDbId,
+            locationId: mainLoc.id,
+            displayName,
+            displayNumber: String(n),
+            status: 'AVAILABLE',
+            sortOrder: n - 1,
+            assignedWaiterMembershipId,
+          },
+        });
+      }
+      tableIds.push(dbTable.id);
+    }
+
+    const callLocId = id(`loc:${branch.key}:call-pickup`);
+    let callLoc = await prisma.tableLocation.findFirst({
+      where: {
+        OR: [
+          { id: callLocId },
+          { branchId: branchDbId, name: 'Call pickup' },
+        ],
+      },
+    });
+
+    if (callLoc) {
+      callLoc = await prisma.tableLocation.update({
+        where: { id: callLoc.id },
+        data: { status: 'ACTIVE', name: 'Call pickup', code: 'CALL_PICKUP', branchId: branchDbId },
+      });
+    } else {
+      callLoc = await prisma.tableLocation.create({
+        data: {
+          id: callLocId,
           tenantId: TENANT_ID,
-          branchId: branch.id,
-          locationId: locId,
-          displayName: `Table ${n}`,
-          displayNumber: String(n),
-          status: 'AVAILABLE',
-          sortOrder: n - 1,
-          assignedWaiterMembershipId,
+          branchId: branchDbId,
+          name: 'Call pickup',
+          code: 'CALL_PICKUP',
+          sortOrder: 99,
+          status: 'ACTIVE',
         },
       });
     }
 
-    const callLocId = id(`loc:${branch.key}:call-pickup`);
-    await prisma.tableLocation.upsert({
-      where: { id: callLocId },
-      update: { status: 'ACTIVE', name: 'Call pickup', code: 'CALL_PICKUP' },
-      create: {
-        id: callLocId,
-        tenantId: TENANT_ID,
-        branchId: branch.id,
-        name: 'Call pickup',
-        code: 'CALL_PICKUP',
-        sortOrder: 99,
-        status: 'ACTIVE',
-      },
-    });
     for (let n = 1; n <= 8; n++) {
       const callTableId = id(`table:${branch.key}:call:${n}`);
-      await prisma.diningTable.upsert({
-        where: { id: callTableId },
-        update: { status: 'AVAILABLE', locationId: callLocId },
-        create: {
-          id: callTableId,
-          tenantId: TENANT_ID,
-          branchId: branch.id,
-          locationId: callLocId,
-          displayName: `Call ${n}`,
-          displayNumber: `C${n}`,
-          status: 'AVAILABLE',
-          sortOrder: n - 1,
-          assignedWaiterMembershipId: null,
+      const displayName = `Call ${n}`;
+
+      let dbCallTable = await prisma.diningTable.findFirst({
+        where: {
+          OR: [
+            { id: callTableId },
+            { branchId: branchDbId, displayName },
+          ],
         },
       });
+
+      if (dbCallTable) {
+        await prisma.diningTable.update({
+          where: { id: dbCallTable.id },
+          data: {
+            status: 'AVAILABLE',
+            locationId: callLoc.id,
+            branchId: branchDbId,
+            displayName,
+            displayNumber: `C${n}`,
+          },
+        });
+      } else {
+        await prisma.diningTable.create({
+          data: {
+            id: callTableId,
+            tenantId: TENANT_ID,
+            branchId: branchDbId,
+            locationId: callLoc.id,
+            displayName,
+            displayNumber: `C${n}`,
+            status: 'AVAILABLE',
+            sortOrder: n - 1,
+            assignedWaiterMembershipId: null,
+          },
+        });
+      }
     }
 
     const stationDefs = [
@@ -509,21 +720,42 @@ async function main() {
     const stationIdByCode = new Map<string, string>();
     for (const station of stationDefs) {
       const stationId = id(`station:${branch.key}:${station.code}`);
-      stationIdByCode.set(station.code, stationId);
-      await prisma.preparationStation.upsert({
-        where: { id: stationId },
-        update: {},
-        create: {
-          id: stationId,
-          tenantId: TENANT_ID,
-          branchId: branch.id,
-          name: station.name,
-          code: station.code,
-          status: 'ACTIVE',
-          defaultDelayThresholdMinutes: station.delay,
-          sortOrder: station.sort,
+      let dbStation = await prisma.preparationStation.findFirst({
+        where: {
+          OR: [
+            { id: stationId },
+            { branchId: branchDbId, code: station.code },
+          ],
         },
       });
+
+      if (dbStation) {
+        dbStation = await prisma.preparationStation.update({
+          where: { id: dbStation.id },
+          data: {
+            branchId: branchDbId,
+            name: station.name,
+            code: station.code,
+            status: 'ACTIVE',
+            defaultDelayThresholdMinutes: station.delay,
+            sortOrder: station.sort,
+          },
+        });
+      } else {
+        dbStation = await prisma.preparationStation.create({
+          data: {
+            id: stationId,
+            tenantId: TENANT_ID,
+            branchId: branchDbId,
+            name: station.name,
+            code: station.code,
+            status: 'ACTIVE',
+            defaultDelayThresholdMinutes: station.delay,
+            sortOrder: station.sort,
+          },
+        });
+      }
+      stationIdByCode.set(station.code, dbStation.id);
     }
 
     const operators = STAFF.filter(
@@ -533,49 +765,109 @@ async function main() {
     const stationCodes = ['KITCHEN', 'BARISTA'];
     for (let i = 0; i < operators.length; i++) {
       const op = operators[i];
+      const opMembershipId =
+        membershipMap.get(op.id) || membershipIdForUser(op.id);
       const stationCode = stationCodes[i % stationCodes.length];
-      await prisma.stationStaffAssignment.upsert({
-        where: { id: id(`station-assign:${op.id}`) },
-        update: {},
-        create: {
-          id: id(`station-assign:${op.id}`),
+      const stId = stationIdByCode.get(stationCode)!;
+
+      let ssa = await prisma.stationStaffAssignment.findFirst({
+        where: {
+          OR: [
+            { id: id(`station-assign:${op.id}`) },
+            { stationId: stId, staffMembershipId: opMembershipId },
+          ],
+        },
+      });
+
+      if (ssa) {
+        await prisma.stationStaffAssignment.update({
+          where: { id: ssa.id },
+          data: {
+            branchId: branchDbId,
+            stationId: stId,
+            staffMembershipId: opMembershipId,
+            status: 'ACTIVE',
+          },
+        });
+      } else {
+        await prisma.stationStaffAssignment.create({
+          data: {
+            id: id(`station-assign:${op.id}`),
+            tenantId: TENANT_ID,
+            branchId: branchDbId,
+            stationId: stId,
+            staffMembershipId: opMembershipId,
+            status: 'ACTIVE',
+          },
+        });
+      }
+    }
+
+    const menuId = id(`menu:${branch.key}`);
+    const periodId = id(`period:${branch.key}:all`);
+
+    let dbMenu = await prisma.menu.findFirst({
+      where: {
+        OR: [
+          { id: menuId },
+          { branchId: branchDbId, name: 'All day' },
+        ],
+      },
+    });
+
+    if (dbMenu) {
+      dbMenu = await prisma.menu.update({
+        where: { id: dbMenu.id },
+        data: { branchId: branchDbId, name: 'All day', status: 'ACTIVE' },
+      });
+    } else {
+      dbMenu = await prisma.menu.create({
+        data: {
+          id: menuId,
           tenantId: TENANT_ID,
-          branchId: branch.id,
-          stationId: stationIdByCode.get(stationCode)!,
-          staffMembershipId: membershipIdForUser(op.id),
+          branchId: branchDbId,
+          name: 'All day',
           status: 'ACTIVE',
         },
       });
     }
 
-    const menuId = id(`menu:${branch.key}`);
-    const periodId = id(`period:${branch.key}:all`);
-    await prisma.menu.upsert({
-      where: { id: menuId },
-      update: {},
-      create: {
-        id: menuId,
-        tenantId: TENANT_ID,
-        branchId: branch.id,
-        name: 'All day',
-        status: 'ACTIVE',
+    let dbPeriod = await prisma.menuPeriod.findFirst({
+      where: {
+        OR: [
+          { id: periodId },
+          { menuId: dbMenu.id, name: 'All day' },
+        ],
       },
     });
-    await prisma.menuPeriod.upsert({
-      where: { id: periodId },
-      update: {},
-      create: {
-        id: periodId,
-        tenantId: TENANT_ID,
-        menuId,
-        name: 'All day',
-        startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
-        endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
-        daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
-        status: 'ACTIVE',
-        sortOrder: 0,
-      },
-    });
+
+    if (dbPeriod) {
+      dbPeriod = await prisma.menuPeriod.update({
+        where: { id: dbPeriod.id },
+        data: {
+          name: 'All day',
+          startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
+          endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
+          daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
+          status: 'ACTIVE',
+          sortOrder: 0,
+        },
+      });
+    } else {
+      dbPeriod = await prisma.menuPeriod.create({
+        data: {
+          id: periodId,
+          tenantId: TENANT_ID,
+          menuId: dbMenu.id,
+          name: 'All day',
+          startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
+          endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
+          daysOfWeek: [1, 2, 3, 4, 5, 6, 7],
+          status: 'ACTIVE',
+          sortOrder: 0,
+        },
+      });
+    }
 
     const categories = [
       'Kitchen',
@@ -586,50 +878,102 @@ async function main() {
     const categoryIdByName = new Map<string, string>();
     for (const [index, name] of categories.entries()) {
       const catId = id(`cat:${branch.key}:${name}`);
-      categoryIdByName.set(name, catId);
-      await prisma.menuCategory.upsert({
-        where: { id: catId },
-        update: {},
-        create: {
-          id: catId,
-          tenantId: TENANT_ID,
-          menuId,
-          name,
-          status: 'ACTIVE',
-          sortOrder: index,
+      let dbCat = await prisma.menuCategory.findFirst({
+        where: {
+          OR: [
+            { id: catId },
+            { menuId: dbMenu.id, name },
+          ],
         },
       });
+
+      if (dbCat) {
+        dbCat = await prisma.menuCategory.update({
+          where: { id: dbCat.id },
+          data: { name, status: 'ACTIVE', sortOrder: index },
+        });
+      } else {
+        dbCat = await prisma.menuCategory.create({
+          data: {
+            id: catId,
+            tenantId: TENANT_ID,
+            menuId: dbMenu.id,
+            name,
+            status: 'ACTIVE',
+            sortOrder: index,
+          },
+        });
+      }
+      categoryIdByName.set(name, dbCat.id);
     }
 
     const menuItems: BranchRuntime['menuItems'] = [];
     for (const [index, dish] of MENU_DISHES.entries()) {
       const menuItemId = id(`item:${branch.key}:${dish.key}`);
       const stationId = stationIdByCode.get(dish.station)!;
-      await prisma.menuItem.upsert({
-        where: { id: menuItemId },
-        update: {
-          currentPrice: dish.price,
-          status: 'ACTIVE',
-        },
-        create: {
-          id: menuItemId,
-          tenantId: TENANT_ID,
-          menuId,
-          menuCategoryId: categoryIdByName.get(dish.category)!,
-          name: dish.name,
-          currentPrice: dish.price,
-          currencyCode: 'ETB',
-          preparationStationId: stationId,
-          expectedPrepMinutes: dish.prep,
-          status: 'ACTIVE',
-          sortOrder: index,
-          periods: {
-            create: [{ menuPeriodId: periodId }],
-          },
+      const catId = categoryIdByName.get(dish.category)!;
+
+      let dbMenuItem = await prisma.menuItem.findFirst({
+        where: {
+          OR: [
+            { id: menuItemId },
+            { menuId: dbMenu.id, name: dish.name },
+          ],
         },
       });
+
+      if (dbMenuItem) {
+        dbMenuItem = await prisma.menuItem.update({
+          where: { id: dbMenuItem.id },
+          data: {
+            menuCategoryId: catId,
+            name: dish.name,
+            currentPrice: dish.price,
+            preparationStationId: stationId,
+            expectedPrepMinutes: dish.prep,
+            status: 'ACTIVE',
+            sortOrder: index,
+          },
+        });
+      } else {
+        dbMenuItem = await prisma.menuItem.create({
+          data: {
+            id: menuItemId,
+            tenantId: TENANT_ID,
+            menuId: dbMenu.id,
+            menuCategoryId: catId,
+            name: dish.name,
+            currentPrice: dish.price,
+            currencyCode: 'ETB',
+            preparationStationId: stationId,
+            expectedPrepMinutes: dish.prep,
+            status: 'ACTIVE',
+            sortOrder: index,
+          },
+        });
+      }
+
+      const existingPeriodAssign =
+        await prisma.menuItemPeriodAssignment.findUnique({
+          where: {
+            menuItemId_menuPeriodId: {
+              menuItemId: dbMenuItem.id,
+              menuPeriodId: dbPeriod.id,
+            },
+          },
+        });
+
+      if (!existingPeriodAssign) {
+        await prisma.menuItemPeriodAssignment.create({
+          data: {
+            menuItemId: dbMenuItem.id,
+            menuPeriodId: dbPeriod.id,
+          },
+        });
+      }
+
       menuItems.push({
-        id: menuItemId,
+        id: dbMenuItem.id,
         name: dish.name,
         price: dish.price,
         stationId,
@@ -638,20 +982,20 @@ async function main() {
       });
     }
 
+    const shiftDefs = shiftDefMap.get(branch.key)!;
     branchRuntimes.push(
       buildBranchRuntime(
         branch.key,
-        branch.id,
+        branchDbId,
         tableIds,
         menuItems,
-        morningShiftId,
-        eveningShiftId,
+        shiftDefs.morningId,
+        shiftDefs.eveningId,
+        membershipMap,
       ),
     );
   }
   console.log('Tables, stations, and menus seeded.');
-
-  await seedInventoryUnits();
 
   const today = startOfDay(new Date());
   const biz = businessDateOnly(today);
@@ -661,16 +1005,73 @@ async function main() {
       waiterMembershipId,
     ] of runtime.waiterMembershipIds.entries()) {
       const shiftId = id(`today-shift:${runtime.key}:${waiterMembershipId}`);
-      await prisma.shiftSession.upsert({
-        where: { id: shiftId },
-        update: { state: 'OPEN', clockOutAt: null },
-        create: {
-          id: shiftId,
+      let dbShift = await prisma.shiftSession.findFirst({
+        where: {
+          OR: [
+            { id: shiftId },
+            {
+              tenantId: TENANT_ID,
+              branchId: runtime.branchId,
+              staffMembershipId: waiterMembershipId,
+              state: 'OPEN',
+            },
+          ],
+        },
+      });
+
+      if (dbShift) {
+        await prisma.shiftSession.update({
+          where: { id: dbShift.id },
+          data: { state: 'OPEN', clockOutAt: null },
+        });
+      } else {
+        await prisma.shiftSession.create({
+          data: {
+            id: shiftId,
+            tenantId: TENANT_ID,
+            branchId: runtime.branchId,
+            staffMembershipId: waiterMembershipId,
+            roleId: 3,
+            clockInAt: atTime(today, index === 0 ? 7 : 15, 0),
+            state: 'OPEN',
+            businessDate: biz,
+            lateByMinutes: 0,
+            graceMinutesSnapshot: 15,
+          },
+        });
+      }
+    }
+    const cashierShiftId = id(
+      `today-shift:${runtime.key}:${runtime.cashierMembershipId}`,
+    );
+    let dbCashierShift = await prisma.shiftSession.findFirst({
+      where: {
+        OR: [
+          { id: cashierShiftId },
+          {
+            tenantId: TENANT_ID,
+            branchId: runtime.branchId,
+            staffMembershipId: runtime.cashierMembershipId,
+            state: 'OPEN',
+          },
+        ],
+      },
+    });
+
+    if (dbCashierShift) {
+      await prisma.shiftSession.update({
+        where: { id: dbCashierShift.id },
+        data: { state: 'OPEN', clockOutAt: null },
+      });
+    } else {
+      await prisma.shiftSession.create({
+        data: {
+          id: cashierShiftId,
           tenantId: TENANT_ID,
           branchId: runtime.branchId,
-          staffMembershipId: waiterMembershipId,
-          roleId: 3,
-          clockInAt: atTime(today, index === 0 ? 7 : 15, 0),
+          staffMembershipId: runtime.cashierMembershipId,
+          roleId: 4,
+          clockInAt: atTime(today, 8, 0),
           state: 'OPEN',
           businessDate: biz,
           lateByMinutes: 0,
@@ -678,25 +1079,6 @@ async function main() {
         },
       });
     }
-    const cashierShiftId = id(
-      `today-shift:${runtime.key}:${runtime.cashierMembershipId}`,
-    );
-    await prisma.shiftSession.upsert({
-      where: { id: cashierShiftId },
-      update: { state: 'OPEN', clockOutAt: null },
-      create: {
-        id: cashierShiftId,
-        tenantId: TENANT_ID,
-        branchId: runtime.branchId,
-        staffMembershipId: runtime.cashierMembershipId,
-        roleId: 4,
-        clockInAt: atTime(today, 8, 0),
-        state: 'OPEN',
-        businessDate: biz,
-        lateByMinutes: 0,
-        graceMinutesSnapshot: 15,
-      },
-    });
   }
   console.log('Today open shift sessions seeded.');
 
