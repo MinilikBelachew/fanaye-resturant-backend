@@ -50,7 +50,7 @@ export class CreateModifierGroupDto {
   options: CreateModifierOptionDto[];
 }
 
-export class CreateMenuItemDto {
+export class CatalogCreateMenuItemDto {
   @ApiProperty({ example: 'Special Kitfo' })
   @IsString()
   name: string;

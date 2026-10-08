@@ -14,8 +14,8 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { CatalogService } from './catalog.service';
-import { CreateMenuItemDto } from './dto/create-menu-item.dto';
-import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
+import { CatalogCreateMenuItemDto } from './dto/create-menu-item.dto';
+import { CatalogUpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import {
   MenuCategoryDto,
@@ -43,7 +43,7 @@ export class CatalogController {
   @ApiOkResponse({ type: MenuItemSingleResponseDto })
   create(
     @Request() request,
-    @Body() dto: CreateMenuItemDto,
+    @Body() dto: CatalogCreateMenuItemDto,
   ): Promise<MenuItemSingleResponseDto> {
     return this.catalogService.create(String(request.user.id), dto);
   }
@@ -53,7 +53,7 @@ export class CatalogController {
   update(
     @Request() request,
     @Param('id') id: string,
-    @Body() dto: UpdateMenuItemDto,
+    @Body() dto: CatalogUpdateMenuItemDto,
   ): Promise<MenuItemSingleResponseDto> {
     return this.catalogService.update(String(request.user.id), id, dto);
   }
