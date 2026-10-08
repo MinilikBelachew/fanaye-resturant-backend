@@ -169,6 +169,7 @@ async function main() {
   console.log("Seeding Mama's Kitchen demo...");
 
   const roles = await seedRolesAndPlans();
+  await seedInventoryUnits();
   const roleIdByCode = new Map(roles.map((role) => [role.code, role.id]));
 
   for (const person of STAFF) {
@@ -650,8 +651,6 @@ async function main() {
     );
   }
   console.log('Tables, stations, and menus seeded.');
-
-  await seedInventoryUnits();
 
   const today = startOfDay(new Date());
   const biz = businessDateOnly(today);

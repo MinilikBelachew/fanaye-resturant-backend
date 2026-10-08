@@ -11,7 +11,7 @@ npm run migration:run || npm run schema:push
 # Seed initial database records (enabled by default)
 if [ "${RUN_SEED:-true}" = "true" ]; then
   echo "Running database seeder..."
-  npm run prisma:seed || echo "Notice: Seeder finished with notices or already seeded."
+  TS_NODE_TRANSPILE_ONLY=true npm run prisma:seed || echo "Notice: Seeder finished with notices or already seeded."
 else
   echo "RUN_SEED is set to false, skipping seeder."
 fi
