@@ -310,6 +310,10 @@ async function main() {
 
   // Branches first (needed for staff branch assignments)
   const branchMap = new Map<string, string>();
+  const shiftDefMap = new Map<
+    string,
+    { morningId: string; eveningId: string }
+  >();
 
   for (const branch of BRANCHES) {
     let dbBranch = await prisma.branch.findFirst({
@@ -428,6 +432,11 @@ async function main() {
         },
       });
     }
+
+    shiftDefMap.set(branch.key, {
+      morningId: dbMorningShift.id,
+      eveningId: dbEveningShift.id,
+    });
   }
   console.log('Branches and shift definitions seeded.');
 
@@ -552,8 +561,6 @@ async function main() {
 
   for (const branch of BRANCHES) {
     const branchDbId = branchMap.get(branch.key)!;
-    const morningShiftId = id(`shift-def:${branch.key}:morning`);
-    const eveningShiftId = id(`shift-def:${branch.key}:evening`);
 
     const locId = id(`loc:${branch.key}:main`);
     let mainLoc = await prisma.tableLocation.findFirst({
@@ -975,14 +982,15 @@ async function main() {
       });
     }
 
+    const shiftDefs = shiftDefMap.get(branch.key)!;
     branchRuntimes.push(
       buildBranchRuntime(
         branch.key,
         branchDbId,
         tableIds,
         menuItems,
-        dbMorningShift.id,
-        dbEveningShift.id,
+        shiftDefs.morningId,
+        shiftDefs.eveningId,
         membershipMap,
       ),
     );
