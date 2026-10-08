@@ -293,8 +293,10 @@ async function main() {
   console.log("Mama's Kitchen tenant + site seeded (slug: mamas-kitchen).");
 
   // Branches first (needed for staff branch assignments)
+  const branchMap = new Map<string, string>();
+
   for (const branch of BRANCHES) {
-    await prisma.branch.upsert({
+    const dbBranch = await prisma.branch.upsert({
       where: {
         tenantId_displayCode: {
           tenantId: TENANT_ID,
@@ -325,15 +327,19 @@ async function main() {
       },
     });
 
+    branchMap.set(branch.key, dbBranch.id);
+
     const morningShiftId = id(`shift-def:${branch.key}:morning`);
     const eveningShiftId = id(`shift-def:${branch.key}:evening`);
     await prisma.shiftDefinition.upsert({
       where: { id: morningShiftId },
-      update: {},
+      update: {
+        branchId: dbBranch.id,
+      },
       create: {
         id: morningShiftId,
         tenantId: TENANT_ID,
-        branchId: branch.id,
+        branchId: dbBranch.id,
         name: 'Morning',
         startLocalTime: new Date('1970-01-01T07:00:00.000Z'),
         endLocalTime: new Date('1970-01-01T15:00:00.000Z'),
@@ -343,11 +349,13 @@ async function main() {
     });
     await prisma.shiftDefinition.upsert({
       where: { id: eveningShiftId },
-      update: {},
+      update: {
+        branchId: dbBranch.id,
+      },
       create: {
         id: eveningShiftId,
         tenantId: TENANT_ID,
-        branchId: branch.id,
+        branchId: dbBranch.id,
         name: 'Evening',
         startLocalTime: new Date('1970-01-01T15:00:00.000Z'),
         endLocalTime: new Date('1970-01-01T23:00:00.000Z'),
@@ -383,27 +391,27 @@ async function main() {
 
     const roleId = roleIdByCode.get(person.restaurantRole)!;
     if (person.branchKey && person.branchKey !== 'ALL') {
-      const branch = BRANCHES.find((b) => b.key === person.branchKey)!;
+      const branchDbId = branchMap.get(person.branchKey)!;
       await prisma.branchStaffAssignment.upsert({
         where: { id: id(`bsa:${person.id}`) },
-        update: { status: 'ACTIVE' },
+        update: { branchId: branchDbId, status: 'ACTIVE' },
         create: {
           id: id(`bsa:${person.id}`),
           tenantId: TENANT_ID,
-          branchId: branch.id,
+          branchId: branchDbId,
           staffMembershipId: membershipId,
           status: 'ACTIVE',
         },
       });
       await prisma.staffRoleAssignment.upsert({
         where: { id: id(`sra:${person.id}`) },
-        update: { status: 'ACTIVE' },
+        update: { branchId: branchDbId, status: 'ACTIVE' },
         create: {
           id: id(`sra:${person.id}`),
           tenantId: TENANT_ID,
           staffMembershipId: membershipId,
           roleId,
-          branchId: branch.id,
+          branchId: branchDbId,
           status: 'ACTIVE',
         },
       });
@@ -427,17 +435,18 @@ async function main() {
   const branchRuntimes: BranchRuntime[] = [];
 
   for (const branch of BRANCHES) {
+    const branchDbId = branchMap.get(branch.key)!;
     const morningShiftId = id(`shift-def:${branch.key}:morning`);
     const eveningShiftId = id(`shift-def:${branch.key}:evening`);
 
     const locId = id(`loc:${branch.key}:main`);
     await prisma.tableLocation.upsert({
       where: { id: locId },
-      update: {},
+      update: { branchId: branchDbId },
       create: {
         id: locId,
         tenantId: TENANT_ID,
-        branchId: branch.id,
+        branchId: branchDbId,
         name: 'Main Floor',
         code: 'MAIN',
         sortOrder: 0,
@@ -457,11 +466,11 @@ async function main() {
       );
       await prisma.diningTable.upsert({
         where: { id: tableId },
-        update: { assignedWaiterMembershipId, status: 'AVAILABLE' },
+        update: { assignedWaiterMembershipId, status: 'AVAILABLE', branchId: branchDbId },
         create: {
           id: tableId,
           tenantId: TENANT_ID,
-          branchId: branch.id,
+          branchId: branchDbId,
           locationId: locId,
           displayName: `Table ${n}`,
           displayNumber: String(n),
@@ -475,11 +484,11 @@ async function main() {
     const callLocId = id(`loc:${branch.key}:call-pickup`);
     await prisma.tableLocation.upsert({
       where: { id: callLocId },
-      update: { status: 'ACTIVE', name: 'Call pickup', code: 'CALL_PICKUP' },
+      update: { status: 'ACTIVE', name: 'Call pickup', code: 'CALL_PICKUP', branchId: branchDbId },
       create: {
         id: callLocId,
         tenantId: TENANT_ID,
-        branchId: branch.id,
+        branchId: branchDbId,
         name: 'Call pickup',
         code: 'CALL_PICKUP',
         sortOrder: 99,
@@ -490,11 +499,11 @@ async function main() {
       const callTableId = id(`table:${branch.key}:call:${n}`);
       await prisma.diningTable.upsert({
         where: { id: callTableId },
-        update: { status: 'AVAILABLE', locationId: callLocId },
+        update: { status: 'AVAILABLE', locationId: callLocId, branchId: branchDbId },
         create: {
           id: callTableId,
           tenantId: TENANT_ID,
-          branchId: branch.id,
+          branchId: branchDbId,
           locationId: callLocId,
           displayName: `Call ${n}`,
           displayNumber: `C${n}`,
@@ -517,11 +526,11 @@ async function main() {
       stationIdByCode.set(station.code, stationId);
       await prisma.preparationStation.upsert({
         where: { id: stationId },
-        update: {},
+        update: { branchId: branchDbId },
         create: {
           id: stationId,
           tenantId: TENANT_ID,
-          branchId: branch.id,
+          branchId: branchDbId,
           name: station.name,
           code: station.code,
           status: 'ACTIVE',
@@ -541,11 +550,11 @@ async function main() {
       const stationCode = stationCodes[i % stationCodes.length];
       await prisma.stationStaffAssignment.upsert({
         where: { id: id(`station-assign:${op.id}`) },
-        update: {},
+        update: { branchId: branchDbId, stationId: stationIdByCode.get(stationCode)! },
         create: {
           id: id(`station-assign:${op.id}`),
           tenantId: TENANT_ID,
-          branchId: branch.id,
+          branchId: branchDbId,
           stationId: stationIdByCode.get(stationCode)!,
           staffMembershipId: membershipIdForUser(op.id),
           status: 'ACTIVE',
@@ -557,11 +566,11 @@ async function main() {
     const periodId = id(`period:${branch.key}:all`);
     await prisma.menu.upsert({
       where: { id: menuId },
-      update: {},
+      update: { branchId: branchDbId },
       create: {
         id: menuId,
         tenantId: TENANT_ID,
-        branchId: branch.id,
+        branchId: branchDbId,
         name: 'All day',
         status: 'ACTIVE',
       },
@@ -646,7 +655,7 @@ async function main() {
     branchRuntimes.push(
       buildBranchRuntime(
         branch.key,
-        branch.id,
+        branchDbId,
         tableIds,
         menuItems,
         morningShiftId,
