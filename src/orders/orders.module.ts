@@ -14,11 +14,18 @@ import { OrderItemMutationsService } from './order-item-mutations.service';
 import { OrdersController } from './orders.controller';
 import { OrderSlaMonitorService } from './order-sla-monitor.service';
 import { OrdersService } from './orders.service';
+import { OrderSlaQueueModule } from './queues/order-sla-queue.module';
 import { TableSessionOrdersController } from './table-session-orders.controller';
 import { WaiterMenuController } from './waiter-menu.controller';
 
 @Module({
-  imports: [IdentityModule, RealtimeModule, DailyCloseModule, InventoryModule],
+  imports: [
+    IdentityModule,
+    RealtimeModule,
+    DailyCloseModule,
+    InventoryModule,
+    OrderSlaQueueModule,
+  ],
   controllers: [
     WaiterMenuController,
     OrdersController,
@@ -30,6 +37,11 @@ import { WaiterMenuController } from './waiter-menu.controller';
     ChangeRequestsController,
   ],
   providers: [OrdersService, OrderItemMutationsService, OrderSlaMonitorService],
-  exports: [OrdersService, OrderItemMutationsService, OrderSlaMonitorService],
+  exports: [
+    OrdersService,
+    OrderItemMutationsService,
+    OrderSlaMonitorService,
+    OrderSlaQueueModule,
+  ],
 })
 export class OrdersModule {}

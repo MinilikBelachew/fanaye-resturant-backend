@@ -3,8 +3,10 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
@@ -16,6 +18,13 @@ import {
   ShiftAssignmentSummaryDto,
   ShiftSessionDto,
 } from './dto/current-shift-response.dto';
+import {
+  HandoverCandidateDto,
+  ShiftHandoverDto,
+  ShiftHandoverResponseDto,
+  WaiterShiftHandoverDto,
+  WaiterShiftHandoverResponseDto,
+} from './dto/shift-handover.dto';
 
 @Injectable()
 export class ShiftsService {
@@ -484,5 +493,699 @@ export class ShiftsService {
       branchId: session.branchId,
       assignmentId: session.shiftAssignmentId,
     };
+  }
+
+  async getHandoverCandidates(userId: string): Promise<HandoverCandidateDto[]> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.tenantId || !context.branchId) {
+      return [];
+    }
+
+    const members = await this.prisma.tenantStaffMembership.findMany({
+      where: {
+        tenantId: context.tenantId,
+        status: 'ACTIVE',
+        id: { not: context.staffMembershipId ?? '' },
+        branchAssignments: {
+          some: {
+            branchId: context.branchId,
+            status: 'ACTIVE',
+            releasedAt: null,
+          },
+        },
+        roleAssignments: {
+          some: {
+            status: 'ACTIVE',
+            revokedAt: null,
+            role: { code: { in: ['CASHIER', 'MANAGER', 'OWNER_ADMIN'] } },
+          },
+        },
+      },
+      include: {
+        user: { include: { photo: true } },
+        roleAssignments: {
+          where: { status: 'ACTIVE', revokedAt: null },
+          include: { role: true },
+        },
+      },
+      orderBy: { employeeDisplayName: 'asc' },
+    });
+
+    return members.map((m) => ({
+      membershipId: m.id,
+      displayName:
+        m.user?.displayName || m.employeeDisplayName || 'Staff Member',
+      roleCode: m.roleAssignments[0]?.role?.code ?? 'CASHIER',
+      photoUrl: m.user?.photo?.path ?? null,
+    }));
+  }
+
+  async handover(
+    userId: string,
+    dto: ShiftHandoverDto,
+  ): Promise<ShiftHandoverResponseDto> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.staffMembershipId || !context.tenantId || !context.branchId) {
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
+    }
+
+    const openShift = await this.prisma.shiftSession.findFirst({
+      where: {
+        staffMembershipId: context.staffMembershipId,
+        branchId: context.branchId,
+        state: 'OPEN',
+        clockOutAt: null,
+      },
+    });
+
+    if (!openShift) {
+      throw new NotFoundException('Active shift session not found.');
+    }
+
+    if (openShift.version !== dto.expectedVersion) {
+      throw new ConflictException({
+        status: 409,
+        errors: { version: 'stale' },
+        expectedVersion: openShift.version,
+      });
+    }
+
+    const financial = await this.prisma.cashierFinancialSession.findFirst({
+      where: { shiftSessionId: openShift.id },
+    });
+
+    if (!financial || financial.status !== 'OPEN') {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { drawer: 'notOpen' },
+      });
+    }
+
+    const incoming = await this.prisma.tenantStaffMembership.findFirst({
+      where: {
+        id: dto.incomingCashierMembershipId,
+        tenantId: context.tenantId,
+        status: 'ACTIVE',
+        branchAssignments: {
+          some: {
+            branchId: context.branchId,
+            status: 'ACTIVE',
+            releasedAt: null,
+          },
+        },
+      },
+      include: {
+        user: { include: { credential: true } },
+        roleAssignments: {
+          where: { status: 'ACTIVE', revokedAt: null },
+          include: { role: true },
+        },
+      },
+    });
+
+    if (!incoming || !incoming.user) {
+      throw new NotFoundException('Incoming cashier not found in this branch.');
+    }
+
+    if (!incoming.user.credential?.passwordHash) {
+      throw new ForbiddenException(
+        'Incoming cashier has no PIN or password configured.',
+      );
+    }
+
+    const isPinMatch = await bcrypt.compare(
+      dto.incomingCashierPin.trim(),
+      incoming.user.credential.passwordHash,
+    );
+    if (!isPinMatch) {
+      throw new UnauthorizedException('Invalid PIN for incoming cashier.');
+    }
+
+    const incomingActiveShift = await this.prisma.shiftSession.findFirst({
+      where: {
+        staffMembershipId: incoming.id,
+        branchId: context.branchId,
+        state: 'OPEN',
+        clockOutAt: null,
+      },
+    });
+    if (incomingActiveShift) {
+      throw new ConflictException(
+        'Incoming cashier is already clocked in on another active shift.',
+      );
+    }
+
+    const counted = new Prisma.Decimal(dto.countedAmount);
+    const floatNext = new Prisma.Decimal(dto.floatForNextCashier);
+    if (floatNext.gt(counted)) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: {
+          floatForNextCashier:
+            'Opening float cannot exceed total physical cash counted.',
+        },
+      });
+    }
+
+    const safeDrop = counted.minus(floatNext);
+    const expected = await this.liveExpectedCash(financial);
+    const variance = counted.minus(expected);
+    const now = new Date();
+    const incomingBusinessDate = businessDateUtc(now);
+    const incomingRoleId = incoming.roleAssignments[0]?.roleId ?? null;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.cashierReconciliation.upsert({
+        where: { cashierFinancialSessionId: financial.id },
+        create: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          businessDate: financial.businessDate,
+          cashierFinancialSessionId: financial.id,
+          expectedCashAmount: expected,
+          countedCashAmount: counted,
+          varianceAmount: variance,
+          cashierComment: dto.notes
+            ? `Handover to ${incoming.user.displayName}: ${dto.notes}`
+            : `Shift handover to ${incoming.user.displayName}`,
+          status: variance.equals(0) ? 'APPROVED' : 'SUBMITTED',
+        },
+        update: {
+          expectedCashAmount: expected,
+          countedCashAmount: counted,
+          varianceAmount: variance,
+          cashierComment: dto.notes
+            ? `Handover to ${incoming.user.displayName}: ${dto.notes}`
+            : `Shift handover to ${incoming.user.displayName}`,
+          status: variance.equals(0) ? 'APPROVED' : 'SUBMITTED',
+        },
+      });
+
+      if (safeDrop.gt(0)) {
+        await tx.cashLedgerEntry.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            businessDate: financial.businessDate,
+            holderType: 'CASHIER_SESSION',
+            cashierFinancialSessionId: financial.id,
+            entryType: 'SAFE_DROP_OUT',
+            amountDelta: safeDrop.negated(),
+            sourceType: 'SHIFT_HANDOVER',
+            sourceId: financial.id,
+            createdByMembershipId: context.staffMembershipId,
+          },
+        });
+      }
+
+      if (floatNext.gt(0)) {
+        await tx.cashLedgerEntry.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            businessDate: financial.businessDate,
+            holderType: 'CASHIER_SESSION',
+            cashierFinancialSessionId: financial.id,
+            entryType: 'HANDOVER_OUT',
+            amountDelta: floatNext.negated(),
+            sourceType: 'SHIFT_HANDOVER',
+            sourceId: financial.id,
+            createdByMembershipId: context.staffMembershipId,
+          },
+        });
+      }
+
+      await tx.cashierFinancialSession.update({
+        where: { id: financial.id },
+        data: {
+          status: 'RECONCILED',
+          closedAt: now,
+        },
+      });
+
+      await tx.shiftSession.update({
+        where: { id: openShift.id },
+        data: {
+          state: 'CLOSED',
+          clockOutAt: now,
+          version: { increment: 1 },
+        },
+      });
+
+      const newShift = await tx.shiftSession.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          staffMembershipId: incoming.id,
+          roleId: incomingRoleId,
+          clockInAt: now,
+          state: 'OPEN',
+          businessDate: incomingBusinessDate,
+        },
+      });
+
+      const newDrawer = await tx.cashierFinancialSession.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          businessDate: incomingBusinessDate,
+          cashierMembershipId: incoming.id,
+          shiftSessionId: newShift.id,
+          status: 'OPEN',
+          openingFloatAmount: floatNext,
+          currencyCode: 'ETB',
+          openedAt: now,
+        },
+      });
+
+      if (floatNext.gt(0)) {
+        await tx.cashLedgerEntry.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            businessDate: incomingBusinessDate,
+            holderType: 'CASHIER_SESSION',
+            cashierFinancialSessionId: newDrawer.id,
+            entryType: 'OPENING_FLOAT',
+            amountDelta: floatNext,
+            sourceType: 'SHIFT_HANDOVER',
+            sourceId: financial.id,
+            createdByMembershipId: incoming.id,
+          },
+        });
+      }
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId: context.tenantId,
+          branchId: context.branchId,
+          actorUserId: String(userId),
+          actorStaffMembershipId: context.staffMembershipId,
+          action: 'SHIFT_HANDOVER',
+          entityType: 'CASHIER_FINANCIAL_SESSION',
+          entityId: financial.id,
+          metadataJson: {
+            outgoingCashier: context.displayName ?? 'Cashier',
+            incomingCashier: incoming.user.displayName,
+            countedAmount: counted.toString(),
+            floatForNextCashier: floatNext.toString(),
+            safeDropAmount: safeDrop.toString(),
+            varianceAmount: variance.toString(),
+          },
+        },
+      });
+    });
+
+    return {
+      outgoingCashierName: context.displayName ?? 'Cashier',
+      incomingCashierName: incoming.user.displayName,
+      countedAmountFormatted: `ETB ${counted.toFixed(2)}`,
+      expectedAmountFormatted: `ETB ${expected.toFixed(2)}`,
+      varianceAmountFormatted: `ETB ${variance.toFixed(2)}`,
+      floatTransferredFormatted: `ETB ${floatNext.toFixed(2)}`,
+      safeDropAmountFormatted: `ETB ${safeDrop.toFixed(2)}`,
+      handedOverAt: now,
+      status: variance.equals(0) ? 'COMPLETED' : 'DISCREPANCY_SUBMITTED',
+    };
+  }
+
+  private async calculateWaiterUndroppedCash(
+    branchId: string,
+    waiterMembershipId: string,
+    shiftSessionId: string,
+  ): Promise<Prisma.Decimal> {
+    const [payments, drops, handoverEntries] = await Promise.all([
+      this.prisma.payment.findMany({
+        where: {
+          branchId,
+          collectorMembershipId: waiterMembershipId,
+          collectorShiftSessionId: shiftSessionId,
+          method: 'CASH',
+          status: 'SETTLED',
+        },
+      }),
+      this.prisma.cashDrop.findMany({
+        where: {
+          waiterShiftSessionId: shiftSessionId,
+        },
+      }),
+      this.prisma.cashLedgerEntry.findMany({
+        where: {
+          waiterShiftSessionId: shiftSessionId,
+          holderType: 'WAITER_SHIFT',
+          entryType: { in: ['WAITER_HANDOVER_IN', 'WAITER_HANDOVER_OUT'] },
+        },
+      }),
+    ]);
+
+    const cashCollected = payments.reduce(
+      (sum, payment) => sum.plus(payment.amount),
+      new Prisma.Decimal(0),
+    );
+    const cashDropped = drops
+      .filter((drop) => drop.status === 'RECEIVED')
+      .reduce(
+        (sum, drop) =>
+          sum.plus(drop.resolutionAmount ?? drop.countedAmount ?? 0),
+        new Prisma.Decimal(0),
+      );
+    const pendingCashDropAmount = drops
+      .filter((drop) => drop.status === 'INITIATED')
+      .reduce(
+        (sum, drop) => sum.plus(drop.declaredAmount),
+        new Prisma.Decimal(0),
+      );
+    const disputedCashDropAmount = drops
+      .filter((drop) => drop.status === 'DISPUTED')
+      .reduce(
+        (sum, drop) => sum.plus(drop.declaredAmount),
+        new Prisma.Decimal(0),
+      );
+    const handoverNet = handoverEntries.reduce(
+      (sum, e) => sum.plus(e.amountDelta),
+      new Prisma.Decimal(0),
+    );
+    const undroppedCash = cashCollected
+      .plus(handoverNet)
+      .minus(cashDropped)
+      .minus(pendingCashDropAmount)
+      .minus(disputedCashDropAmount);
+
+    return Prisma.Decimal.max(undroppedCash, new Prisma.Decimal(0));
+  }
+
+  async getWaiterHandoverCandidates(
+    userId: string,
+  ): Promise<HandoverCandidateDto[]> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.tenantId || !context.branchId) {
+      return [];
+    }
+
+    const members = await this.prisma.tenantStaffMembership.findMany({
+      where: {
+        tenantId: context.tenantId,
+        status: 'ACTIVE',
+        id: { not: context.staffMembershipId ?? '' },
+        branchAssignments: {
+          some: {
+            branchId: context.branchId,
+            status: 'ACTIVE',
+            releasedAt: null,
+          },
+        },
+        roleAssignments: {
+          some: {
+            status: 'ACTIVE',
+            revokedAt: null,
+            role: {
+              code: { in: ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'] },
+            },
+          },
+        },
+      },
+      include: {
+        user: { include: { photo: true } },
+        roleAssignments: {
+          where: { status: 'ACTIVE', revokedAt: null },
+          include: { role: true },
+        },
+      },
+      orderBy: { employeeDisplayName: 'asc' },
+    });
+
+    return members.map((m) => ({
+      membershipId: m.id,
+      displayName:
+        m.user?.displayName || m.employeeDisplayName || 'Staff Member',
+      roleCode: m.roleAssignments[0]?.role?.code ?? 'WAITER',
+      photoUrl: m.user?.photo?.path ?? null,
+    }));
+  }
+
+  async waiterHandover(
+    userId: string,
+    dto: WaiterShiftHandoverDto,
+  ): Promise<WaiterShiftHandoverResponseDto> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.staffMembershipId || !context.tenantId || !context.branchId) {
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
+    }
+
+    const openShift = await this.prisma.shiftSession.findFirst({
+      where: {
+        staffMembershipId: context.staffMembershipId,
+        branchId: context.branchId,
+        state: 'OPEN',
+        clockOutAt: null,
+      },
+    });
+
+    if (!openShift) {
+      throw new NotFoundException('Active shift session not found.');
+    }
+
+    if (openShift.version !== dto.expectedVersion) {
+      throw new ConflictException({
+        status: 409,
+        errors: { version: 'stale' },
+        expectedVersion: openShift.version,
+      });
+    }
+
+    if (dto.incomingWaiterMembershipId === context.staffMembershipId) {
+      throw new UnprocessableEntityException(
+        'Cannot hand over shift to yourself.',
+      );
+    }
+
+    const incoming = await this.prisma.tenantStaffMembership.findFirst({
+      where: {
+        id: dto.incomingWaiterMembershipId,
+        tenantId: context.tenantId,
+        status: 'ACTIVE',
+        branchAssignments: {
+          some: {
+            branchId: context.branchId,
+            status: 'ACTIVE',
+            releasedAt: null,
+          },
+        },
+      },
+      include: {
+        user: { include: { credential: true } },
+        roleAssignments: {
+          where: { status: 'ACTIVE', revokedAt: null },
+          include: { role: true },
+        },
+      },
+    });
+
+    if (!incoming || !incoming.user) {
+      throw new NotFoundException('Incoming waiter not found in this branch.');
+    }
+
+    if (!incoming.user.credential?.passwordHash) {
+      throw new ForbiddenException(
+        'Incoming waiter has no PIN or password configured.',
+      );
+    }
+
+    const isPinMatch = await bcrypt.compare(
+      dto.incomingWaiterPin.trim(),
+      incoming.user.credential.passwordHash,
+    );
+    if (!isPinMatch) {
+      throw new UnauthorizedException('Invalid PIN for incoming waiter.');
+    }
+
+    const transferAmount = new Prisma.Decimal(dto.transferredCashAmount || 0);
+    if (transferAmount.lt(0)) {
+      throw new UnprocessableEntityException(
+        'Transferred cash amount cannot be negative.',
+      );
+    }
+
+    if (transferAmount.gt(0)) {
+      const undropped = await this.calculateWaiterUndroppedCash(
+        context.branchId,
+        context.staffMembershipId,
+        openShift.id,
+      );
+      if (transferAmount.gt(undropped)) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          errors: {
+            transferredCashAmount: `Transferred cash (${transferAmount.toFixed(2)} ETB) exceeds available cash on hand (${undropped.toFixed(2)} ETB).`,
+          },
+        });
+      }
+    }
+
+    const now = new Date();
+    const incomingBusinessDate = businessDateUtc(now);
+    const incomingRoleId = incoming.roleAssignments[0]?.roleId ?? null;
+
+    const incomingShift = await this.prisma.shiftSession.findFirst({
+      where: {
+        staffMembershipId: incoming.id,
+        branchId: context.branchId,
+        state: 'OPEN',
+        clockOutAt: null,
+      },
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      let targetShift = incomingShift;
+      if (!targetShift) {
+        targetShift = await tx.shiftSession.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            staffMembershipId: incoming.id,
+            roleId: incomingRoleId,
+            clockInAt: now,
+            state: 'OPEN',
+            businessDate: incomingBusinessDate,
+          },
+        });
+      }
+
+      const openTableSessions = await tx.tableSession.findMany({
+        where: {
+          primaryWaiterMembershipId: context.staffMembershipId!,
+          closedAt: null,
+          status: { not: 'CLOSED' },
+        },
+        include: {
+          table: true,
+        },
+      });
+
+      for (const session of openTableSessions) {
+        await tx.tableSession.update({
+          where: { id: session.id },
+          data: {
+            primaryWaiterMembershipId: incoming.id,
+            primaryWaiterShiftSessionId: targetShift.id,
+            version: { increment: 1 },
+          },
+        });
+
+        await tx.tableAssignment.updateMany({
+          where: {
+            tableSessionId: session.id,
+            releasedAt: null,
+          },
+          data: {
+            releasedAt: now,
+          },
+        });
+
+        await tx.tableAssignment.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            tableSessionId: session.id,
+            waiterMembershipId: incoming.id,
+            shiftSessionId: targetShift.id,
+            assignedAt: now,
+            assignedByMembershipId: context.staffMembershipId,
+            reason: 'SHIFT_HANDOVER',
+          },
+        });
+
+        if (
+          session.table.assignedWaiterMembershipId === context.staffMembershipId
+        ) {
+          await tx.diningTable.update({
+            where: { id: session.tableId },
+            data: {
+              assignedWaiterMembershipId: incoming.id,
+              version: { increment: 1 },
+            },
+          });
+        }
+      }
+
+      if (transferAmount.gt(0)) {
+        await tx.cashLedgerEntry.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            businessDate: openShift.businessDate,
+            holderType: 'WAITER_SHIFT',
+            waiterShiftSessionId: openShift.id,
+            entryType: 'WAITER_HANDOVER_OUT',
+            amountDelta: transferAmount.negated(),
+            sourceType: 'WAITER_SHIFT_HANDOVER',
+            sourceId: openShift.id,
+            createdByMembershipId: context.staffMembershipId,
+          },
+        });
+
+        await tx.cashLedgerEntry.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            businessDate: targetShift.businessDate,
+            holderType: 'WAITER_SHIFT',
+            waiterShiftSessionId: targetShift.id,
+            entryType: 'WAITER_HANDOVER_IN',
+            amountDelta: transferAmount,
+            sourceType: 'WAITER_SHIFT_HANDOVER',
+            sourceId: openShift.id,
+            createdByMembershipId: incoming.id,
+          },
+        });
+      }
+
+      await tx.shiftSession.update({
+        where: { id: openShift.id },
+        data: {
+          state: 'CLOSED',
+          clockOutAt: now,
+          version: { increment: 1 },
+        },
+      });
+
+      await tx.auditEvent.create({
+        data: {
+          tenantId: context.tenantId,
+          branchId: context.branchId,
+          actorUserId: String(userId),
+          actorStaffMembershipId: context.staffMembershipId,
+          action: 'WAITER_SHIFT_HANDOVER',
+          entityType: 'SHIFT_SESSION',
+          entityId: openShift.id,
+          metadataJson: {
+            outgoingWaiter: context.displayName ?? 'Waiter',
+            incomingWaiter: incoming.user.displayName,
+            transferredCashAmount: transferAmount.toString(),
+            tablesTransferredCount: openTableSessions.length,
+            tablesTransferred: openTableSessions.map(
+              (s) => s.table.displayName,
+            ),
+            notes: dto.notes,
+          },
+        },
+      });
+
+      return {
+        outgoingWaiterName: context.displayName ?? 'Waiter',
+        incomingWaiterName: incoming.user.displayName,
+        tablesTransferredCount: openTableSessions.length,
+        tablesTransferredNames: openTableSessions.map(
+          (s) => s.table.displayName,
+        ),
+        cashTransferredFormatted: `ETB ${transferAmount.toFixed(2)}`,
+        handedOverAt: now,
+        status: 'COMPLETED',
+      };
+    });
   }
 }

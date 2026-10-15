@@ -2,6 +2,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
 import { managerRoom, stationRoom, branchRoom } from '../realtime/ops-rooms';
+import { OrderSlaQueueService } from './queues/order-sla.queue';
 import { ConfirmOrderDto } from './dto/confirm-order.dto';
 import {
   ConfirmOrderResponseDto,
@@ -32,12 +34,15 @@ const ORDERABLE = ['OPEN', 'ACTIVE_ORDER'];
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
     private readonly dailyClose: DailyCloseService,
     private readonly inventory: InventoryService,
+    private readonly orderSlaQueue: OrderSlaQueueService,
   ) {}
 
   async waiterMenu(
@@ -577,7 +582,7 @@ export class OrdersService {
         payload,
         order.id,
       );
-      return { payload, soldOutByLimit };
+      return { payload, soldOutByLimit, orderItems: order.items };
     });
 
     for (const row of created.soldOutByLimit) {
@@ -644,6 +649,26 @@ export class OrdersService {
           count,
         },
       });
+    }
+
+    const unackMinutes = branchSettings?.unacknowledgedAlertMinutes ?? 3;
+    for (const item of created.orderItems) {
+      void this.orderSlaQueue
+        .scheduleItemTimers({
+          orderItemId: item.id,
+          tenantId: item.tenantId,
+          branchId: item.branchId,
+          tableSessionId: item.tableSessionId,
+          stationId: item.currentPreparationStationId,
+          expectedPrepMinutes: item.expectedPrepMinutesSnapshot ?? 15,
+          unacknowledgedMinutes: unackMinutes,
+        })
+        .catch((err) => {
+          this.logger.error(
+            `Failed to schedule SLA timers for OrderItem ${item.id}:`,
+            err,
+          );
+        });
     }
 
     return created.payload;
@@ -1016,6 +1041,10 @@ function toItemDto(item: {
   state: string;
   version: number;
   servedAt: Date | null;
+  queuedAt?: Date | null;
+  confirmedAt?: Date | null;
+  delayAlertSentAt?: Date | null;
+  expectedPrepMinutesSnapshot?: number | null;
   currentPreparationStationId: string;
   stationNameSnapshot: string;
   specialInstruction: string | null;
@@ -1024,6 +1053,14 @@ function toItemDto(item: {
     priceDeltaSnapshot: Prisma.Decimal;
   }>;
 }): ConfirmedOrderItemDto {
+  const queued = item.queuedAt ?? item.confirmedAt;
+  const targetMin = item.expectedPrepMinutesSnapshot ?? 15;
+  const isDelayed =
+    Boolean(item.delayAlertSentAt) ||
+    (['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'].includes(item.state) &&
+      queued != null &&
+      Date.now() - queued.getTime() > targetMin * 60_000);
+
   return {
     orderItemId: item.id,
     itemName: item.itemNameSnapshot,
@@ -1036,6 +1073,7 @@ function toItemDto(item: {
     stationId: item.currentPreparationStationId,
     stationName: item.stationNameSnapshot,
     specialInstruction: item.specialInstruction,
+    delayed: isDelayed,
     modifiers: item.modifiers.map((entry) => ({
       name: entry.optionNameSnapshot,
       priceDelta: money(entry.priceDeltaSnapshot),

@@ -545,7 +545,7 @@ export class CashCustodyService {
     waiterMembershipId: string,
     shiftSessionId: string,
   ): Promise<WaiterCashSummaryDto> {
-    const [payments, drops] = await Promise.all([
+    const [payments, drops, handoverEntries] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           branchId,
@@ -558,6 +558,13 @@ export class CashCustodyService {
       this.prisma.cashDrop.findMany({
         where: {
           waiterShiftSessionId: shiftSessionId,
+        },
+      }),
+      this.prisma.cashLedgerEntry.findMany({
+        where: {
+          waiterShiftSessionId: shiftSessionId,
+          holderType: 'WAITER_SHIFT',
+          entryType: { in: ['WAITER_HANDOVER_IN', 'WAITER_HANDOVER_OUT'] },
         },
       }),
     ]);
@@ -585,7 +592,12 @@ export class CashCustodyService {
         (sum, drop) => sum.plus(drop.declaredAmount),
         new Prisma.Decimal(0),
       );
+    const handoverNet = handoverEntries.reduce(
+      (sum, e) => sum.plus(e.amountDelta),
+      new Prisma.Decimal(0),
+    );
     const undroppedCash = cashCollected
+      .plus(handoverNet)
       .minus(cashDropped)
       .minus(pendingCashDropAmount)
       .minus(disputedCashDropAmount);

@@ -12,6 +12,7 @@ import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
 import { managerRoom, stationRoom } from '../realtime/ops-rooms';
+import { OrderSlaQueueService } from '../orders/queues/order-sla.queue';
 import { ExpectedVersionDto } from './dto/expected-version.dto';
 import { ReportCannotPrepareDto } from './dto/report-cannot-prepare.dto';
 import {
@@ -56,6 +57,7 @@ export class StationsService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
+    private readonly orderSlaQueue: OrderSlaQueueService,
   ) {}
 
   async listStations(userId: string): Promise<StationManagementResponseDto[]> {
@@ -675,11 +677,18 @@ export class StationsService {
     orderItemId: string,
     dto: ExpectedVersionDto,
   ): Promise<StationQueueItemDto> {
-    return this.transition(userId, orderItemId, dto.expectedVersion, {
-      from: ['QUEUED'],
-      to: 'ACKNOWLEDGED',
-      extra: { acknowledgedAt: new Date() },
-    });
+    const result = await this.transition(
+      userId,
+      orderItemId,
+      dto.expectedVersion,
+      {
+        from: ['QUEUED'],
+        to: 'ACKNOWLEDGED',
+        extra: { acknowledgedAt: new Date() },
+      },
+    );
+    void this.orderSlaQueue.cancelUnacknowledgedTimer(orderItemId);
+    return result;
   }
 
   async startPreparation(
@@ -699,11 +708,18 @@ export class StationsService {
     orderItemId: string,
     dto: ExpectedVersionDto,
   ): Promise<StationQueueItemDto> {
-    return this.transition(userId, orderItemId, dto.expectedVersion, {
-      from: ['IN_PREPARATION'],
-      to: 'READY',
-      extra: { readyAt: new Date() },
-    });
+    const result = await this.transition(
+      userId,
+      orderItemId,
+      dto.expectedVersion,
+      {
+        from: ['IN_PREPARATION'],
+        to: 'READY',
+        extra: { readyAt: new Date() },
+      },
+    );
+    void this.orderSlaQueue.cancelAllItemTimers(orderItemId);
+    return result;
   }
 
   async listStationMenu(
@@ -931,6 +947,8 @@ export class StationsService {
         reason: dto.reasonDetail?.trim() || dto.reasonCode || 'CANNOT_PREPARE',
       },
     });
+
+    void this.orderSlaQueue.cancelAllItemTimers(updated.id);
 
     if (dto.markSoldOut && updated.menuItemId) {
       const station = await this.prisma.preparationStation.findFirst({

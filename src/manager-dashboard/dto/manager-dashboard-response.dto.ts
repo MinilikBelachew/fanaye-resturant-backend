@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class ManagerKpiDto {
   @ApiProperty({ example: 'ETB 48.2k' })
@@ -291,6 +291,164 @@ export class WaiterPerformancePointDto {
   avgCheck: number;
 }
 
+export class LatePrepItemDetailDto {
+  @ApiProperty({ example: 'b5f2c733-40a2-4a84-9122-c28b57bebbd1' })
+  orderItemId: string;
+
+  @ApiProperty({ example: 'shiro' })
+  itemName: string;
+
+  @ApiProperty({ example: 1 })
+  quantity: number;
+
+  @ApiProperty({ example: 'Table 1' })
+  tableDisplayName: string;
+
+  @ApiProperty({ example: 'Kitchen Station' })
+  stationName: string;
+
+  @ApiProperty({ example: 'Tiger Reeves' })
+  waiterName: string;
+
+  @ApiProperty({ example: 4 })
+  elapsedMinutes: number;
+
+  @ApiProperty({ example: 1 })
+  targetMinutes: number;
+
+  @ApiProperty({ example: 3 })
+  overdueMinutes: number;
+
+  @ApiPropertyOptional({ example: 'Spicy' })
+  specialInstruction?: string | null;
+
+  @ApiPropertyOptional({ example: 'Extra bread' })
+  modifiersSummary?: string | null;
+
+  @ApiProperty({ example: 'QUEUED' })
+  state: string;
+
+  @ApiProperty({ example: '2026-10-13T20:05:00.000Z' })
+  queuedAt: string;
+}
+
+export class ReadyTooLongItemDetailDto {
+  @ApiProperty({ example: 'b5f2c733-40a2-4a84-9122-c28b57bebbd1' })
+  orderItemId: string;
+
+  @ApiProperty({ example: 'Doro Wat' })
+  itemName: string;
+
+  @ApiProperty({ example: 1 })
+  quantity: number;
+
+  @ApiProperty({ example: 'Table 3' })
+  tableDisplayName: string;
+
+  @ApiProperty({ example: 'Kitchen' })
+  stationName: string;
+
+  @ApiProperty({ example: 'Tiger Reeves' })
+  waiterName: string;
+
+  @ApiProperty({ example: 7 })
+  readyMinutes: number;
+
+  @ApiProperty({ example: '2026-10-13T20:00:00.000Z' })
+  readyAt: string;
+}
+
+export class PendingActionItemDetailDto {
+  @ApiProperty({ example: 'req-123' })
+  id: string;
+
+  @ApiProperty({ example: 'CANCELLATION' })
+  kind: string;
+
+  @ApiProperty({ example: 'Void Item Request' })
+  title: string;
+
+  @ApiProperty({ example: 'Wrong dish ordered' })
+  description: string;
+
+  @ApiPropertyOptional({ example: 'Table 2' })
+  tableDisplayName?: string | null;
+
+  @ApiPropertyOptional({ example: 'Tiger Reeves' })
+  staffName?: string | null;
+
+  @ApiPropertyOptional({ example: 'ETB 450' })
+  amountFormatted?: string | null;
+
+  @ApiProperty({ example: '2026-10-13T20:10:00.000Z' })
+  createdAt: string;
+}
+
+export class StaffOfflineItemDetailDto {
+  @ApiProperty({ example: 'staff-456' })
+  staffMembershipId: string;
+
+  @ApiProperty({ example: 'Abebe Bikila' })
+  staffName: string;
+
+  @ApiProperty({ example: 'WAITER' })
+  role: string;
+
+  @ApiProperty({ example: '08:00 AM' })
+  shiftStartFormatted: string;
+
+  @ApiProperty({ example: 45 })
+  minutesLate: number;
+}
+
+export class LowStockItemDetailDto {
+  @ApiProperty({ example: 'ing-789' })
+  ingredientId: string;
+
+  @ApiProperty({ example: 'Berbere Spice' })
+  ingredientName: string;
+
+  @ApiProperty({ example: 1.5 })
+  onHandQty: number;
+
+  @ApiProperty({ example: 5.0 })
+  parLevel: number;
+
+  @ApiProperty({ example: 'kg' })
+  unit: string;
+}
+
+export class UnpaidBillItemDetailDto {
+  @ApiProperty({ example: 'bill-321' })
+  billId: string;
+
+  @ApiProperty({ example: 'Table 4' })
+  tableDisplayName: string;
+
+  @ApiProperty({ example: 'ETB 1,850' })
+  totalAmountFormatted: string;
+
+  @ApiProperty({ example: 'ETB 850' })
+  unpaidAmountFormatted: string;
+
+  @ApiProperty({ example: '2026-10-13T19:40:00.000Z' })
+  billedAt: string;
+}
+
+export class StationBacklogItemDetailDto {
+  @ApiProperty({ example: 'Kitchen' })
+  stationName: string;
+
+  @ApiProperty({ example: 3 })
+  queuedCount: number;
+
+  @ApiProperty({ example: 2 })
+  inPrepCount: number;
+
+  @ApiProperty({ example: 14 })
+  oldestWaitMinutes: number;
+}
+
 export class ActNowInsightDto {
   @ApiProperty({ example: 2 })
   readyTooLongCount: number;
@@ -298,11 +456,20 @@ export class ActNowInsightDto {
   @ApiProperty({ example: '2 tickets ready > 5 min' })
   readyTooLongHint: string;
 
+  @ApiPropertyOptional({ type: () => [ReadyTooLongItemDetailDto] })
+  readyTooLongItems?: ReadyTooLongItemDetailDto[];
+
   @ApiProperty({ example: 3 })
   latePrepCount: number;
 
   @ApiProperty({ example: '3 tickets past avg prep' })
   latePrepHint: string;
+
+  @ApiPropertyOptional({ type: () => [LatePrepItemDetailDto] })
+  latePrepItems?: LatePrepItemDetailDto[];
+
+  @ApiPropertyOptional({ type: () => [PendingActionItemDetailDto] })
+  pendingActionItems?: PendingActionItemDetailDto[];
 
   @ApiProperty({ example: 1 })
   staffOfflineCount: number;
@@ -310,11 +477,17 @@ export class ActNowInsightDto {
   @ApiProperty({ example: '1 scheduled waiter not clocked in' })
   staffOfflineHint: string;
 
+  @ApiPropertyOptional({ type: () => [StaffOfflineItemDetailDto] })
+  staffOfflineItems?: StaffOfflineItemDetailDto[];
+
   @ApiProperty({ example: 4 })
   lowStockCount: number;
 
   @ApiProperty({ example: '4 ingredients at/below par' })
   lowStockHint: string;
+
+  @ApiPropertyOptional({ type: () => [LowStockItemDetailDto] })
+  lowStockItems?: LowStockItemDetailDto[];
 
   @ApiProperty({ example: 2 })
   unpaidBillsCount: number;
@@ -327,6 +500,12 @@ export class ActNowInsightDto {
 
   @ApiProperty({ example: '2 unpaid bills today' })
   unpaidGapHint: string;
+
+  @ApiPropertyOptional({ type: () => [UnpaidBillItemDetailDto] })
+  unpaidBillItems?: UnpaidBillItemDetailDto[];
+
+  @ApiPropertyOptional({ type: () => [StationBacklogItemDetailDto] })
+  stationBacklogItems?: StationBacklogItemDetailDto[];
 }
 
 export class ManagerDashboardDataDto {

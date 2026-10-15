@@ -80,5 +80,15 @@ export type VerifyEtCompleted = {
   bank: string | null;
   reference: string | null;
   message: string;
+  timestamp?: string | null;
+  confirmationHistory?: {
+    isFirstConfirmation?: boolean;
+    confirmedBefore?: boolean;
+    confirmationCount?: number;
+  } | null;
+  settlementAccountMatch?: {
+    matched?: boolean;
+    reason?: string;
+  } | null;
   raw: VerifyEtEnvelope;
 };

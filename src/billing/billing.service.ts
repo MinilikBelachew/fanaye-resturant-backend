@@ -1062,6 +1062,9 @@ export class BillingService {
     let tipAmount: Prisma.Decimal | null = null;
     let verifiedAmountLabel: string | undefined;
     let verifiedAt: Date | null = null;
+    let verifiedTimestamp: string | null = null;
+    let verifiedBank: string | null = null;
+    let resolvedRef = (dto.reference?.trim() || '').toUpperCase();
 
     const reference = dto.reference?.trim();
     if (this.verifyEt.isEnabled()) {
@@ -1101,6 +1104,87 @@ export class BillingService {
         });
       }
 
+      // 1. Guard against Replayed / Previously Confirmed Receipts
+      if (
+        verified.confirmationHistory?.confirmedBefore === true ||
+        verified.confirmationHistory?.isFirstConfirmation === false
+      ) {
+        throw new ConflictException({
+          status: 409,
+          code: 'TRANSFER_ALREADY_USED',
+          message:
+            'This bank transaction has already been confirmed and processed previously. Reusing receipts or past transfers is not permitted.',
+          errors: { reference: 'TRANSFER_ALREADY_USED' },
+          verifyRequestId: verified.requestId,
+        });
+      }
+
+      // 2. Settlement / Recipient Account Destination Check
+      if (
+        verified.settlementAccountMatch &&
+        verified.settlementAccountMatch.matched === false
+      ) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'TRANSFER_WRONG_ACCOUNT',
+          message: `The payment was transferred to an unverified or incorrect account (${verified.settlementAccountMatch.reason || 'Account mismatch'}). Please ensure payment is made to the restaurant account.`,
+          errors: { reference: 'TRANSFER_WRONG_ACCOUNT' },
+          verifyRequestId: verified.requestId,
+        });
+      }
+
+      // 3. Past Payment / Age Recency Guard (max 2 hours / 120 minutes)
+      if (verified.timestamp) {
+        const transferTime = new Date(verified.timestamp).getTime();
+        if (!Number.isNaN(transferTime)) {
+          const nowMs = Date.now();
+          const ageMs = nowMs - transferTime;
+          const MAX_AGE_MS = 2 * 60 * 60 * 1000;
+          const CLOCK_DRIFT_MS = 10 * 60 * 1000;
+
+          if (transferTime > nowMs + CLOCK_DRIFT_MS) {
+            throw new UnprocessableEntityException({
+              status: 422,
+              code: 'TRANSFER_INVALID_TIMESTAMP',
+              message:
+                'Bank transfer timestamp is in the future. Please check bank receipt details.',
+              errors: { reference: 'TRANSFER_INVALID_TIMESTAMP' },
+            });
+          }
+
+          if (ageMs > MAX_AGE_MS) {
+            const minutesAgo = Math.floor(ageMs / 60000);
+            const hoursAgo = (ageMs / 3600000).toFixed(1);
+            throw new UnprocessableEntityException({
+              status: 422,
+              code: 'TRANSFER_TOO_OLD',
+              message: `This bank transfer was completed ${minutesAgo > 120 ? `${hoursAgo} hours` : `${minutesAgo} minutes`} ago (${new Date(transferTime).toLocaleString()}). Only fresh transfers made for this dining visit can be accepted.`,
+              errors: { reference: 'TRANSFER_TOO_OLD' },
+              transferTimestamp: verified.timestamp,
+              ageMinutes: minutesAgo,
+            });
+          }
+
+          // Check against table session openedAt if available:
+          const tableSession = await this.prisma.tableSession.findUnique({
+            where: { id: bill.tableSessionId },
+          });
+          if (tableSession?.openedAt) {
+            const sessionOpenedMs = new Date(tableSession.openedAt).getTime();
+            if (transferTime < sessionOpenedMs - 30 * 60 * 1000) {
+              throw new UnprocessableEntityException({
+                status: 422,
+                code: 'TRANSFER_PREDATES_SESSION',
+                message: `This transfer occurred at ${new Date(transferTime).toLocaleTimeString()}, before this table visit began at ${new Date(sessionOpenedMs).toLocaleTimeString()}. Past receipts cannot be applied to this bill.`,
+                errors: { reference: 'TRANSFER_PREDATES_SESSION' },
+                transferTimestamp: verified.timestamp,
+                sessionOpenedAt: tableSession.openedAt.toISOString(),
+              });
+            }
+          }
+        }
+      }
+
       if (verified.amount == null || !Number.isFinite(verified.amount)) {
         throw new UnprocessableEntityException({
           status: 422,
@@ -1117,6 +1201,11 @@ export class BillingService {
       ).toDecimalPlaces(2);
       verifiedAmountLabel = money(verifiedAmount);
       verifiedAt = new Date();
+      verifiedTimestamp = verified.timestamp ?? null;
+      verifiedBank = verified.bank ?? null;
+      if (verified.reference) {
+        resolvedRef = verified.reference.trim().toUpperCase();
+      }
 
       if (verifiedAmount.lt(due)) {
         const remaining = due.minus(verifiedAmount);
@@ -1138,6 +1227,26 @@ export class BillingService {
       }
     } else {
       settleAmount = due;
+    }
+
+    // 4. Cross-Bill Uniqueness Check: Ensure reference was not already consumed by another bill
+    if (resolvedRef) {
+      const existingRef = await this.prisma.idempotencyCommand.findFirst({
+        where: {
+          tenantId: context.tenantId!,
+          commandType: 'bank_transfer_reference',
+          idempotencyKey: resolvedRef,
+        },
+      });
+
+      if (existingRef && existingRef.resourceId !== bill.id) {
+        throw new ConflictException({
+          status: 409,
+          code: 'TRANSFER_ALREADY_USED',
+          message: `This transaction reference (${resolvedRef}) was already used for payment on another bill. Duplicate receipts are not permitted.`,
+          errors: { reference: 'TRANSFER_ALREADY_USED' },
+        });
+      }
     }
 
     const now = new Date();
@@ -1208,6 +1317,67 @@ export class BillingService {
         payload,
         payment.id,
       );
+
+      if (resolvedRef) {
+        await tx.idempotencyCommand.upsert({
+          where: {
+            tenantId_actorUserId_commandType_idempotencyKey: {
+              tenantId: context.tenantId!,
+              actorUserId: context.userId,
+              commandType: 'bank_transfer_reference',
+              idempotencyKey: resolvedRef,
+            },
+          },
+          create: {
+            tenantId: context.tenantId!,
+            actorUserId: context.userId,
+            actorStaffMembershipId: context.staffMembershipId,
+            commandType: 'bank_transfer_reference',
+            idempotencyKey: resolvedRef,
+            requestHash: this.requestHash({
+              reference: resolvedRef,
+              billId: bill.id,
+            }),
+            status: 'SUCCEEDED',
+            resourceType: 'Payment',
+            resourceId: bill.id,
+            responseStatusCode: 200,
+            responseBodyJson: {
+              billId: bill.id,
+              paymentId: payment.id,
+              reference: resolvedRef,
+              amount: settleAmount.toString(),
+              bank: verifiedBank ?? dto.bankProvider ?? null,
+              timestamp: verifiedTimestamp,
+            },
+            completedAt: now,
+          },
+          update: {
+            completedAt: now,
+          },
+        });
+
+        await tx.auditEvent.create({
+          data: {
+            tenantId: context.tenantId,
+            branchId: context.branchId,
+            actorUserId: String(context.userId),
+            actorStaffMembershipId: context.staffMembershipId,
+            action: 'TRANSFER_PAYMENT_VERIFIED',
+            entityType: 'PAYMENT',
+            entityId: payment.id,
+            metadataJson: {
+              reference: resolvedRef,
+              bank: verifiedBank ?? dto.bankProvider ?? null,
+              amount: settleAmount.toString(),
+              billId: bill.id,
+              timestamp: verifiedTimestamp,
+              verifiedAt: verifiedAt?.toISOString(),
+            },
+          },
+        });
+      }
+
       return payload;
     });
   }

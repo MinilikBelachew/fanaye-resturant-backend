@@ -21,10 +21,12 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    // Initial check after 5 seconds, then recurring every 30 seconds
-    setTimeout(() => void this.runCheckSafely(), 5000);
-    this.timer = setInterval(() => void this.runCheckSafely(), 30_000);
-    this.logger.log('OrderSlaMonitorService initialized (checking every 30s).');
+    // Background safety net fallback check (BullMQ is primary real-time driver)
+    setTimeout(() => void this.runCheckSafely(), 15_000);
+    this.timer = setInterval(() => void this.runCheckSafely(), 120_000);
+    this.logger.log(
+      'OrderSlaMonitorService initialized as fallback safety net (checking every 2m).',
+    );
   }
 
   onModuleDestroy() {

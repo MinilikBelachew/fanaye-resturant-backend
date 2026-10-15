@@ -205,17 +205,20 @@ export class SiteService {
     return this.defaultDraft('Restaurant');
   }
 
-  private toResponse(site: {
-    id: string;
-    tenantId: string;
-    slug: string;
-    status: string;
-    themeJson: unknown;
-    draftDataJson: unknown;
-    publishedDataJson: unknown;
-    publishedAt: Date | null;
-    tenant: { displayName: string };
-  }): SiteResponseDto {
+  private toResponse(
+    site: {
+      id: string;
+      tenantId: string;
+      slug: string;
+      status: string;
+      themeJson: unknown;
+      draftDataJson: unknown;
+      publishedDataJson: unknown;
+      publishedAt: Date | null;
+      tenant: { displayName: string };
+    },
+    calendarPreference?: string,
+  ): SiteResponseDto {
     return {
       id: site.id,
       tenantId: site.tenantId,
@@ -229,6 +232,7 @@ export class SiteService {
         : null,
       publishedAt: site.publishedAt?.toISOString() ?? null,
       publicPath: `/r/${site.slug}`,
+      calendarPreference: calendarPreference ?? 'ETHIOPIAN',
     };
   }
 
@@ -284,7 +288,12 @@ export class SiteService {
       throw new BadRequestException('No tenant workspace selected.');
     }
     const site = await this.ensureSite(context.tenantId);
-    return { data: this.toResponse(site) };
+    const settings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId: context.tenantId },
+    });
+    return {
+      data: this.toResponse(site, settings?.calendarPreference ?? 'ETHIOPIAN'),
+    };
   }
 
   async updateMine(
@@ -311,6 +320,27 @@ export class SiteService {
       });
     }
 
+    let activeCalendarPref = 'ETHIOPIAN';
+    if (dto.calendarPreference) {
+      activeCalendarPref =
+        dto.calendarPreference === 'GREGORIAN' ? 'GREGORIAN' : 'ETHIOPIAN';
+      await this.prisma.tenantSettings.upsert({
+        where: { tenantId: context.tenantId },
+        create: {
+          tenantId: context.tenantId,
+          calendarPreference: activeCalendarPref,
+        },
+        update: {
+          calendarPreference: activeCalendarPref,
+        },
+      });
+    } else {
+      const existingSettings = await this.prisma.tenantSettings.findUnique({
+        where: { tenantId: context.tenantId },
+      });
+      activeCalendarPref = existingSettings?.calendarPreference ?? 'ETHIOPIAN';
+    }
+
     const updated = await this.prisma.tenantSite.update({
       where: { id: site.id },
       data: {
@@ -332,7 +362,7 @@ export class SiteService {
       include: { tenant: true },
     });
 
-    return { data: this.toResponse(updated) };
+    return { data: this.toResponse(updated, activeCalendarPref) };
   }
 
   async publishMine(userId: string): Promise<SiteSingleResponseDto> {

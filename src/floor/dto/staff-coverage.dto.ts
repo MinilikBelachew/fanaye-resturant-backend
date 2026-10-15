@@ -256,6 +256,14 @@ export class UpdateAdminStaffDto {
   @IsString()
   @MaxLength(40)
   stationCode?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Assigned shift definition template (Morning, Afternoon, Night, etc.)',
+  })
+  @IsOptional()
+  @IsUUID()
+  shiftDefinitionId?: string;
 }
 
 export class ResetAdminStaffPinDto {

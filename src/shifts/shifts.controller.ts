@@ -16,6 +16,13 @@ import { ShiftsService } from './shifts.service';
 import { ClockInDto } from './dto/clock-in.dto';
 import { ClockOutDto } from './dto/clock-out.dto';
 import { CurrentShiftResponseDto } from './dto/current-shift-response.dto';
+import {
+  HandoverCandidateDto,
+  ShiftHandoverDto,
+  ShiftHandoverResponseDto,
+  WaiterShiftHandoverDto,
+  WaiterShiftHandoverResponseDto,
+} from './dto/shift-handover.dto';
 
 @ApiTags('Shifts')
 @ApiBearerAuth()
@@ -57,5 +64,43 @@ export class ShiftsController {
       shiftSessionId,
       dto,
     );
+  }
+
+  @Get('handover-candidates')
+  @ApiOkResponse({ type: [HandoverCandidateDto] })
+  @HttpCode(HttpStatus.OK)
+  getHandoverCandidates(@Request() request): Promise<HandoverCandidateDto[]> {
+    return this.shiftsService.getHandoverCandidates(String(request.user.id));
+  }
+
+  @Post('handover')
+  @ApiOkResponse({ type: ShiftHandoverResponseDto })
+  @HttpCode(HttpStatus.OK)
+  handover(
+    @Request() request,
+    @Body() dto: ShiftHandoverDto,
+  ): Promise<ShiftHandoverResponseDto> {
+    return this.shiftsService.handover(String(request.user.id), dto);
+  }
+
+  @Get('waiter-handover-candidates')
+  @ApiOkResponse({ type: [HandoverCandidateDto] })
+  @HttpCode(HttpStatus.OK)
+  getWaiterHandoverCandidates(
+    @Request() request,
+  ): Promise<HandoverCandidateDto[]> {
+    return this.shiftsService.getWaiterHandoverCandidates(
+      String(request.user.id),
+    );
+  }
+
+  @Post('waiter-handover')
+  @ApiOkResponse({ type: WaiterShiftHandoverResponseDto })
+  @HttpCode(HttpStatus.OK)
+  waiterHandover(
+    @Request() request,
+    @Body() dto: WaiterShiftHandoverDto,
+  ): Promise<WaiterShiftHandoverResponseDto> {
+    return this.shiftsService.waiterHandover(String(request.user.id), dto);
   }
 }

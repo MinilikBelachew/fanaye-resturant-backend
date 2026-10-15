@@ -171,6 +171,14 @@ export class UpdateSiteDto {
   @IsOptional()
   @IsObject()
   draftData?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    example: 'ETHIOPIAN',
+    enum: ['ETHIOPIAN', 'GREGORIAN'],
+  })
+  @IsOptional()
+  @IsString()
+  calendarPreference?: string;
 }
 
 export class SiteResponseDto {
@@ -203,6 +211,12 @@ export class SiteResponseDto {
 
   @ApiProperty({ example: '/r/abyssinia-grill' })
   publicPath: string;
+
+  @ApiPropertyOptional({
+    example: 'ETHIOPIAN',
+    enum: ['ETHIOPIAN', 'GREGORIAN'],
+  })
+  calendarPreference?: string;
 }
 
 export class SiteSingleResponseDto {

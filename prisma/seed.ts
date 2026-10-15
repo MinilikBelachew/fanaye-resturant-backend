@@ -267,6 +267,7 @@ async function main() {
       activatedAt: new Date(),
       settings: {
         create: {
+          calendarPreference: 'ETHIOPIAN',
           defaultShiftGraceMinutes: 15,
           waiterMayClosePaidTable: true,
           cashierMayCollectCustomerPayment: false,

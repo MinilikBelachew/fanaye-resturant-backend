@@ -19,7 +19,7 @@ import {
 
 const ADMIN_ROLES = ['MANAGER', 'OWNER_ADMIN'];
 
-type Period = 'day' | 'week' | 'month';
+type Period = 'day' | 'week' | 'month' | 'custom';
 
 @Injectable()
 export class WaiterPerformanceService {
@@ -31,10 +31,12 @@ export class WaiterPerformanceService {
   async list(
     userId: string,
     periodRaw?: string,
+    fromRaw?: string,
+    toRaw?: string,
   ): Promise<WaiterPerformanceResponseDto> {
     const context = await this.requireAdmin(userId);
     const period = this.parsePeriod(periodRaw);
-    const { from, to } = this.rangeFor(period);
+    const { from, to } = this.rangeFor(period, fromRaw, toRaw);
 
     const waiters = await this.prisma.tenantStaffMembership.findMany({
       where: {
@@ -265,10 +267,12 @@ export class WaiterPerformanceService {
     userId: string,
     membershipId: string,
     periodRaw?: string,
+    fromRaw?: string,
+    toRaw?: string,
   ): Promise<WaiterDetailResponseDto> {
     const context = await this.requireAdmin(userId);
     const period = this.parsePeriod(periodRaw);
-    const { from, to } = this.rangeFor(period);
+    const { from, to } = this.rangeFor(period, fromRaw, toRaw);
 
     const waiter = await this.prisma.tenantStaffMembership.findFirst({
       where: {
@@ -438,6 +442,8 @@ export class WaiterPerformanceService {
     membershipId: string,
     opts?: {
       period?: string;
+      from?: string;
+      to?: string;
       q?: string;
       page?: number;
       limit?: number;
@@ -445,7 +451,7 @@ export class WaiterPerformanceService {
   ): Promise<WaiterOrderHistoryResponseDto> {
     const context = await this.requireAdmin(userId);
     const period = this.parsePeriod(opts?.period);
-    const { from, to } = this.rangeFor(period);
+    const { from, to } = this.rangeFor(period, opts?.from, opts?.to);
 
     const waiter = await this.prisma.tenantStaffMembership.findFirst({
       where: {
@@ -578,14 +584,35 @@ export class WaiterPerformanceService {
 
   private parsePeriod(raw?: string): Period {
     const value = (raw || 'day').toLowerCase();
-    if (value === 'day' || value === 'week' || value === 'month') return value;
+    if (
+      value === 'day' ||
+      value === 'week' ||
+      value === 'month' ||
+      value === 'custom'
+    )
+      return value;
     throw new UnprocessableEntityException({
       status: 422,
       errors: { period: 'invalid' },
     });
   }
 
-  private rangeFor(period: Period): { from: Date; to: Date } {
+  private rangeFor(
+    period: Period,
+    fromRaw?: string,
+    toRaw?: string,
+  ): { from: Date; to: Date } {
+    if (period === 'custom' || fromRaw || toRaw) {
+      if (fromRaw) {
+        const fromDate = this.parseDateString(fromRaw);
+        const toDate = toRaw ? this.parseDateString(toRaw) : fromDate;
+        const [from, to] =
+          fromDate.getTime() <= toDate.getTime()
+            ? [fromDate, toDate]
+            : [toDate, fromDate];
+        return { from, to };
+      }
+    }
     const now = new Date();
     const to = utcDay(now);
     if (period === 'day') return { from: to, to };
@@ -596,6 +623,25 @@ export class WaiterPerformanceService {
     }
     const from = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 1));
     return { from, to };
+  }
+
+  private parseDateString(raw: string): Date {
+    const trimmed = raw.trim();
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmed);
+    if (match) {
+      const y = parseInt(match[1], 10);
+      const m = parseInt(match[2], 10) - 1;
+      const d = parseInt(match[3], 10);
+      return new Date(Date.UTC(y, m, d));
+    }
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { date: `Invalid date format: ${raw}` },
+      });
+    }
+    return utcDay(parsed);
   }
 
   private async requireAdmin(userId: string): Promise<AuthContextDto> {

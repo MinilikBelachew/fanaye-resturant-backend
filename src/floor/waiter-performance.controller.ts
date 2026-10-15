@@ -35,32 +35,42 @@ export class WaiterPerformanceController {
   @ApiQuery({
     name: 'period',
     required: false,
-    enum: ['day', 'week', 'month'],
+    enum: ['day', 'week', 'month', 'custom'],
   })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
   @ApiOkResponse({ type: WaiterPerformanceResponseDto })
   list(
     @Request() request,
     @Query('period') period?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ): Promise<WaiterPerformanceResponseDto> {
-    return this.performance.list(String(request.user.id), period);
+    return this.performance.list(String(request.user.id), period, from, to);
   }
 
   @Get(':membershipId/detail')
   @ApiQuery({
     name: 'period',
     required: false,
-    enum: ['day', 'week', 'month'],
+    enum: ['day', 'week', 'month', 'custom'],
   })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
   @ApiOkResponse({ type: WaiterDetailResponseDto })
   detail(
     @Request() request,
     @Param('membershipId', ParseUUIDPipe) membershipId: string,
     @Query('period') period?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ): Promise<WaiterDetailResponseDto> {
     return this.performance.getDetail(
       String(request.user.id),
       membershipId,
       period,
+      from,
+      to,
     );
   }
 
@@ -68,8 +78,10 @@ export class WaiterPerformanceController {
   @ApiQuery({
     name: 'period',
     required: false,
-    enum: ['day', 'week', 'month'],
+    enum: ['day', 'week', 'month', 'custom'],
   })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -78,12 +90,16 @@ export class WaiterPerformanceController {
     @Request() request,
     @Param('membershipId', ParseUUIDPipe) membershipId: string,
     @Query('period') period?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ): Promise<WaiterOrderHistoryResponseDto> {
     return this.performance.listOrders(String(request.user.id), membershipId, {
       period,
+      from,
+      to,
       q,
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,

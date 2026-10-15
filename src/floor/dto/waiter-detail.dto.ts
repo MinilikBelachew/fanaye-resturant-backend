@@ -80,8 +80,8 @@ export class WaiterDetailResponseDto {
   @ApiProperty({ type: [String] })
   workingDays: string[];
 
-  @ApiProperty({ enum: ['day', 'week', 'month'] })
-  period: 'day' | 'week' | 'month';
+  @ApiProperty({ enum: ['day', 'week', 'month', 'custom'] })
+  period: 'day' | 'week' | 'month' | 'custom';
 
   @ApiProperty()
   from: string;

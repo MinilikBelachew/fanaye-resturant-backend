@@ -7,6 +7,13 @@ import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
   ActNowInsightDto,
+  LatePrepItemDetailDto,
+  ReadyTooLongItemDetailDto,
+  PendingActionItemDetailDto,
+  StaffOfflineItemDetailDto,
+  LowStockItemDetailDto,
+  UnpaidBillItemDetailDto,
+  StationBacklogItemDetailDto,
   HourlySalesPointDto,
   ManagerDashboardDataDto,
   ManagerDashboardResponseDto,
@@ -27,7 +34,7 @@ import {
 /** READY tickets older than this count as "sitting too long". */
 const READY_STALE_MS = 5 * 60 * 1000;
 /** Floor for late-prep threshold when avg prep is missing/very low. */
-const LATE_PREP_FLOOR_MIN = 8;
+// const LATE_PREP_FLOOR_MIN = 8;
 
 export type BranchRevenuePeriod = 'month' | 'quarter' | 'year';
 
@@ -377,11 +384,11 @@ export class ManagerDashboardService {
       priorOrderItems,
       periodCashDrops,
       periodOrders,
-      pendingBillRequests,
-      pendingCashDrops,
-      pendingCancellations,
-      pendingOrderChanges,
-      openProductionExceptions,
+      pendingBillRequestList,
+      pendingCashDropList,
+      pendingCancellationList,
+      pendingOrderChangeList,
+      openProductionExceptionList,
       todayBills,
       inventoryIngredients,
       dueShiftAssignments,
@@ -467,8 +474,27 @@ export class ManagerDashboardService {
         select: { totalAmount: true, amountPaid: true },
       }),
       this.prisma.orderItem.findMany({
-        where: { branchId: bid, businessDate: liveDate },
-        include: { currentStation: true },
+        where: {
+          branchId: bid,
+          OR: [
+            { businessDate: liveDate },
+            {
+              state: {
+                in: ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION', 'READY'],
+              },
+            },
+          ],
+        },
+        include: {
+          currentStation: true,
+          tableSession: {
+            include: {
+              table: true,
+              primaryWaiter: true,
+            },
+          },
+          modifiers: true,
+        },
       }),
       this.prisma.orderItem.findMany({
         where: {
@@ -507,23 +533,65 @@ export class ManagerDashboardService {
         },
         select: { id: true, businessDate: true },
       }),
-      this.prisma.billRequest.count({
+      this.prisma.billRequest.findMany({
         where: { branchId: bid, status: 'PENDING' },
+        include: {
+          tableSession: {
+            include: { table: true, primaryWaiter: true },
+          },
+        },
+        orderBy: { requestedAt: 'asc' },
+        take: 10,
       }),
-      this.prisma.cashDrop.count({
+      this.prisma.cashDrop.findMany({
         where: {
           branchId: bid,
           status: { in: ['INITIATED', 'DISPUTED'] },
         },
+        include: {
+          waiter: true,
+        },
+        orderBy: { initiatedAt: 'asc' },
+        take: 10,
       }),
-      this.prisma.cancellationRequest.count({
+      this.prisma.cancellationRequest.findMany({
         where: { branchId: bid, status: 'PENDING' },
+        include: {
+          orderItem: {
+            include: {
+              tableSession: { include: { table: true } },
+            },
+          },
+          requestedBy: true,
+        },
+        orderBy: { requestedAt: 'asc' },
+        take: 10,
       }),
-      this.prisma.orderChangeRequest.count({
+      this.prisma.orderChangeRequest.findMany({
         where: { branchId: bid, status: 'PENDING' },
+        include: {
+          orderItem: {
+            include: {
+              tableSession: { include: { table: true } },
+            },
+          },
+          requestedBy: true,
+        },
+        orderBy: { requestedAt: 'asc' },
+        take: 10,
       }),
-      this.prisma.productionException.count({
+      this.prisma.productionException.findMany({
         where: { branchId: bid, status: 'OPEN' },
+        include: {
+          orderItem: {
+            include: {
+              tableSession: { include: { table: true } },
+            },
+          },
+          station: true,
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 10,
       }),
       this.prisma.bill.findMany({
         where: {
@@ -531,11 +599,22 @@ export class ManagerDashboardService {
           businessDate: liveDate,
           status: { notIn: ['CANCELLED', 'VOID'] },
         },
-        select: { totalAmount: true, amountPaid: true },
+        select: {
+          id: true,
+          totalAmount: true,
+          amountPaid: true,
+          createdAt: true,
+          tableSession: {
+            include: { table: true, primaryWaiter: true },
+          },
+        },
       }),
       this.prisma.inventoryIngredient.findMany({
         where: { branchId: bid, status: 'ACTIVE' },
         select: {
+          id: true,
+          name: true,
+          unit: true,
           parLevel: true,
           balance: { select: { onHandQty: true } },
         },
@@ -556,7 +635,20 @@ export class ManagerDashboardService {
             },
           },
         },
-        select: { staffMembershipId: true },
+        select: {
+          staffMembershipId: true,
+          scheduledStartAt: true,
+          scheduledEndAt: true,
+          membership: {
+            select: {
+              employeeDisplayName: true,
+              roleAssignments: {
+                where: { status: 'ACTIVE' },
+                include: { role: true },
+              },
+            },
+          },
+        },
       }),
       this.prisma.shiftSession.findMany({
         where: {
@@ -735,57 +827,313 @@ export class ManagerDashboardService {
       if (item.state !== 'READY' || !item.readyAt) return false;
       return now.getTime() - item.readyAt.getTime() >= READY_STALE_MS;
     }).length;
-    const latePrepThresholdMs =
-      Math.max(avgPrepMinutes || 0, LATE_PREP_FLOOR_MIN) * 60 * 1000;
-    const latePrepCount = liveOrderItems.filter((item) => {
+    const overdueOrderItems = liveOrderItems.filter((item) => {
       if (!['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'].includes(item.state)) {
         return false;
       }
+      if (item.cancelledAt || item.servedAt) return false;
       const start = item.preparationStartedAt ?? item.queuedAt;
       if (!start) return false;
-      return now.getTime() - start.getTime() >= latePrepThresholdMs;
-    }).length;
+      const targetMin = item.expectedPrepMinutesSnapshot ?? 15;
+      const elapsedMs = now.getTime() - start.getTime();
+      return item.delayAlertSentAt !== null || elapsedMs >= targetMin * 60_000;
+    });
+
+    const latePrepCount = overdueOrderItems.length;
+
+    const latePrepItems: LatePrepItemDetailDto[] = overdueOrderItems
+      .map((item) => {
+        const start = item.preparationStartedAt ?? item.queuedAt ?? now;
+        const elapsedMs = now.getTime() - start.getTime();
+        const elapsedMinutes = Math.floor(elapsedMs / 60_000);
+        const targetMinutes = item.expectedPrepMinutesSnapshot ?? 15;
+        const overdueMinutes = Math.max(1, elapsedMinutes - targetMinutes);
+
+        let tableDisplayName = 'Counter';
+        if (item.tableSession?.sessionKind === 'CALL_PICKUP') {
+          const name = item.tableSession.customerName?.trim();
+          tableDisplayName = name ? `Call · ${name}` : 'Call pickup';
+        } else if (item.tableSession?.table) {
+          const num =
+            item.tableSession.table.displayNumber ??
+            item.tableSession.table.displayName.replace(/^Table\s+/i, '');
+          tableDisplayName = `Table ${num}`;
+        }
+
+        return {
+          orderItemId: item.id,
+          itemName: item.itemNameSnapshot,
+          quantity: item.quantity,
+          tableDisplayName,
+          stationName:
+            item.stationNameSnapshot || item.currentStation?.name || 'Kitchen',
+          waiterName:
+            item.tableSession?.primaryWaiter?.employeeDisplayName ?? 'Staff',
+          elapsedMinutes,
+          targetMinutes,
+          overdueMinutes,
+          specialInstruction: item.specialInstruction ?? null,
+          modifiersSummary:
+            item.modifiers.map((m) => m.optionNameSnapshot).join(' · ') || null,
+          state: item.state,
+          queuedAt: start.toISOString(),
+        };
+      })
+      .sort((a, b) => b.overdueMinutes - a.overdueMinutes);
+
+    const pendingBillRequests = pendingBillRequestList.length;
+    const pendingCashDrops = pendingCashDropList.length;
+    const pendingCancellations = pendingCancellationList.length;
+    const pendingOrderChanges = pendingOrderChangeList.length;
+    const openProductionExceptions = openProductionExceptionList.length;
+
+    const readyTooLongItems: ReadyTooLongItemDetailDto[] = liveOrderItems
+      .filter((item) => {
+        if (item.state !== 'READY' || !item.readyAt) return false;
+        return now.getTime() - item.readyAt.getTime() >= READY_STALE_MS;
+      })
+      .map((item) => {
+        const readyMinutes = Math.floor(
+          (now.getTime() - item.readyAt!.getTime()) / 60_000,
+        );
+        let tableDisplayName = 'Counter';
+        if (item.tableSession?.sessionKind === 'CALL_PICKUP') {
+          const name = item.tableSession.customerName?.trim();
+          tableDisplayName = name ? `Call · ${name}` : 'Call pickup';
+        } else if (item.tableSession?.table) {
+          const num =
+            item.tableSession.table.displayNumber ??
+            item.tableSession.table.displayName.replace(/^Table\s+/i, '');
+          tableDisplayName = `Table ${num}`;
+        }
+        return {
+          orderItemId: item.id,
+          itemName: item.itemNameSnapshot,
+          quantity: item.quantity,
+          tableDisplayName,
+          stationName:
+            item.stationNameSnapshot || item.currentStation?.name || 'Kitchen',
+          waiterName:
+            item.tableSession?.primaryWaiter?.employeeDisplayName ?? 'Staff',
+          readyMinutes,
+          readyAt: item.readyAt!.toISOString(),
+        };
+      })
+      .sort((a, b) => b.readyMinutes - a.readyMinutes);
+
+    const pendingActionItems: PendingActionItemDetailDto[] = [
+      ...pendingBillRequestList.map((req) => ({
+        id: req.id,
+        kind: 'BILL_REQUEST',
+        title: 'Bill Request',
+        description: `Guest requested bill at ${req.tableSession?.table ? `Table ${req.tableSession.table.displayNumber ?? req.tableSession.table.displayName.replace(/^Table\s+/i, '')}` : 'Counter'}`,
+        tableDisplayName: req.tableSession?.table
+          ? `Table ${req.tableSession.table.displayNumber ?? req.tableSession.table.displayName.replace(/^Table\s+/i, '')}`
+          : 'Counter',
+        staffName: req.tableSession?.primaryWaiter?.employeeDisplayName ?? null,
+        amountFormatted: null,
+        createdAt: req.requestedAt.toISOString(),
+      })),
+      ...pendingCashDropList.map((drop) => ({
+        id: drop.id,
+        kind: 'CASH_DROP',
+        title: 'Cash Drop Handover',
+        description: `Declared ${drop.declaredAmount ? `ETB ${Number(drop.declaredAmount).toLocaleString()}` : 'Cash handover'} waiting verification`,
+        tableDisplayName: null,
+        staffName: drop.waiter?.employeeDisplayName ?? 'Waiter',
+        amountFormatted: drop.declaredAmount
+          ? `ETB ${Number(drop.declaredAmount).toLocaleString()}`
+          : null,
+        createdAt: (drop.initiatedAt ?? now).toISOString(),
+      })),
+      ...pendingCancellationList.map((c) => ({
+        id: c.id,
+        kind: 'CANCELLATION',
+        title: 'Void Request',
+        description: `${c.orderItem?.quantity ?? 1}× ${c.orderItem?.itemNameSnapshot ?? 'Item'} · Reason: ${c.reason || 'Not specified'}`,
+        tableDisplayName: c.orderItem?.tableSession?.table
+          ? `Table ${c.orderItem.tableSession.table.displayNumber ?? c.orderItem.tableSession.table.displayName.replace(/^Table\s+/i, '')}`
+          : 'Table',
+        staffName: c.requestedBy?.employeeDisplayName ?? 'Server',
+        amountFormatted: c.orderItem?.unitPriceSnapshot
+          ? `ETB ${(Number(c.orderItem.unitPriceSnapshot) * (c.orderItem.quantity ?? 1)).toLocaleString()}`
+          : null,
+        createdAt: c.requestedAt.toISOString(),
+      })),
+      ...pendingOrderChangeList.map((ch) => ({
+        id: ch.id,
+        kind: 'ORDER_CHANGE',
+        title: 'Order Change',
+        description: `Change on ${ch.orderItem?.itemNameSnapshot ?? 'Item'} · ${ch.reason || 'Table update'}`,
+        tableDisplayName: ch.orderItem?.tableSession?.table
+          ? `Table ${ch.orderItem.tableSession.table.displayNumber ?? ch.orderItem.tableSession.table.displayName.replace(/^Table\s+/i, '')}`
+          : 'Table',
+        staffName: ch.requestedBy?.employeeDisplayName ?? 'Server',
+        amountFormatted: null,
+        createdAt: ch.requestedAt.toISOString(),
+      })),
+      ...openProductionExceptionList.map((ex) => ({
+        id: ex.id,
+        kind: 'PRODUCTION_EXCEPTION',
+        title: 'Cannot Prepare (86)',
+        description: `${ex.orderItem?.itemNameSnapshot ?? 'Dish'} cannot be prepared: ${ex.reasonDetail || ex.reasonCode || 'Out of ingredients'}`,
+        tableDisplayName: ex.orderItem?.tableSession?.table
+          ? `Table ${ex.orderItem.tableSession.table.displayNumber ?? ex.orderItem.tableSession.table.displayName.replace(/^Table\s+/i, '')}`
+          : 'Kitchen',
+        staffName: ex.station?.name ?? 'Kitchen',
+        amountFormatted: null,
+        createdAt: ex.createdAt.toISOString(),
+      })),
+    ].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
+    const stationItemsMap = new Map<
+      string,
+      { queued: number; inPrep: number; oldestMs: number }
+    >();
+    for (const item of liveOrderItems) {
+      if (!['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'].includes(item.state))
+        continue;
+      const stName =
+        item.stationNameSnapshot || item.currentStation?.name || 'Kitchen';
+      const entry = stationItemsMap.get(stName) ?? {
+        queued: 0,
+        inPrep: 0,
+        oldestMs: 0,
+      };
+      if (item.state === 'IN_PREPARATION') {
+        entry.inPrep += item.quantity;
+      } else {
+        entry.queued += item.quantity;
+      }
+      const start = item.preparationStartedAt ?? item.queuedAt ?? now;
+      const wait = now.getTime() - start.getTime();
+      if (wait > entry.oldestMs) entry.oldestMs = wait;
+      stationItemsMap.set(stName, entry);
+    }
+    const stationBacklogItems: StationBacklogItemDetailDto[] = Array.from(
+      stationItemsMap.entries(),
+    )
+      .map(([stationName, val]) => ({
+        stationName,
+        queuedCount: val.queued,
+        inPrepCount: val.inPrep,
+        oldestWaitMinutes: Math.floor(val.oldestMs / 60_000),
+      }))
+      .sort(
+        (a, b) =>
+          b.queuedCount + b.inPrepCount - (a.queuedCount + a.inPrepCount),
+      );
+
     const clockedInIds = new Set(
       openShiftSessions.map((s) => s.staffMembershipId),
     );
-    const staffOfflineCount = new Set(
-      dueShiftAssignments
-        .map((a) => a.staffMembershipId)
-        .filter((id) => !clockedInIds.has(id)),
-    ).size;
-    const lowStockCount = inventoryIngredients.filter((ing) => {
-      const onHand = Number(ing.balance?.onHandQty ?? 0);
-      const par = Number(ing.parLevel ?? 0);
-      return par > 0 && onHand <= par;
-    }).length;
+    const staffOfflineItems: StaffOfflineItemDetailDto[] = dueShiftAssignments
+      .filter((a) => !clockedInIds.has(a.staffMembershipId))
+      .map((a) => {
+        const primaryRole =
+          a.membership?.roleAssignments?.[0]?.role?.code ?? 'STAFF';
+        const shiftStartFormatted = new Date(
+          a.scheduledStartAt,
+        ).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        const minutesLate = Math.max(
+          0,
+          Math.floor(
+            (now.getTime() - new Date(a.scheduledStartAt).getTime()) / 60_000,
+          ),
+        );
+        return {
+          staffMembershipId: a.staffMembershipId,
+          staffName: a.membership?.employeeDisplayName ?? 'Scheduled Staff',
+          role: primaryRole,
+          shiftStartFormatted,
+          minutesLate,
+        };
+      })
+      .sort((a, b) => b.minutesLate - a.minutesLate);
+
+    const staffOfflineCount = staffOfflineItems.length;
+
+    const lowStockItems: LowStockItemDetailDto[] = inventoryIngredients
+      .filter((ing) => {
+        const onHand = Number(ing.balance?.onHandQty ?? 0);
+        const par = Number(ing.parLevel ?? 0);
+        return par > 0 && onHand <= par;
+      })
+      .map((ing) => ({
+        ingredientId: ing.id,
+        ingredientName: ing.name,
+        onHandQty: Number(ing.balance?.onHandQty ?? 0),
+        parLevel: Number(ing.parLevel ?? 0),
+        unit: ing.unit || 'units',
+      }))
+      .sort(
+        (a, b) =>
+          a.onHandQty / Math.max(0.1, a.parLevel) -
+          b.onHandQty / Math.max(0.1, b.parLevel),
+      );
+
+    const lowStockCount = lowStockItems.length;
+
     let unpaidGapValue = 0;
     let unpaidBillsCount = 0;
+    const unpaidBillItems: UnpaidBillItemDetailDto[] = [];
     for (const bill of todayBills) {
-      const due = Number(bill.totalAmount) - Number(bill.amountPaid);
+      const total = Number(bill.totalAmount);
+      const paid = Number(bill.amountPaid);
+      const due = total - paid;
       if (due > 0.009) {
         unpaidGapValue += due;
         unpaidBillsCount += 1;
+        let tableDisplayName = 'Counter';
+        if (bill.tableSession?.table) {
+          const num =
+            bill.tableSession.table.displayNumber ??
+            bill.tableSession.table.displayName.replace(/^Table\s+/i, '');
+          tableDisplayName = `Table ${num}`;
+        }
+        unpaidBillItems.push({
+          billId: bill.id,
+          tableDisplayName,
+          totalAmountFormatted: `ETB ${total.toLocaleString()}`,
+          unpaidAmountFormatted: `ETB ${due.toLocaleString()}`,
+          billedAt: (bill.createdAt ?? now).toISOString(),
+        });
       }
     }
+    unpaidBillItems.sort(
+      (a, b) => new Date(b.billedAt).getTime() - new Date(a.billedAt).getTime(),
+    );
+
     const actNow: ActNowInsightDto = {
       readyTooLongCount,
       readyTooLongHint:
         readyTooLongCount > 0
           ? `${readyTooLongCount} ready > 5 min`
           : 'no stale ready tickets',
+      readyTooLongItems,
       latePrepCount,
       latePrepHint:
         latePrepCount > 0
-          ? `${latePrepCount} past ${Math.max(avgPrepMinutes || 0, LATE_PREP_FLOOR_MIN)} min prep`
+          ? `${latePrepCount} overdue kitchen ticket${latePrepCount === 1 ? '' : 's'}`
           : 'prep on pace',
+      latePrepItems,
+      pendingActionItems,
       staffOfflineCount,
       staffOfflineHint:
         staffOfflineCount > 0
           ? `${staffOfflineCount} scheduled not clocked in`
           : 'scheduled staff clocked in',
+      staffOfflineItems,
       lowStockCount,
       lowStockHint:
         lowStockCount > 0 ? `${lowStockCount} at/below par` : 'stock levels ok',
+      lowStockItems,
       unpaidBillsCount,
       unpaidGapValue,
       unpaidGapFormatted: formatK(unpaidGapValue),
@@ -793,6 +1141,8 @@ export class ManagerDashboardService {
         unpaidBillsCount > 0
           ? `${unpaidBillsCount} unpaid bill${unpaidBillsCount === 1 ? '' : 's'} today`
           : 'no unpaid bills today',
+      unpaidBillItems,
+      stationBacklogItems,
     };
     const cancelledItemsCount = periodOrderItems.filter(
       (item) => item.state === 'CANCELLED' || item.cancelledAt,
@@ -802,7 +1152,8 @@ export class ManagerDashboardService {
       pendingCashDrops +
       pendingCancellations +
       pendingOrderChanges +
-      openProductionExceptions;
+      openProductionExceptions +
+      latePrepCount;
 
     const coversCount = periodSessions.reduce(
       (sum, s) => sum + (s.guestCount ?? 0),
@@ -870,9 +1221,10 @@ export class ManagerDashboardService {
               openProductionExceptions > 0
                 ? `${openProductionExceptions} kitchen`
                 : null,
+              latePrepCount > 0 ? `${latePrepCount} overdue` : null,
             ]
               .filter(Boolean)
-              .join(' · '),
+              .join(' · ') || 'actions waiting',
       billedFormatted: formatK(billedTotal),
       billedValue: billedTotal,
       collectionGapFormatted: formatK(collectionGap),

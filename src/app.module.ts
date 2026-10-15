@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { HeaderResolver, I18nModule } from 'nestjs-i18n';
 import path from 'path';
@@ -67,6 +68,17 @@ import { InventoryModule } from './inventory/inventory.module';
       envFilePath: ['.env'],
     }),
     PrismaModule,
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.get('REDIS_HOST', { infer: true }) || 'localhost',
+          port:
+            Number(configService.get('REDIS_PORT', { infer: true })) || 6379,
+        },
+      }),
+    }),
     I18nModule.forRootAsync({
       useFactory: (configService: ConfigService<AllConfigType>) => ({
         fallbackLanguage: configService.getOrThrow('app.fallbackLanguage', {

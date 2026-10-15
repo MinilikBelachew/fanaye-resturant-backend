@@ -179,6 +179,15 @@ export class StaffCoverageService {
               table: { include: { location: true } },
             },
           },
+          shiftAssignments: {
+            where: {
+              status: 'SCHEDULED',
+              ...(scopeAll ? {} : { branchId: { in: branchIds } }),
+            },
+            include: { definition: true },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
         },
         orderBy: { employeeDisplayName: 'asc' },
       }),
@@ -384,6 +393,35 @@ export class StaffCoverageService {
           },
         },
       });
+
+      if (dto.shiftDefinitionId) {
+        const shiftDef = await tx.shiftDefinition.findFirst({
+          where: {
+            id: dto.shiftDefinitionId,
+            branchId: targetBranchId,
+            status: 'ACTIVE',
+          },
+        });
+        if (shiftDef) {
+          const { startAt, endAt } = computeShiftWindowDates(
+            shiftDef.startLocalTime,
+            shiftDef.endLocalTime,
+          );
+          await tx.shiftAssignment.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: targetBranchId,
+              staffMembershipId: membership.id,
+              shiftDefinitionId: shiftDef.id,
+              roleId: role.id,
+              scheduledStartAt: startAt,
+              scheduledEndAt: endAt,
+              graceMinutes: shiftDef.graceMinutes,
+              status: 'SCHEDULED',
+            },
+          });
+        }
+      }
 
       return membership.id;
     });
@@ -617,6 +655,45 @@ export class StaffCoverageService {
           }
         }
       }
+
+      if (dto.shiftDefinitionId) {
+        const shiftDef = await tx.shiftDefinition.findFirst({
+          where: {
+            id: dto.shiftDefinitionId,
+            branchId: workingBranchId,
+            status: 'ACTIVE',
+          },
+        });
+        if (shiftDef) {
+          await tx.shiftAssignment.updateMany({
+            where: {
+              staffMembershipId: membershipId,
+              branchId: workingBranchId,
+              status: 'SCHEDULED',
+            },
+            data: { status: 'CANCELLED' },
+          });
+
+          const { startAt, endAt } = computeShiftWindowDates(
+            shiftDef.startLocalTime,
+            shiftDef.endLocalTime,
+          );
+          const activeRole = existing.roleAssignments[0]?.role;
+          await tx.shiftAssignment.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: workingBranchId,
+              staffMembershipId: membershipId,
+              shiftDefinitionId: shiftDef.id,
+              roleId: activeRole?.id ?? null,
+              scheduledStartAt: startAt,
+              scheduledEndAt: endAt,
+              graceMinutes: shiftDef.graceMinutes,
+              status: 'SCHEDULED',
+            },
+          });
+        }
+      }
     });
 
     const member = await this.loadStaffMember(
@@ -762,6 +839,26 @@ export class StaffCoverageService {
     return { data: this.toShiftDto(updated) };
   }
 
+  async deleteShift(
+    userId: string,
+    shiftId: string,
+  ): Promise<{ success: boolean }> {
+    const context = await this.requireAdmin(userId);
+    const existing = await this.prisma.shiftDefinition.findFirst({
+      where: { id: shiftId, branchId: context.branchId! },
+    });
+    if (!existing) {
+      throw new NotFoundException('Shift not found.');
+    }
+    await this.prisma.diningTableShiftCoverage.deleteMany({
+      where: { shiftDefinitionId: existing.id },
+    });
+    await this.prisma.shiftDefinition.delete({
+      where: { id: existing.id },
+    });
+    return { success: true };
+  }
+
   async setWaiterCoverage(
     userId: string,
     waiterMembershipId: string,
@@ -905,6 +1002,20 @@ export class StaffCoverageService {
         displayName: row.table.displayName,
         displayNumber: row.table.displayNumber,
         locationName: row.table.location.name,
+      });
+    }
+
+    const primaryAssignment = (member as any).shiftAssignments?.[0];
+    if (
+      primaryAssignment?.definition &&
+      !byShift.has(primaryAssignment.definition.id)
+    ) {
+      byShift.set(primaryAssignment.definition.id, {
+        shiftDefinitionId: primaryAssignment.definition.id,
+        shiftName: primaryAssignment.definition.name,
+        startLocalTime: formatTime(primaryAssignment.definition.startLocalTime),
+        endLocalTime: formatTime(primaryAssignment.definition.endLocalTime),
+        tables: [],
       });
     }
 
@@ -1211,6 +1322,15 @@ export class StaffCoverageService {
             table: { include: { location: true } },
           },
         },
+        shiftAssignments: {
+          where: {
+            status: 'SCHEDULED',
+            branchId: targetBranchId,
+          },
+          include: { definition: true },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
       },
     });
     if (!member) {
@@ -1439,4 +1559,27 @@ function formatTime(value: Date): string {
   const hours = value.getUTCHours().toString().padStart(2, '0');
   const minutes = value.getUTCMinutes().toString().padStart(2, '0');
   return `${hours}:${minutes}`;
+}
+
+function computeShiftWindowDates(
+  startLocalTime: Date,
+  endLocalTime: Date,
+): { startAt: Date; endAt: Date } {
+  const now = new Date();
+  const startH = startLocalTime.getUTCHours();
+  const startM = startLocalTime.getUTCMinutes();
+  const endH = endLocalTime.getUTCHours();
+  const endM = endLocalTime.getUTCMinutes();
+
+  const startAt = new Date(now);
+  startAt.setUTCHours(startH, startM, 0, 0);
+
+  const endAt = new Date(now);
+  endAt.setUTCHours(endH, endM, 0, 0);
+
+  if (endAt <= startAt) {
+    // Overnight shift spans to the next day
+    endAt.setUTCDate(endAt.getUTCDate() + 1);
+  }
+  return { startAt, endAt };
 }

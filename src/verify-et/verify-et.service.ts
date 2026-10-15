@@ -308,6 +308,9 @@ export class VerifyEtService {
         item?.transactionNumber ??
         null,
       message: envelope.message ?? (verified ? 'Verified' : 'Not verified'),
+      timestamp: item?.timestamp ?? null,
+      confirmationHistory: item?.confirmationHistory ?? null,
+      settlementAccountMatch: item?.settlementAccountMatch ?? null,
       raw: envelope,
     };
   }

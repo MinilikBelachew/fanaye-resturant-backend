@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -159,6 +160,20 @@ export class StaffCoverageController {
     @Body() dto: UpdateShiftDefinitionDto,
   ): Promise<AdminShiftDefinitionResponseDto> {
     return this.staff.updateShift(String(request.user.id), id, dto);
+  }
+
+  @Delete('shift-definitions/:id')
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      properties: { success: { type: 'boolean' } },
+    },
+  })
+  deleteShift(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<{ success: boolean }> {
+    return this.staff.deleteShift(String(request.user.id), id);
   }
 
   @Put('staff/:membershipId/table-coverage')

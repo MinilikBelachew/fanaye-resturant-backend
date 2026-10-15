@@ -245,6 +245,7 @@ model TenantSite {
 
 model TenantSettings {
   tenantId                          String   @id @map("tenant_id") @db.Uuid
+  calendarPreference                String   @default("ETHIOPIAN") @map("calendar_preference") @db.VarChar(24)
   defaultShiftGraceMinutes          Int      @default(15) @map("default_shift_grace_minutes")
   waiterMayClosePaidTable           Boolean  @default(true) @map("waiter_may_close_paid_table")
   cashierMayCollectCustomerPayment  Boolean  @default(false) @map("cashier_may_collect_customer_payment")

@@ -60,6 +60,10 @@ export class ConfirmedOrderItemDto {
   @Expose()
   @Type(() => OrderItemModifierDto)
   modifiers: OrderItemModifierDto[];
+
+  @ApiPropertyOptional()
+  @Expose()
+  delayed?: boolean;
 }
 
 export class ConfirmOrderResponseDto {

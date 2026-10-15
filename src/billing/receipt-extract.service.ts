@@ -89,6 +89,17 @@ export class ReceiptExtractService {
       );
     }
 
+    try {
+      const fromTesseract = await this.extractWithTesseract(file, hintChannel);
+      if (fromTesseract?.reference) {
+        return fromTesseract;
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Tesseract OCR extract failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     const fromText = this.extractWithHeuristics(
       extractPrintableChunks(file.buffer),
       hintChannel,
@@ -105,6 +116,87 @@ export class ReceiptExtractService {
       source: 'heuristic',
       rawHint: 'Could not read a transaction number. Type it manually.',
     };
+  }
+
+  private async extractWithTesseract(
+    file: Express.Multer.File,
+    hintChannel?: 'TELEBIRR' | 'BANK',
+  ): Promise<ReceiptExtractResponseDto | null> {
+    try {
+      const { createWorker } = await import('tesseract.js');
+      const worker = await createWorker('eng');
+      const ret = await worker.recognize(file.buffer);
+      await worker.terminate();
+
+      const text = ret.data.text;
+      if (!text) return null;
+
+      let reference: string | null = null;
+      let bank: VerifyEtBank | null =
+        hintChannel === 'TELEBIRR' ? 'telebirr' : null;
+
+      const telebirrLabeled = text.match(
+        /(?:Transaction\s*No\.?|Txn\s*No\.?)\s*[:.\s]?\s*([A-Z0-9]{8,14})/i,
+      );
+      const cbeFtMatch = text.match(/\b(FT[0-9A-Z]{8,14})\b/i);
+      const generalRef = text.match(
+        /(?:Receipt\s*ID|Txn\s*ID|Ref(?:erence)?)\s*[:.\s]?\s*([A-Z0-9]{8,18})/i,
+      );
+      const telebirrCode = text.match(/\b([D][A-Z0-9]{9})\b/);
+
+      if (telebirrLabeled) {
+        reference = telebirrLabeled[1].toUpperCase();
+        bank = bank || 'telebirr';
+      } else if (cbeFtMatch) {
+        reference = cbeFtMatch[1].toUpperCase();
+        bank = 'cbe';
+      } else if (telebirrCode) {
+        reference = telebirrCode[1].toUpperCase();
+        bank = bank || 'telebirr';
+      } else if (generalRef) {
+        reference = generalRef[1].toUpperCase();
+      }
+
+      if (reference) {
+        if (reference.startsWith('DIUT9')) {
+          reference = reference.replace('DIUT9', 'DIU19');
+        }
+        reference = normalizeReference(reference);
+      }
+
+      if (!bank) {
+        if (/telebirr/i.test(text)) bank = 'telebirr';
+        else if (/commercial\s*bank|cbe/i.test(text)) bank = 'cbe';
+        else if (/abyssinia|boa/i.test(text)) bank = 'boa';
+        else if (/dashen/i.test(text)) bank = 'dashen';
+        else if (/awash/i.test(text)) bank = 'awash';
+        else bank = hintChannel === 'TELEBIRR' ? 'telebirr' : 'cbe';
+      }
+
+      let amount: string | null = null;
+      const amountMatch =
+        text.match(/([+-]?\d+(?:\.\d{2})?)\s*ETB/i) ||
+        text.match(/ETB\s*([+-]?\d+(?:\.\d{2})?)/i);
+      if (amountMatch) {
+        amount = normalizeAmount(amountMatch[1]);
+      }
+
+      if (reference) {
+        return {
+          reference,
+          bankProvider: bank,
+          amount,
+          confidence: 0.92,
+          source: 'heuristic',
+          rawHint: 'Extracted automatically from receipt photo.',
+        };
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Tesseract OCR failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return null;
   }
 
   private async extractWithOpenAI(

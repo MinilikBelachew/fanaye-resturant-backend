@@ -91,8 +91,8 @@ export class WaiterPerformanceSummaryDto {
 }
 
 export class WaiterPerformanceResponseDto {
-  @ApiProperty({ enum: ['day', 'week', 'month'] })
-  period: 'day' | 'week' | 'month';
+  @ApiProperty({ enum: ['day', 'week', 'month', 'custom'] })
+  period: 'day' | 'week' | 'month' | 'custom';
 
   @ApiProperty()
   from: string;
