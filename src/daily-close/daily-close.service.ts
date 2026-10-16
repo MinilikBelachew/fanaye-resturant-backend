@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -29,9 +30,6 @@ import {
 
 const CREATE_COMMAND = 'daily_close.create';
 const LOCK_COMMAND = 'daily_close.lock';
-const PREPARE_ROLES = ['MANAGER', 'OWNER_ADMIN', 'CASHIER'];
-const APPROVE_ROLES = ['OWNER_ADMIN', 'MANAGER'];
-const LOCK_ROLES = ['OWNER_ADMIN', 'MANAGER'];
 
 type Snapshot = {
   summary: DailyCloseSummaryDto;
@@ -63,6 +61,7 @@ export class DailyCloseService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async preview(
@@ -1144,25 +1143,34 @@ export class DailyCloseService {
 
   private async requirePrepare(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!PREPARE_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Daily close is for managers/cashiers.');
-    }
+    this.casl.assertCan(
+      context,
+      'prepare',
+      'DailyClose',
+      'Daily close is for managers/cashiers.',
+    );
     return context;
   }
 
   private async requireApprove(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!APPROVE_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Approve daily close is for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'approve',
+      'DailyClose',
+      'Approve daily close is for managers.',
+    );
     return context;
   }
 
   private async requireLock(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!LOCK_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Lock daily close is for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'lock',
+      'DailyClose',
+      'Lock daily close is for managers.',
+    );
     return context;
   }
 

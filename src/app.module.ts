@@ -1,8 +1,9 @@
 import { Module } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { HeaderResolver, I18nModule } from 'nestjs-i18n';
 import path from 'path';
 
@@ -48,6 +49,7 @@ import { QrMenuModule } from './qr-menu/qr-menu.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { BranchesModule } from './branches/branches.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { CaslModule } from './casl/casl.module';
 
 @Module({
   imports: [
@@ -68,6 +70,14 @@ import { InventoryModule } from './inventory/inventory.module';
       envFilePath: ['.env'],
     }),
     PrismaModule,
+    CaslModule,
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: 60_000,
+        limit: 120,
+      },
+    ]),
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -133,6 +143,10 @@ import { InventoryModule } from './inventory/inventory.module';
     InventoryModule,
   ],
   providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
     {
       provide: APP_INTERCEPTOR,
       useClass: AuditLogsInterceptor,

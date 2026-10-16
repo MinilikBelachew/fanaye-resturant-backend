@@ -6,6 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -26,14 +27,13 @@ import {
   AdminModifierGroupResponseDto,
 } from './dto/menu-item-response.dto';
 
-const ADMIN_ROLES = ['MANAGER', 'OWNER_ADMIN'];
-
 @Injectable()
 export class MenuService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly inventory: InventoryService,
+    private readonly casl: CaslService,
   ) {}
 
   async meta(userId: string): Promise<AdminMenuMetaResponseDto> {
@@ -787,9 +787,12 @@ export class MenuService {
     if (!context.tenantId || !context.branchId) {
       throw new ForbiddenException('No restaurant branch on this account.');
     }
-    if (!ADMIN_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Menu admin is for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Menu',
+      'Menu admin is for managers.',
+    );
     return context;
   }
 }

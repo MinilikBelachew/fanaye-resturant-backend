@@ -10,6 +10,7 @@ import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { basename, join } from 'path';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
@@ -40,10 +41,7 @@ const CASH_COMMAND = 'payment.cash';
 const TRANSFER_COMMAND = 'payment.transfer';
 
 const REQUESTABLE = ['OPEN', 'ACTIVE_ORDER', 'ATTENTION_REQUIRED'];
-const GENERATE_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN', 'DISPATCHER'];
-const CASHIER_QUEUE_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN'];
-const VIEW_PAYMENT_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN'];
-const COLLECT_ROLES = ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'];
+/** Waiter-like roles that own a table session (not a CASL subject — ownership). */
 const SHIFT_OWNER_ROLES = ['WAITER', 'DISPATCHER'];
 const CHARGEABLE_ITEM = (state: string, cancelledAt: Date | null) =>
   !cancelledAt && state !== 'CANCELLED';
@@ -56,6 +54,7 @@ export class BillingService {
     private readonly opsNotify: OpsNotifyService,
     private readonly dailyClose: DailyCloseService,
     private readonly verifyEt: VerifyEtService,
+    private readonly casl: CaslService,
   ) {}
 
   async requestBill(
@@ -249,9 +248,12 @@ export class BillingService {
     userId: string,
   ): Promise<CashierBillRequestsResponseDto> {
     const context = await this.requireBranch(userId);
-    if (!CASHIER_QUEUE_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Bill request queue is for cashiers.');
-    }
+    this.casl.assertCan(
+      context,
+      'read',
+      'BillQueue',
+      'Bill request queue is for cashiers.',
+    );
 
     const requests = await this.prisma.billRequest.findMany({
       where: {
@@ -523,11 +525,12 @@ export class BillingService {
     idempotencyKey?: string,
   ): Promise<BillDto> {
     const context = await this.requireBranch(userId);
-    if (!GENERATE_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException(
-        'Only cashier or manager can generate bills.',
-      );
-    }
+    this.casl.assertCan(
+      context,
+      'generate',
+      'Bill',
+      'Only cashier or manager can generate bills.',
+    );
     if (!context.staffMembershipId) {
       throw new ForbiddenException(
         'No restaurant membership for this account.',
@@ -884,14 +887,6 @@ export class BillingService {
       context.branchId!,
       bill.businessDate,
     );
-    if (bill.version !== dto.expectedBillVersion) {
-      throw new ConflictException({
-        status: 409,
-        errors: { version: 'stale' },
-        expectedVersion: bill.version,
-      });
-    }
-
     const due = new Prisma.Decimal(bill.totalAmount).minus(bill.amountPaid);
     const amount = new Prisma.Decimal(dto.amount);
     const tendered = new Prisma.Decimal(dto.cashTendered);
@@ -913,6 +908,28 @@ export class BillingService {
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
+      const settled = await tx.bill.updateMany({
+        where: {
+          id: bill.id,
+          version: dto.expectedBillVersion,
+          status: { in: ['GENERATED', 'PAYMENT_PENDING'] },
+        },
+        data: {
+          status: 'PAID',
+          amountPaid: bill.totalAmount,
+          paidAt: now,
+          version: { increment: 1 },
+        },
+      });
+      if (settled.count !== 1) {
+        const latest = await tx.bill.findUnique({ where: { id: bill.id } });
+        throw new ConflictException({
+          status: 409,
+          errors: { version: 'stale' },
+          expectedVersion: latest?.version ?? bill.version,
+        });
+      }
+
       const payment = await tx.payment.create({
         data: {
           tenantId: context.tenantId!,
@@ -931,14 +948,8 @@ export class BillingService {
           settledAt: now,
         },
       });
-      const updatedBill = await tx.bill.update({
+      const updatedBill = await tx.bill.findUniqueOrThrow({
         where: { id: bill.id },
-        data: {
-          status: 'PAID',
-          amountPaid: bill.totalAmount,
-          paidAt: now,
-          version: { increment: 1 },
-        },
       });
       const session = await tx.tableSession.update({
         where: { id: bill.tableSessionId },
@@ -1002,14 +1013,6 @@ export class BillingService {
       context.branchId!,
       bill.businessDate,
     );
-    if (bill.version !== dto.expectedBillVersion) {
-      throw new ConflictException({
-        status: 409,
-        errors: { version: 'stale' },
-        expectedVersion: bill.version,
-      });
-    }
-
     const file = await this.prisma.file.findUnique({
       where: { id: dto.fileId },
     });
@@ -1041,21 +1044,6 @@ export class BillingService {
           errors: { amount: money(due) },
         });
       }
-    }
-
-    const pending = await this.prisma.payment.findFirst({
-      where: {
-        billId: bill.id,
-        method: 'TRANSFER',
-        status: { in: ['SETTLED', 'VERIFIED'] },
-      },
-    });
-    if (pending) {
-      throw new ConflictException({
-        status: 409,
-        code: 'TRANSFER_ALREADY_RECORDED',
-        errors: { payment: 'TRANSFER_ALREADY_RECORDED' },
-      });
     }
 
     let settleAmount = due;
@@ -1251,6 +1239,43 @@ export class BillingService {
 
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
+      const alreadySettled = await tx.payment.findFirst({
+        where: {
+          billId: bill.id,
+          method: 'TRANSFER',
+          status: { in: ['SETTLED', 'VERIFIED'] },
+        },
+      });
+      if (alreadySettled) {
+        throw new ConflictException({
+          status: 409,
+          code: 'TRANSFER_ALREADY_RECORDED',
+          errors: { payment: 'TRANSFER_ALREADY_RECORDED' },
+        });
+      }
+
+      const settled = await tx.bill.updateMany({
+        where: {
+          id: bill.id,
+          version: dto.expectedBillVersion,
+          status: { in: ['GENERATED', 'PAYMENT_PENDING'] },
+        },
+        data: {
+          status: 'PAID',
+          amountPaid: bill.totalAmount,
+          paidAt: now,
+          version: { increment: 1 },
+        },
+      });
+      if (settled.count !== 1) {
+        const latest = await tx.bill.findUnique({ where: { id: bill.id } });
+        throw new ConflictException({
+          status: 409,
+          errors: { version: 'stale' },
+          expectedVersion: latest?.version ?? bill.version,
+        });
+      }
+
       const payment = await tx.payment.create({
         data: {
           tenantId: context.tenantId!,
@@ -1277,14 +1302,8 @@ export class BillingService {
           },
         },
       });
-      const updatedBill = await tx.bill.update({
+      const updatedBill = await tx.bill.findUniqueOrThrow({
         where: { id: bill.id },
-        data: {
-          status: 'PAID',
-          amountPaid: bill.totalAmount,
-          paidAt: now,
-          version: { increment: 1 },
-        },
       });
       const session = await tx.tableSession.update({
         where: { id: bill.tableSessionId },
@@ -1402,9 +1421,12 @@ export class BillingService {
     >;
   }> {
     const context = await this.requireBranch(userId);
-    if (!VIEW_PAYMENT_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Payment log is for cashiers.');
-    }
+    this.casl.assertCan(
+      context,
+      'read',
+      'Payment',
+      'Payment log is for cashiers.',
+    );
     const fromYmd = (range?.from || '').trim().slice(0, 10);
     const toYmd = (range?.to || range?.from || '').trim().slice(0, 10);
     const dateFilter =
@@ -1459,9 +1481,12 @@ export class BillingService {
 
   async getPaymentDetail(userId: string, paymentId: string) {
     const context = await this.requireBranch(userId);
-    if (!VIEW_PAYMENT_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Payment detail is for cashiers.');
-    }
+    this.casl.assertCan(
+      context,
+      'read',
+      'Payment',
+      'Payment detail is for cashiers.',
+    );
 
     const payment = await this.prisma.payment.findFirst({
       where: {
@@ -1565,6 +1590,7 @@ export class BillingService {
 
   private async requireWaiterOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
+    // Runtime historically: only WAITER/DISPATCHER (not manager) request bills.
     if (!SHIFT_OWNER_ROLES.includes(context.roleCode)) {
       throw new ForbiddenException('Only the waiter can request the bill.');
     }
@@ -1580,11 +1606,13 @@ export class BillingService {
 
   private async requireCashierOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!['CASHIER', 'MANAGER', 'OWNER_ADMIN'].includes(context.roleCode)) {
-      throw new ForbiddenException(
-        'Only the cashier can start a counter sale.',
-      );
-    }
+    // Counter sale: cashier queue readers (cashier/manager/owner), not dispatcher.
+    this.casl.assertCan(
+      context,
+      'read',
+      'BillQueue',
+      'Only the cashier can start a counter sale.',
+    );
     if (!context.staffMembershipId || !context.shiftSessionId) {
       throw new ForbiddenException({
         status: 403,
@@ -1599,11 +1627,17 @@ export class BillingService {
     userId: string,
   ): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
+    // Waiter/dispatcher/manager/owner OR cashier (bakery / till collect paths).
     if (
-      !COLLECT_ROLES.includes(context.roleCode) &&
-      context.roleCode !== 'CASHIER'
+      !this.casl.can(context, 'collect', 'Payment') &&
+      !this.casl.can(context, 'read', 'BillQueue')
     ) {
-      throw new ForbiddenException('Only the waiter can collect payment.');
+      this.casl.assertCan(
+        context,
+        'collect',
+        'Payment',
+        'Only the waiter can collect payment.',
+      );
     }
     if (!context.staffMembershipId || !context.shiftSessionId) {
       throw new ForbiddenException({

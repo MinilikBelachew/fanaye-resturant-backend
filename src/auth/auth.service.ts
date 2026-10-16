@@ -175,8 +175,9 @@ export class AuthService {
     });
   }
 
-  async getTerminalStaffList() {
-    const staff = await this.identityContextService.getTerminalStaffList();
+  async getTerminalStaffList(tenantId: string) {
+    const staff =
+      await this.identityContextService.getTerminalStaffList(tenantId);
     return { staff };
   }
 

@@ -41,12 +41,11 @@ export class ShiftHandoverDto {
 
   @ApiProperty({
     example: '1234',
-    description:
-      '4 to 6 numeric digit PIN of the incoming cashier to confirm handover',
+    description: 'Exactly 4 numeric digit PIN of the incoming cashier',
   })
   @IsString()
-  @Matches(/^\d{4,6}$/, {
-    message: 'Incoming cashier PIN must be 4 to 6 numeric digits.',
+  @Matches(/^\d{4}$/, {
+    message: 'Incoming cashier PIN must be exactly 4 numeric digits.',
   })
   incomingCashierPin: string;
 
@@ -135,12 +134,11 @@ export class WaiterShiftHandoverDto {
 
   @ApiProperty({
     example: '1234',
-    description:
-      '4 to 6 numeric digit PIN of incoming waiter to confirm handover',
+    description: 'Exactly 4 numeric digit PIN of incoming waiter',
   })
   @IsString()
-  @Matches(/^\d{4,6}$/, {
-    message: 'Incoming waiter PIN must be 4 to 6 numeric digits.',
+  @Matches(/^\d{4}$/, {
+    message: 'Incoming waiter PIN must be exactly 4 numeric digits.',
   })
   incomingWaiterPin: string;
 

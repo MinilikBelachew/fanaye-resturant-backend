@@ -6,6 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -32,9 +33,7 @@ const DIRECT_CANCEL_STATES = ['CONFIRMED', 'QUEUED', 'ACKNOWLEDGED'];
 const PROTECTED_CANCEL_STATES = ['IN_PREPARATION', 'READY'];
 const DIRECT_CHANGE_STATES = ['QUEUED', 'ACKNOWLEDGED'];
 const PROTECTED_CHANGE_STATES = ['IN_PREPARATION', 'READY'];
-const WAITER_ROLES = ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'];
 const SHIFT_OWNER_ROLES = ['WAITER', 'DISPATCHER'];
-const APPROVER_ROLES = ['MANAGER', 'OWNER_ADMIN'];
 
 type ApprovalPeriod = 'day' | 'week' | 'month';
 
@@ -55,6 +54,7 @@ export class OrderItemMutationsService {
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
     private readonly inventory: InventoryService,
+    private readonly casl: CaslService,
   ) {}
 
   async directCancel(
@@ -859,9 +859,12 @@ export class OrderItemMutationsService {
 
   private async requireWaiterOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!WAITER_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Only waiters can change or cancel items.');
-    }
+    this.casl.assertCan(
+      context,
+      'update',
+      'Order',
+      'Only waiters can change or cancel items.',
+    );
     if (
       SHIFT_OWNER_ROLES.includes(context.roleCode) &&
       !context.shiftSessionId
@@ -877,9 +880,12 @@ export class OrderItemMutationsService {
 
   private async requireApprover(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!APPROVER_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Approvals are for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Approval',
+      'Approvals are for managers.',
+    );
     return context;
   }
 

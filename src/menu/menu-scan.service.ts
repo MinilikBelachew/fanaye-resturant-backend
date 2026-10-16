@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { MenuService } from './menu.service';
@@ -24,6 +25,7 @@ export class MenuScanService {
     private readonly identity: IdentityContextService,
     private readonly menu: MenuService,
     private readonly config: ConfigService,
+    private readonly casl: CaslService,
   ) {}
 
   async scanFromImage(
@@ -294,7 +296,7 @@ Rules:
     if (!context.tenantId || !context.branchId) {
       throw new BadRequestException('No restaurant branch on this account.');
     }
-    if (context.roleCode !== 'MANAGER' && context.roleCode !== 'OWNER_ADMIN') {
+    if (!this.casl.can(context, 'manage', 'Menu')) {
       throw new BadRequestException('Only managers can scan menus.');
     }
     return context;

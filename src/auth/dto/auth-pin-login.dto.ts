@@ -9,11 +9,11 @@ import {
 } from 'class-validator';
 
 export class AuthPinLoginDto {
-  @ApiProperty({ example: '1234', description: '4 to 6 digit staff PIN' })
+  @ApiProperty({ example: '1234', description: 'Exactly 4 digit staff PIN' })
   @IsString()
   @IsNotEmpty()
-  @Length(4, 6)
-  @Matches(/^\d+$/, { message: 'PIN must contain numeric digits only' })
+  @Length(4, 4)
+  @Matches(/^\d{4}$/, { message: 'PIN must be exactly 4 numeric digits' })
   pin: string;
 
   @ApiPropertyOptional({
@@ -23,7 +23,10 @@ export class AuthPinLoginDto {
   @IsString()
   staffId?: string;
 
-  @ApiPropertyOptional({ description: 'Optional tenant slug or identifier' })
+  @ApiPropertyOptional({
+    description:
+      'Tenant id/slug/name. Required when staffId is not provided (terminal pairing).',
+  })
   @IsOptional()
   @IsString()
   tenantSlug?: string;

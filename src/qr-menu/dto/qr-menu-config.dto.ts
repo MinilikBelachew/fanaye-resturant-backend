@@ -31,6 +31,12 @@ export class QrMenuConfigDto {
   @IsString()
   wifiPassword?: string;
 
+  /** Public API only: password exists but is never returned. */
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  wifiRequiresPassword?: boolean;
+
   @ApiPropertyOptional({ type: [String], example: [] })
   @IsOptional()
   @IsArray()

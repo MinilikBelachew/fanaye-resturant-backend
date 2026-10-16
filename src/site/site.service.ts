@@ -1,12 +1,13 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
+import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import {
   PublicSiteResponseDto,
   PublicSiteSingleResponseDto,
@@ -36,6 +37,12 @@ type ProfileJson = {
   concept?: string;
   contactPhone?: string;
   contactEmail?: string;
+  tagline?: string;
+  story?: string;
+  instagram?: string;
+  facebook?: string;
+  tiktok?: string;
+  telegram?: string;
 };
 
 @Injectable()
@@ -43,19 +50,16 @@ export class SiteService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
-  private assertEditorRole(roleCode?: string | null) {
-    const allowed = new Set([
-      'OWNER_ADMIN',
-      'MANAGER',
-      'PLATFORM_ADMIN',
-      'PLATFORM_SUPER_ADMIN',
-      'SUPER_ADMIN',
-    ]);
-    if (!roleCode || !allowed.has(roleCode)) {
-      throw new ForbiddenException('Website editor requires owner or manager.');
-    }
+  private assertEditorRole(context: AuthContextDto) {
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Site',
+      'Website editor requires owner or manager.',
+    );
   }
 
   private slugify(input: string): string {
@@ -218,6 +222,7 @@ export class SiteService {
       tenant: { displayName: string };
     },
     calendarPreference?: string,
+    profile?: ProfileJson,
   ): SiteResponseDto {
     return {
       id: site.id,
@@ -226,6 +231,21 @@ export class SiteService {
       slug: site.slug,
       status: site.status,
       theme: this.asTheme(site.themeJson),
+      profile: profile
+        ? {
+            phone: profile.contactPhone || null,
+            email: profile.contactEmail || null,
+            city: profile.city || null,
+            address: profile.address || null,
+            hours: profile.hours || null,
+            tagline: profile.tagline || profile.concept || null,
+            story: profile.story || null,
+            instagram: profile.instagram || null,
+            facebook: profile.facebook || null,
+            tiktok: profile.tiktok || null,
+            telegram: profile.telegram || null,
+          }
+        : undefined,
       draftData: this.asData(site.draftDataJson),
       publishedData: site.publishedDataJson
         ? this.asData(site.publishedDataJson)
@@ -283,7 +303,7 @@ export class SiteService {
 
   async getMine(userId: string): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
-    this.assertEditorRole(context.roleCode);
+    this.assertEditorRole(context);
     if (!context.tenantId) {
       throw new BadRequestException('No tenant workspace selected.');
     }
@@ -291,8 +311,13 @@ export class SiteService {
     const settings = await this.prisma.tenantSettings.findUnique({
       where: { tenantId: context.tenantId },
     });
+    const profile = await this.readProfile(context.tenantId);
     return {
-      data: this.toResponse(site, settings?.calendarPreference ?? 'ETHIOPIAN'),
+      data: this.toResponse(
+        site,
+        settings?.calendarPreference ?? 'ETHIOPIAN',
+        profile,
+      ),
     };
   }
 
@@ -301,7 +326,7 @@ export class SiteService {
     dto: UpdateSiteDto,
   ): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
-    this.assertEditorRole(context.roleCode);
+    this.assertEditorRole(context);
     if (!context.tenantId) {
       throw new BadRequestException('No tenant workspace selected.');
     }
@@ -341,6 +366,83 @@ export class SiteService {
       activeCalendarPref = existingSettings?.calendarPreference ?? 'ETHIOPIAN';
     }
 
+    if (dto.profile) {
+      const existing = await this.readProfile(context.tenantId);
+      const nextProfile: ProfileJson = {
+        ...existing,
+        contactPhone:
+          dto.profile.phone !== undefined
+            ? dto.profile.phone || ''
+            : existing.contactPhone,
+        contactEmail:
+          dto.profile.email !== undefined
+            ? dto.profile.email || ''
+            : existing.contactEmail,
+        address:
+          dto.profile.address !== undefined
+            ? dto.profile.address || ''
+            : existing.address,
+        city:
+          dto.profile.city !== undefined
+            ? dto.profile.city || ''
+            : existing.city,
+        hours:
+          dto.profile.hours !== undefined
+            ? dto.profile.hours || ''
+            : existing.hours,
+        tagline:
+          dto.profile.tagline !== undefined
+            ? dto.profile.tagline || ''
+            : existing.tagline,
+        story:
+          dto.profile.story !== undefined
+            ? dto.profile.story || ''
+            : existing.story,
+        instagram:
+          dto.profile.instagram !== undefined
+            ? dto.profile.instagram || ''
+            : existing.instagram,
+        facebook:
+          dto.profile.facebook !== undefined
+            ? dto.profile.facebook || ''
+            : existing.facebook,
+        tiktok:
+          dto.profile.tiktok !== undefined
+            ? dto.profile.tiktok || ''
+            : existing.tiktok,
+        telegram:
+          dto.profile.telegram !== undefined
+            ? dto.profile.telegram || ''
+            : existing.telegram,
+      };
+
+      const existingEntitlement = await this.prisma.tenantEntitlement.findFirst(
+        {
+          where: {
+            tenantId: context.tenantId,
+            entitlementKey: TENANT_PROFILE_KEY,
+            effectiveTo: null,
+          },
+        },
+      );
+
+      if (existingEntitlement) {
+        await this.prisma.tenantEntitlement.update({
+          where: { id: existingEntitlement.id },
+          data: { valueJson: nextProfile as unknown as Prisma.InputJsonValue },
+        });
+      } else {
+        await this.prisma.tenantEntitlement.create({
+          data: {
+            tenantId: context.tenantId,
+            entitlementKey: TENANT_PROFILE_KEY,
+            effectiveFrom: new Date(),
+            valueJson: nextProfile as unknown as Prisma.InputJsonValue,
+          },
+        });
+      }
+    }
+
     const updated = await this.prisma.tenantSite.update({
       where: { id: site.id },
       data: {
@@ -362,12 +464,15 @@ export class SiteService {
       include: { tenant: true },
     });
 
-    return { data: this.toResponse(updated, activeCalendarPref) };
+    const currentProfile = await this.readProfile(context.tenantId);
+    return {
+      data: this.toResponse(updated, activeCalendarPref, currentProfile),
+    };
   }
 
   async publishMine(userId: string): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
-    this.assertEditorRole(context.roleCode);
+    this.assertEditorRole(context);
     if (!context.tenantId) {
       throw new BadRequestException('No tenant workspace selected.');
     }
@@ -383,12 +488,13 @@ export class SiteService {
       include: { tenant: true },
     });
 
-    return { data: this.toResponse(updated) };
+    const currentProfile = await this.readProfile(context.tenantId);
+    return { data: this.toResponse(updated, undefined, currentProfile) };
   }
 
   async unpublishMine(userId: string): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
-    this.assertEditorRole(context.roleCode);
+    this.assertEditorRole(context);
     if (!context.tenantId) {
       throw new BadRequestException('No tenant workspace selected.');
     }
@@ -402,7 +508,8 @@ export class SiteService {
       include: { tenant: true },
     });
 
-    return { data: this.toResponse(updated) };
+    const currentProfile = await this.readProfile(context.tenantId);
+    return { data: this.toResponse(updated, undefined, currentProfile) };
   }
 
   private async readProfile(tenantId: string): Promise<ProfileJson> {
@@ -483,6 +590,19 @@ export class SiteService {
       city: profile.city || null,
       address: profile.address || null,
       hours: profile.hours || null,
+      profile: {
+        phone: profile.contactPhone || manager?.phone || null,
+        email: profile.contactEmail || manager?.email || null,
+        city: profile.city || null,
+        address: profile.address || null,
+        hours: profile.hours || null,
+        tagline: profile.tagline || profile.concept || null,
+        story: profile.story || null,
+        instagram: profile.instagram || null,
+        facebook: profile.facebook || null,
+        tiktok: profile.tiktok || null,
+        telegram: profile.telegram || null,
+      },
       menuItems,
     };
 

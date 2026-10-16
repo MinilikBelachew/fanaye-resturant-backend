@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -33,6 +34,7 @@ export class BranchesService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
+    private readonly casl: CaslService,
   ) {}
 
   async listBranches(
@@ -225,6 +227,19 @@ export class BranchesService {
           },
         });
       }
+
+      // Default restaurant store for this branch (single-store tenants use only this).
+      await tx.inventoryLocation.create({
+        data: {
+          tenantId,
+          branchId: branch.id,
+          code: `BRANCH_${displayCode}`.slice(0, 40),
+          name: `${name} store`.slice(0, 120),
+          type: 'BRANCH_STORE',
+          isDefault: true,
+          status: 'ACTIVE',
+        },
+      });
 
       if (tableCount > 0) {
         const location = await tx.tableLocation.create({
@@ -499,7 +514,7 @@ export class BranchesService {
       }
       return tenantIdQuery;
     }
-    if (context.roleCode !== 'OWNER_ADMIN' && context.roleCode !== 'MANAGER') {
+    if (!this.casl.can(context, 'manage', 'Site')) {
       throw new ForbiddenException('Branch list is for owners and managers.');
     }
     if (!context.tenantId) {
@@ -525,7 +540,7 @@ export class BranchesService {
       }
       return tenantIdBody;
     }
-    if (context.roleCode !== 'OWNER_ADMIN') {
+    if (!this.casl.isElevated(context)) {
       throw new ForbiddenException(
         'Only owners (or platform super-admin) can create or update branches.',
       );
@@ -685,11 +700,12 @@ export class BranchesService {
     dto: UpdateBranchSettingsDto,
   ) {
     const context = await this.identity.getByUserId(userId);
-    if (
-      !['OWNER_ADMIN', 'MANAGER', PLATFORM_ROLE_CODE].includes(context.roleCode)
-    ) {
-      throw new ForbiddenException('Only managers can update branch settings.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Site',
+      'Only managers can update branch settings.',
+    );
     const branch = await this.prisma.branch.findUnique({
       where: { id: branchId },
     });

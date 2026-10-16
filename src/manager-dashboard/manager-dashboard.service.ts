@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
@@ -263,6 +264,7 @@ export class ManagerDashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async getDashboard(
@@ -278,19 +280,12 @@ export class ManagerDashboardService {
   ): Promise<ManagerDashboardResponseDto> {
     const businessDateRaw = opts?.businessDate;
     const context = await this.identity.getByUserId(userId);
-    const role = context.roleCode ?? '';
-    const allowed = new Set([
-      'MANAGER',
-      'OWNER_ADMIN',
-      'SUPER_ADMIN',
-      'PLATFORM_ADMIN',
-      'PLATFORM_SUPER_ADMIN',
-    ]);
-    if (!allowed.has(role)) {
-      throw new ForbiddenException(
-        'Manager dashboard requires manager access.',
-      );
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Dashboard',
+      'Manager dashboard requires manager access.',
+    );
     if (!context.tenantId) {
       throw new ForbiddenException(
         'No restaurant tenant on this account. Dashboard is tenant-scoped.',
@@ -329,7 +324,7 @@ export class ManagerDashboardService {
 
     const scopeAll =
       String(opts?.scope || '').toLowerCase() === 'all' &&
-      role === 'OWNER_ADMIN';
+      context.roleCode === 'OWNER_ADMIN';
 
     const tenantBranches = await this.prisma.branch.findMany({
       where: { tenantId: context.tenantId!, status: 'ACTIVE' },
@@ -502,6 +497,7 @@ export class ManagerDashboardService {
           businessDate: { gte: rangeStart, lte: rangeEnd },
         },
         include: { currentStation: true },
+        take: 5000,
       }),
       this.prisma.orderItem.findMany({
         where: {
@@ -513,6 +509,7 @@ export class ManagerDashboardService {
           preparationStartedAt: true,
           queuedAt: true,
         },
+        take: 5000,
       }),
       this.prisma.cashDrop.findMany({
         where: {
@@ -525,6 +522,7 @@ export class ManagerDashboardService {
           declaredAmount: true,
           businessDate: true,
         },
+        take: 5000,
       }),
       this.prisma.order.findMany({
         where: {
@@ -552,7 +550,7 @@ export class ManagerDashboardService {
           waiter: true,
         },
         orderBy: { initiatedAt: 'asc' },
-        take: 10,
+        take: 25,
       }),
       this.prisma.cancellationRequest.findMany({
         where: { branchId: bid, status: 'PENDING' },
@@ -616,7 +614,10 @@ export class ManagerDashboardService {
           name: true,
           unit: true,
           parLevel: true,
-          balance: { select: { onHandQty: true } },
+          balances: {
+            where: { branchId: bid },
+            select: { onHandQty: true },
+          },
         },
       }),
       this.prisma.shiftAssignment.findMany({
@@ -1061,14 +1062,20 @@ export class ManagerDashboardService {
 
     const lowStockItems: LowStockItemDetailDto[] = inventoryIngredients
       .filter((ing) => {
-        const onHand = Number(ing.balance?.onHandQty ?? 0);
+        const onHand = (ing.balances ?? []).reduce(
+          (sum, row) => sum + Number(row.onHandQty ?? 0),
+          0,
+        );
         const par = Number(ing.parLevel ?? 0);
         return par > 0 && onHand <= par;
       })
       .map((ing) => ({
         ingredientId: ing.id,
         ingredientName: ing.name,
-        onHandQty: Number(ing.balance?.onHandQty ?? 0),
+        onHandQty: (ing.balances ?? []).reduce(
+          (sum, row) => sum + Number(row.onHandQty ?? 0),
+          0,
+        ),
         parLevel: Number(ing.parLevel ?? 0),
         unit: ing.unit || 'units',
       }))
@@ -1661,17 +1668,12 @@ export class ManagerDashboardService {
     periodRaw?: string,
   ): Promise<BranchRevenueResponseDto> {
     const context = await this.identity.getByUserId(userId);
-    const role = context.roleCode ?? '';
-    const allowed = new Set([
-      'MANAGER',
-      'OWNER_ADMIN',
-      'SUPER_ADMIN',
-      'PLATFORM_ADMIN',
-      'PLATFORM_SUPER_ADMIN',
-    ]);
-    if (!allowed.has(role)) {
-      throw new ForbiddenException('Branch revenue requires manager access.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Dashboard',
+      'Branch revenue requires manager access.',
+    );
     if (!context.tenantId) {
       throw new ForbiddenException(
         'No restaurant tenant on this account. Revenue is tenant-scoped.',

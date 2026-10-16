@@ -6,6 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -30,8 +31,6 @@ import {
   AdminWaiterCoverageResponseDto,
 } from './dto/staff-coverage-response.dto';
 
-const ADMIN_ROLES = ['MANAGER', 'OWNER_ADMIN'];
-
 const ROLE_LABELS: Record<string, string> = {
   OWNER_ADMIN: 'Owner / Tenant Admin',
   MANAGER: 'Manager',
@@ -39,6 +38,7 @@ const ROLE_LABELS: Record<string, string> = {
   WAITER: 'Waiter',
   STATION_OPERATOR: 'Station operator',
   DISPATCHER: 'Dispatcher',
+  STORE_MANAGER: 'Store manager',
 };
 
 const UI_ROLE_TO_CODE: Record<string, string> = {
@@ -51,12 +51,15 @@ const UI_ROLE_TO_CODE: Record<string, string> = {
   cakes: 'STATION_OPERATOR',
   soft_drinks: 'STATION_OPERATOR',
   dispatcher: 'DISPATCHER',
+  store_manager: 'STORE_MANAGER',
+  storeManager: 'STORE_MANAGER',
   WAITER: 'WAITER',
   MANAGER: 'MANAGER',
   CASHIER: 'CASHIER',
   OWNER_ADMIN: 'OWNER_ADMIN',
   STATION_OPERATOR: 'STATION_OPERATOR',
   DISPATCHER: 'DISPATCHER',
+  STORE_MANAGER: 'STORE_MANAGER',
 };
 
 const UI_ROLE_TO_STATION_CODE: Record<string, string> = {
@@ -98,6 +101,7 @@ export class StaffCoverageService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async listStaff(
@@ -1543,9 +1547,12 @@ export class StaffCoverageService {
     if (!context.tenantId || !context.branchId) {
       throw new ForbiddenException('No restaurant branch on this account.');
     }
-    if (!ADMIN_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Staff coverage is for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Staff',
+      'Staff coverage is for managers.',
+    );
     return context;
   }
 }

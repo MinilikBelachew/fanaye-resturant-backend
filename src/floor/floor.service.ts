@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -34,13 +35,13 @@ const READY_STATE = 'READY';
 const START_COMMAND = 'table_session.start';
 const CLOSE_COMMAND = 'table_session.close';
 const CALL_PICKUP_LOCATION = 'CALL_PICKUP';
-const FLOOR_OPEN_ROLES = ['WAITER', 'DISPATCHER'];
 
 @Injectable()
 export class FloorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async listFloor(userId: string): Promise<FloorTablesResponseDto> {
@@ -302,8 +303,7 @@ export class FloorService {
 
     const canClose =
       session.primaryWaiterMembershipId === context.staffMembershipId ||
-      context.roleCode === 'MANAGER' ||
-      context.roleCode === 'OWNER_ADMIN';
+      this.casl.can(context, 'manage', 'Floor');
     if (!canClose) {
       throw new ForbiddenException('You cannot close this table.');
     }
@@ -699,9 +699,16 @@ export class FloorService {
 
   private async requireWaiterOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!FLOOR_OPEN_ROLES.includes(context.roleCode)) {
+    // Runtime: only WAITER/DISPATCHER open tables (not manager manage Floor).
+    if (context.roleCode !== 'WAITER' && context.roleCode !== 'DISPATCHER') {
       throw new ForbiddenException('Only a waiter can take a table.');
     }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Table',
+      'Only a waiter can take a table.',
+    );
     if (!context.staffMembershipId || !context.shiftSessionId) {
       throw new ForbiddenException({
         status: 403,

@@ -142,6 +142,67 @@ export class UpdateSiteThemeDto {
   borderRadius?: string | null;
 }
 
+export class TenantProfileDto {
+  @ApiPropertyOptional({ example: '+251 911 234 567' })
+  @IsOptional()
+  @IsString()
+  phone?: string | null;
+
+  @ApiPropertyOptional({ example: 'contact@fanaye.com' })
+  @IsOptional()
+  @IsString()
+  email?: string | null;
+
+  @ApiPropertyOptional({ example: 'Bole Medhanialem, Street 4' })
+  @IsOptional()
+  @IsString()
+  address?: string | null;
+
+  @ApiPropertyOptional({ example: 'Addis Ababa' })
+  @IsOptional()
+  @IsString()
+  city?: string | null;
+
+  @ApiPropertyOptional({ example: 'Mon - Sun: 8:00 AM - 10:00 PM' })
+  @IsOptional()
+  @IsString()
+  hours?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'Authentic Ethiopian Flavors & Modern Hospitality',
+  })
+  @IsOptional()
+  @IsString()
+  tagline?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'Founded in 2018, we craft unforgettable culinary experiences.',
+  })
+  @IsOptional()
+  @IsString()
+  story?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://instagram.com/restaurant' })
+  @IsOptional()
+  @IsString()
+  instagram?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://facebook.com/restaurant' })
+  @IsOptional()
+  @IsString()
+  facebook?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://tiktok.com/@restaurant' })
+  @IsOptional()
+  @IsString()
+  tiktok?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://t.me/restaurant' })
+  @IsOptional()
+  @IsString()
+  telegram?: string | null;
+}
+
 export class UpdateSiteDto {
   @ApiPropertyOptional({ example: 'Abyssinia Grill' })
   @Transform(emptyToUndefined)
@@ -166,6 +227,11 @@ export class UpdateSiteDto {
   @IsOptional()
   @Type(() => UpdateSiteThemeDto)
   theme?: UpdateSiteThemeDto;
+
+  @ApiPropertyOptional({ type: () => TenantProfileDto })
+  @IsOptional()
+  @Type(() => TenantProfileDto)
+  profile?: TenantProfileDto;
 
   @ApiPropertyOptional({ description: 'Puck editor draft data JSON' })
   @IsOptional()
@@ -199,6 +265,9 @@ export class SiteResponseDto {
 
   @ApiProperty({ type: () => SiteThemeDto })
   theme: SiteThemeDto;
+
+  @ApiPropertyOptional({ type: () => TenantProfileDto })
+  profile?: TenantProfileDto;
 
   @ApiProperty()
   draftData: Record<string, unknown>;
@@ -280,6 +349,9 @@ export class PublicSiteResponseDto {
 
   @ApiPropertyOptional()
   hours?: string | null;
+
+  @ApiPropertyOptional({ type: () => TenantProfileDto })
+  profile?: TenantProfileDto;
 
   @ApiProperty({ type: () => [PublicMenuItemDto] })
   menuItems: PublicMenuItemDto[];

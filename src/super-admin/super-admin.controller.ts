@@ -7,9 +7,13 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Request,
+  UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -27,11 +31,15 @@ import {
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
+  PermissionListResponseDto,
   PlatformAuditListResponseDto,
   PlatformStaffListResponseDto,
   PlatformStaffMemberDto,
   ResetPlatformStaffPasswordDto,
   ResetPlatformStaffPinDto,
+  RestaurantRoleListResponseDto,
+  RolePermissionsResponseDto,
+  SetRolePermissionsDto,
   SubscriptionPlanDto,
   SubscriptionPlanListResponseDto,
   SuspendPlatformStaffDto,
@@ -42,10 +50,9 @@ import {
   UpdateTenantDto,
 } from './dto/super-admin-dashboard.dto';
 
-const DEFAULT_SUPER_ADMIN_ID = '55555555-5555-4555-8555-555555555551';
-
 @ApiTags('Super admin')
 @ApiBearerAuth()
+@UseGuards(AuthGuard('jwt'))
 @Controller({
   path: 'super-admin',
   version: '1',
@@ -53,34 +60,12 @@ const DEFAULT_SUPER_ADMIN_ID = '55555555-5555-4555-8555-555555555551';
 export class SuperAdminController {
   constructor(private readonly superAdminService: SuperAdminService) {}
 
-  private extractUserId(request: any): string {
-    if (request?.user?.id) {
-      return String(request.user.id);
+  private requireUserId(request: { user?: { id?: string } }): string {
+    const id = request?.user?.id;
+    if (!id) {
+      throw new UnauthorizedException();
     }
-    const authHeader = request?.headers?.authorization;
-    if (
-      authHeader &&
-      typeof authHeader === 'string' &&
-      authHeader.startsWith('Bearer ')
-    ) {
-      try {
-        const parts = authHeader.split(' ');
-        if (parts[1]) {
-          const payloadBase64 = parts[1].split('.')[1];
-          if (payloadBase64) {
-            const decoded = JSON.parse(
-              Buffer.from(payloadBase64, 'base64').toString('utf8'),
-            );
-            if (decoded?.id) {
-              return String(decoded.id);
-            }
-          }
-        }
-      } catch {
-        // Fallback to default platform super admin
-      }
-    }
-    return DEFAULT_SUPER_ADMIN_ID;
+    return String(id);
   }
 
   @Get('dashboard')
@@ -90,15 +75,16 @@ export class SuperAdminController {
     @Request() request,
     @Query('businessDate') businessDate?: string,
   ): Promise<SuperAdminDashboardResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.getDashboard(userId, businessDate);
+    return this.superAdminService.getDashboard(
+      this.requireUserId(request),
+      businessDate,
+    );
   }
 
   @Get('plans')
   @ApiOkResponse({ type: SubscriptionPlanListResponseDto })
   listPlans(@Request() request): Promise<SubscriptionPlanListResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.listPlans(userId);
+    return this.superAdminService.listPlans(this.requireUserId(request));
   }
 
   @Post('plans')
@@ -107,8 +93,7 @@ export class SuperAdminController {
     @Request() request,
     @Body() dto: CreateSubscriptionPlanDto,
   ): Promise<SubscriptionPlanDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.createPlan(userId, dto);
+    return this.superAdminService.createPlan(this.requireUserId(request), dto);
   }
 
   @Patch('plans/:id')
@@ -118,8 +103,11 @@ export class SuperAdminController {
     @Param('id') id: string,
     @Body() dto: UpdateSubscriptionPlanDto,
   ): Promise<SubscriptionPlanDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.updatePlan(userId, id, dto);
+    return this.superAdminService.updatePlan(
+      this.requireUserId(request),
+      id,
+      dto,
+    );
   }
 
   @Delete('plans/:id')
@@ -128,15 +116,13 @@ export class SuperAdminController {
     @Request() request,
     @Param('id') id: string,
   ): Promise<DeletePlanResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.deletePlan(userId, id);
+    return this.superAdminService.deletePlan(this.requireUserId(request), id);
   }
 
   @Get('tenants')
   @ApiOkResponse({ type: TenantListResponseDto })
   getTenants(@Request() request): Promise<TenantListResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.getTenants(userId);
+    return this.superAdminService.getTenants(this.requireUserId(request));
   }
 
   @Get('tenants/:id')
@@ -145,8 +131,10 @@ export class SuperAdminController {
     @Request() request,
     @Param('id') id: string,
   ): Promise<TenantDetailResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.getTenantById(userId, id);
+    return this.superAdminService.getTenantById(
+      this.requireUserId(request),
+      id,
+    );
   }
 
   @Post('tenants')
@@ -155,8 +143,10 @@ export class SuperAdminController {
     @Request() request,
     @Body() dto: CreateTenantDto,
   ): Promise<TenantDetailResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.createTenant(userId, dto);
+    return this.superAdminService.createTenant(
+      this.requireUserId(request),
+      dto,
+    );
   }
 
   @Patch('tenants/:id')
@@ -166,8 +156,11 @@ export class SuperAdminController {
     @Param('id') id: string,
     @Body() dto: UpdateTenantDto,
   ): Promise<TenantDetailResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.updateTenant(userId, id, dto);
+    return this.superAdminService.updateTenant(
+      this.requireUserId(request),
+      id,
+      dto,
+    );
   }
 
   @Delete('tenants/:id')
@@ -176,8 +169,7 @@ export class SuperAdminController {
     @Request() request,
     @Param('id') id: string,
   ): Promise<DeleteTenantResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.deleteTenant(userId, id);
+    return this.superAdminService.deleteTenant(this.requireUserId(request), id);
   }
 
   @Get('audit/export')
@@ -187,8 +179,10 @@ export class SuperAdminController {
     @Request() request,
     @Query() query: ListPlatformAuditQueryDto,
   ): Promise<string> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.exportAuditCsv(userId, query);
+    return this.superAdminService.exportAuditCsv(
+      this.requireUserId(request),
+      query,
+    );
   }
 
   @Get('audit')
@@ -197,15 +191,16 @@ export class SuperAdminController {
     @Request() request,
     @Query() query: ListPlatformAuditQueryDto,
   ): Promise<PlatformAuditListResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.listAuditEvents(userId, query);
+    return this.superAdminService.listAuditEvents(
+      this.requireUserId(request),
+      query,
+    );
   }
 
   @Get('live-ops')
   @ApiOkResponse({ type: LiveOpsResponseDto })
   getLiveOps(@Request() request): Promise<LiveOpsResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.getLiveOps(userId);
+    return this.superAdminService.getLiveOps(this.requireUserId(request));
   }
 
   @Get('staff')
@@ -214,8 +209,10 @@ export class SuperAdminController {
     @Request() request,
     @Query() query: ListPlatformStaffQueryDto,
   ): Promise<PlatformStaffListResponseDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.listPlatformStaff(userId, query);
+    return this.superAdminService.listPlatformStaff(
+      this.requireUserId(request),
+      query,
+    );
   }
 
   @Post('staff')
@@ -224,8 +221,10 @@ export class SuperAdminController {
     @Request() request,
     @Body() dto: CreatePlatformStaffDto,
   ): Promise<PlatformStaffMemberDto> {
-    const userId = this.extractUserId(request);
-    return this.superAdminService.createPlatformStaff(userId, dto);
+    return this.superAdminService.createPlatformStaff(
+      this.requireUserId(request),
+      dto,
+    );
   }
 
   @Patch('staff/:membershipId/pin')
@@ -235,9 +234,8 @@ export class SuperAdminController {
     @Param('membershipId') membershipId: string,
     @Body() dto: ResetPlatformStaffPinDto,
   ): Promise<PlatformStaffMemberDto> {
-    const userId = this.extractUserId(request);
     return this.superAdminService.resetPlatformStaffPin(
-      userId,
+      this.requireUserId(request),
       membershipId,
       dto,
     );
@@ -250,9 +248,8 @@ export class SuperAdminController {
     @Param('membershipId') membershipId: string,
     @Body() dto: SuspendPlatformStaffDto,
   ): Promise<PlatformStaffMemberDto> {
-    const userId = this.extractUserId(request);
     return this.superAdminService.suspendPlatformStaff(
-      userId,
+      this.requireUserId(request),
       membershipId,
       dto,
     );
@@ -265,10 +262,49 @@ export class SuperAdminController {
     @Param('membershipId') membershipId: string,
     @Body() dto: ResetPlatformStaffPasswordDto,
   ): Promise<PlatformStaffMemberDto> {
-    const userId = this.extractUserId(request);
     return this.superAdminService.resetPlatformStaffPassword(
-      userId,
+      this.requireUserId(request),
       membershipId,
+      dto,
+    );
+  }
+
+  @Get('roles')
+  @ApiOkResponse({ type: RestaurantRoleListResponseDto })
+  listRoles(@Request() request): Promise<RestaurantRoleListResponseDto> {
+    return this.superAdminService.listRestaurantRoles(
+      this.requireUserId(request),
+    );
+  }
+
+  @Get('permissions')
+  @ApiOkResponse({ type: PermissionListResponseDto })
+  listPermissions(@Request() request): Promise<PermissionListResponseDto> {
+    return this.superAdminService.listPermissions(this.requireUserId(request));
+  }
+
+  @Get('roles/:roleId/permissions')
+  @ApiOkResponse({ type: RolePermissionsResponseDto })
+  getRolePermissions(
+    @Request() request,
+    @Param('roleId') roleId: string,
+  ): Promise<RolePermissionsResponseDto> {
+    return this.superAdminService.getRolePermissions(
+      this.requireUserId(request),
+      roleId,
+    );
+  }
+
+  @Put('roles/:roleId/permissions')
+  @ApiOkResponse({ type: RolePermissionsResponseDto })
+  setRolePermissions(
+    @Request() request,
+    @Param('roleId') roleId: string,
+    @Body() dto: SetRolePermissionsDto,
+  ): Promise<RolePermissionsResponseDto> {
+    return this.superAdminService.setRolePermissions(
+      this.requireUserId(request),
+      roleId,
       dto,
     );
   }

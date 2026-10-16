@@ -956,10 +956,10 @@ export class CreatePlatformStaffDto {
   @IsString()
   role: string;
 
-  @ApiProperty({ example: '1234', description: '4 to 6 numeric digit PIN' })
+  @ApiProperty({ example: '1234', description: 'Exactly 4 numeric digit PIN' })
   @IsString()
-  @Matches(/^\d{4,6}$/, {
-    message: 'PIN must be between 4 and 6 numeric digits',
+  @Matches(/^\d{4}$/, {
+    message: 'PIN must be exactly 4 numeric digits',
   })
   pin: string;
 
@@ -980,10 +980,10 @@ export class CreatePlatformStaffDto {
 }
 
 export class ResetPlatformStaffPinDto {
-  @ApiProperty({ example: '1234', description: '4 to 6 numeric digit PIN' })
+  @ApiProperty({ example: '1234', description: 'Exactly 4 numeric digit PIN' })
   @IsString()
-  @Matches(/^\d{4,6}$/, {
-    message: 'PIN must be between 4 and 6 numeric digits',
+  @Matches(/^\d{4}$/, {
+    message: 'PIN must be exactly 4 numeric digits',
   })
   pin: string;
 }
@@ -1094,4 +1094,72 @@ export class DeletePlanResponseDto {
 
   @ApiProperty()
   deletedPlanId: string;
+}
+
+export class RestaurantRoleDto {
+  @ApiProperty()
+  id: number;
+
+  @ApiProperty({ example: 'MANAGER' })
+  code: string;
+
+  @ApiProperty({ example: 'Manager' })
+  name: string;
+
+  @ApiProperty()
+  isSystem: boolean;
+
+  @ApiProperty({
+    description: 'OWNER_ADMIN is full-access and not editable in the matrix.',
+  })
+  editable: boolean;
+}
+
+export class RestaurantRoleListResponseDto {
+  @ApiProperty({ type: [RestaurantRoleDto] })
+  data: RestaurantRoleDto[];
+}
+
+export class PermissionDto {
+  @ApiProperty()
+  id: number;
+
+  @ApiProperty({ example: 'bill.generate' })
+  code: string;
+
+  @ApiProperty({ example: 'BILL' })
+  domain: string;
+
+  @ApiPropertyOptional()
+  description: string | null;
+}
+
+export class PermissionListResponseDto {
+  @ApiProperty({ type: [PermissionDto] })
+  data: PermissionDto[];
+}
+
+export class RolePermissionsResponseDto {
+  @ApiProperty()
+  roleId: number;
+
+  @ApiProperty({ example: 'MANAGER' })
+  roleCode: string;
+
+  @ApiProperty()
+  editable: boolean;
+
+  @ApiProperty({ type: [Number], description: 'Granted permission ids' })
+  permissionIds: number[];
+
+  @ApiProperty({ type: [String], description: 'Granted permission codes' })
+  permissionCodes: string[];
+}
+
+export class SetRolePermissionsDto {
+  @ApiProperty({ type: [Number], example: [1, 2, 3] })
+  @IsArray()
+  @IsInt({ each: true })
+  @Type(() => Number)
+  permissionIds: number[];
 }

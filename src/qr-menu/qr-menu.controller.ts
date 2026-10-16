@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -17,7 +18,10 @@ import {
   QrMenuConfigDto,
   UpdateQrMenuConfigDto,
 } from './dto/qr-menu-config.dto';
-import { PublicTableMenuResponseDto } from './dto/public-table-menu-response.dto';
+import {
+  PublicActiveSessionDto,
+  PublicTableMenuResponseDto,
+} from './dto/public-table-menu-response.dto';
 import { GuestOrderDto, GuestOrderResponseDto } from './dto/guest-order.dto';
 import {
   ServiceRequestDto,
@@ -33,12 +37,23 @@ export class PublicQrMenuController {
   constructor(private readonly qrMenuService: QrMenuService) {}
 
   @Get(':slug/tables/:tableId')
+  @Header('Cache-Control', 'public, max-age=30')
   @ApiOkResponse({ type: PublicTableMenuResponseDto })
   getMenu(
     @Param('slug') slug: string,
     @Param('tableId') tableId: string,
   ): Promise<PublicTableMenuResponseDto> {
     return this.qrMenuService.getPublicTableMenu(slug, tableId);
+  }
+
+  @Get(':slug/tables/:tableId/session')
+  @Header('Cache-Control', 'no-store')
+  @ApiOkResponse({ type: PublicActiveSessionDto })
+  async getSession(
+    @Param('slug') slug: string,
+    @Param('tableId') tableId: string,
+  ): Promise<{ activeSession: PublicActiveSessionDto | null }> {
+    return this.qrMenuService.getPublicTableSession(slug, tableId);
   }
 
   @Post(':slug/tables/:tableId/orders')

@@ -13,6 +13,7 @@ import {
   Res,
   Query,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { AuthEmailLoginDto } from './dto/auth-email-login.dto';
@@ -46,6 +47,7 @@ export class AuthController {
   @SerializeOptions({
     groups: ['me'],
   })
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('email/login')
   @ApiOkResponse({
     type: LoginResponseDto,
@@ -62,6 +64,7 @@ export class AuthController {
   @SerializeOptions({
     groups: ['me'],
   })
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   @ApiOkResponse({
     type: LoginResponseDto,
@@ -78,6 +81,7 @@ export class AuthController {
   @SerializeOptions({
     groups: ['me'],
   })
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('pin-login')
   @ApiOkResponse({
     type: LoginResponseDto,
@@ -93,8 +97,8 @@ export class AuthController {
 
   @Get('terminal/staff')
   @HttpCode(HttpStatus.OK)
-  public async getTerminalStaff() {
-    return this.service.getTerminalStaffList();
+  public async getTerminalStaff(@Query('tenantId') tenantId: string) {
+    return this.service.getTerminalStaffList(tenantId);
   }
 
   @Post('verify-tenant')
@@ -131,6 +135,7 @@ export class AuthController {
     return this.service.confirmNewEmail(confirmEmailDto.hash);
   }
 
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('forgot/password')
   @HttpCode(HttpStatus.NO_CONTENT)
   async forgotPassword(

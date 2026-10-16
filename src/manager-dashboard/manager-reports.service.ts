@@ -4,6 +4,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { WaiterPerformanceService } from '../floor/waiter-performance.service';
@@ -18,14 +19,13 @@ type Section =
   | 'cash'
   | 'stations';
 
-const ADMIN_ROLES = ['MANAGER', 'OWNER_ADMIN'];
-
 @Injectable()
 export class ManagerReportsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly waiters: WaiterPerformanceService,
+    private readonly casl: CaslService,
   ) {}
 
   async getReports(
@@ -239,7 +239,9 @@ export class ManagerReportsService {
     const [ingredients, wasteEntries, receiveEntries] = await Promise.all([
       this.prisma.inventoryIngredient.findMany({
         where: { tenantId, branchId, status: 'ACTIVE' },
-        include: { balance: true },
+        include: {
+          balances: { where: { branchId } },
+        },
       }),
       this.prisma.inventoryLedgerEntry.findMany({
         where: {
@@ -266,7 +268,10 @@ export class ManagerReportsService {
     let totalStockValue = 0;
     let lowStockCount = 0;
     for (const ing of ingredients) {
-      const onHand = Number(ing.balance?.onHandQty ?? 0);
+      const onHand = (ing.balances ?? []).reduce(
+        (sum, row) => sum + Number(row.onHandQty ?? 0),
+        0,
+      );
       const unitCost = Number(ing.unitCost ?? 0);
       totalStockValue += onHand * unitCost;
       if (onHand <= Number(ing.parLevel ?? 0)) lowStockCount += 1;
@@ -531,9 +536,12 @@ export class ManagerReportsService {
     if (!context.tenantId || !context.branchId || !context.staffMembershipId) {
       throw new ForbiddenException('No restaurant branch on this account.');
     }
-    if (!ADMIN_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Reports are for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Report',
+      'Reports are for managers.',
+    );
     return context;
   }
 }

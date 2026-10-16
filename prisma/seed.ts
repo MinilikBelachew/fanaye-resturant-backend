@@ -31,6 +31,7 @@ async function seedRolesAndPlans() {
     { id: 4, code: 'CASHIER', name: 'Cashier' },
     { id: 5, code: 'STATION_OPERATOR', name: 'Station operator' },
     { id: 6, code: 'DISPATCHER', name: 'Dispatcher' },
+    { id: 7, code: 'STORE_MANAGER', name: 'Store manager' },
   ];
 
   for (const role of roles) {
@@ -44,7 +45,7 @@ async function seedRolesAndPlans() {
   for (const permission of PERMISSIONS) {
     await prisma.permission.upsert({
       where: { code: permission.code },
-      update: {},
+      update: { domain: permission.domain },
       create: permission,
     });
   }

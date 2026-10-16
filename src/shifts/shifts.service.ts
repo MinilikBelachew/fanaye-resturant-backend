@@ -517,7 +517,7 @@ export class ShiftsService {
           some: {
             status: 'ACTIVE',
             revokedAt: null,
-            role: { code: { in: ['CASHIER', 'MANAGER', 'OWNER_ADMIN'] } },
+            role: { code: 'CASHIER' },
           },
         },
       },
@@ -607,6 +607,15 @@ export class ShiftsService {
 
     if (!incoming || !incoming.user) {
       throw new NotFoundException('Incoming cashier not found in this branch.');
+    }
+
+    const hasCashierRole = incoming.roleAssignments.some(
+      (ra) => ra.role?.code === 'CASHIER',
+    );
+    if (!hasCashierRole) {
+      throw new ForbiddenException(
+        'Incoming staff member must have the CASHIER role.',
+      );
     }
 
     if (!incoming.user.credential?.passwordHash) {
@@ -900,9 +909,7 @@ export class ShiftsService {
           some: {
             status: 'ACTIVE',
             revokedAt: null,
-            role: {
-              code: { in: ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'] },
-            },
+            role: { code: 'WAITER' },
           },
         },
       },
@@ -987,6 +994,15 @@ export class ShiftsService {
 
     if (!incoming || !incoming.user) {
       throw new NotFoundException('Incoming waiter not found in this branch.');
+    }
+
+    const hasWaiterRole = incoming.roleAssignments.some(
+      (ra) => ra.role?.code === 'WAITER',
+    );
+    if (!hasWaiterRole) {
+      throw new ForbiddenException(
+        'Incoming staff member must have the WAITER role.',
+      );
     }
 
     if (!incoming.user.credential?.passwordHash) {

@@ -1,5 +1,6 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
@@ -15,6 +16,7 @@ export class AuditService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async list(
@@ -31,21 +33,17 @@ export class AuditService {
     },
   ): Promise<AuditListResponseDto> {
     const context = await this.identity.getByUserId(userId);
-    const role = context.roleCode ?? '';
-    const allowedRoles = new Set([
-      'MANAGER',
-      'OWNER_ADMIN',
-      'SUPER_ADMIN',
-      'PLATFORM_ADMIN',
-      'PLATFORM_SUPER_ADMIN',
-    ]);
-    const perms = context.permissions ?? [];
-    if (
-      !allowedRoles.has(role) &&
-      !perms.includes('audit.view') &&
-      !perms.includes('report.view')
-    ) {
-      throw new ForbiddenException('Audit trail requires manager access.');
+    const allowed =
+      this.casl.can(context, 'manage', 'Audit') ||
+      this.casl.can(context, 'read', 'Audit') ||
+      this.casl.can(context, 'read', 'Report');
+    if (!allowed) {
+      this.casl.assertCan(
+        context,
+        'read',
+        'Audit',
+        'Audit trail requires manager access.',
+      );
     }
 
     if (!context.tenantId) {
@@ -59,7 +57,10 @@ export class AuditService {
     // Managers/owners are always locked to their restaurant tenant.
     // Prefer their assigned branch; otherwise first active branch in that tenant.
     let branchId = context.branchId ?? null;
-    if (!branchId && (role === 'MANAGER' || role === 'OWNER_ADMIN')) {
+    if (
+      !branchId &&
+      (context.roleCode === 'MANAGER' || context.roleCode === 'OWNER_ADMIN')
+    ) {
       const branch = await this.prisma.branch.findFirst({
         where: { tenantId: context.tenantId, status: 'ACTIVE' },
         select: { id: true },

@@ -267,9 +267,9 @@ export class UpdateAdminStaffDto {
 }
 
 export class ResetAdminStaffPinDto {
-  @ApiProperty({ example: '1234', description: '4 to 6 numeric digits' })
+  @ApiProperty({ example: '1234', description: 'Exactly 4 numeric digits' })
   @IsString()
-  @Matches(/^\d{4,6}$/, { message: 'PIN must be 4 to 6 numeric digits.' })
+  @Matches(/^\d{4}$/, { message: 'PIN must be exactly 4 numeric digits.' })
   pin: string;
 }
 

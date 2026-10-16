@@ -1,9 +1,11 @@
 import {
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { CatalogCreateMenuItemDto } from './dto/create-menu-item.dto';
@@ -21,31 +23,30 @@ export class CatalogService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
-  private async getContextAndMenu(userId: string) {
+  private async getContextAndMenu(
+    userId: string,
+    options?: { mutate?: boolean },
+  ) {
     const context = await this.identity.getByUserId(userId);
-    let tenantId = context.tenantId;
-    let branchId = context.branchId;
+    const tenantId = context.tenantId;
+    const branchId = context.branchId;
 
     if (!tenantId) {
-      const firstTenant = await this.prisma.tenant.findFirst({
-        where: { status: 'ACTIVE' },
-      });
-      if (firstTenant) {
-        tenantId = firstTenant.id;
-      } else {
-        throw new NotFoundException('No active tenant found.');
-      }
+      throw new ForbiddenException(
+        'No tenant membership. Cannot access catalog.',
+      );
     }
 
-    if (!branchId) {
-      const firstBranch = await this.prisma.branch.findFirst({
-        where: { tenantId, status: 'ACTIVE' },
-      });
-      if (firstBranch) {
-        branchId = firstBranch.id;
-      }
+    if (options?.mutate) {
+      this.casl.assertCan(
+        context,
+        'manage',
+        'Catalog',
+        'Menu management requires owner or manager access.',
+      );
     }
 
     let menu = await this.prisma.menu.findFirst({
@@ -56,6 +57,9 @@ export class CatalogService {
     });
 
     if (!menu) {
+      if (!options?.mutate) {
+        throw new NotFoundException('No active menu found for this tenant.');
+      }
       menu = await this.prisma.menu.create({
         data: {
           tenantId,
@@ -209,7 +213,9 @@ export class CatalogService {
     userId: string,
     dto: CatalogCreateMenuItemDto,
   ): Promise<MenuItemSingleResponseDto> {
-    const { tenantId, branchId, menu } = await this.getContextAndMenu(userId);
+    const { tenantId, branchId, menu } = await this.getContextAndMenu(userId, {
+      mutate: true,
+    });
     const station = await this.resolveStation(
       tenantId,
       branchId,
@@ -326,7 +332,9 @@ export class CatalogService {
     id: string,
     dto: CatalogUpdateMenuItemDto,
   ): Promise<MenuItemSingleResponseDto> {
-    const { tenantId, branchId } = await this.getContextAndMenu(userId);
+    const { tenantId, branchId } = await this.getContextAndMenu(userId, {
+      mutate: true,
+    });
 
     const existing = await this.prisma.menuItem.findFirst({
       where: { id, tenantId },
@@ -388,7 +396,9 @@ export class CatalogService {
     userId: string,
     id: string,
   ): Promise<MenuItemSingleResponseDto> {
-    const { tenantId } = await this.getContextAndMenu(userId);
+    const { tenantId } = await this.getContextAndMenu(userId, {
+      mutate: true,
+    });
     const existing = await this.prisma.menuItem.findFirst({
       where: { id, tenantId },
       include: { category: true, station: true },
@@ -427,7 +437,9 @@ export class CatalogService {
   }
 
   async delete(userId: string, id: string): Promise<{ success: boolean }> {
-    const { tenantId } = await this.getContextAndMenu(userId);
+    const { tenantId } = await this.getContextAndMenu(userId, {
+      mutate: true,
+    });
     const existing = await this.prisma.menuItem.findFirst({
       where: { id, tenantId },
     });
@@ -447,7 +459,9 @@ export class CatalogService {
     userId: string,
     dto: CreateCategoryDto,
   ): Promise<MenuCategoryDto> {
-    const { tenantId, menu } = await this.getContextAndMenu(userId);
+    const { tenantId, menu } = await this.getContextAndMenu(userId, {
+      mutate: true,
+    });
 
     const created = await this.prisma.menuCategory.create({
       data: {

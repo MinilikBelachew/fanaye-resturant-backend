@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
@@ -26,7 +27,7 @@ import {
 } from './dto/order-response.dto';
 import { WaiterMenuResponseDto } from './dto/waiter-menu-response.dto';
 
-const SERVE_ROLES = ['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER_ADMIN'];
+/** Floor ownership roles (table assignment) — not a CASL subject alone. */
 const ORDER_ROLES = ['WAITER', 'DISPATCHER'];
 const READY_STATE = 'READY';
 const CONFIRM_COMMAND = 'order.confirm';
@@ -43,6 +44,7 @@ export class OrdersService {
     private readonly dailyClose: DailyCloseService,
     private readonly inventory: InventoryService,
     private readonly orderSlaQueue: OrderSlaQueueService,
+    private readonly casl: CaslService,
   ) {}
 
   async waiterMenu(
@@ -532,11 +534,25 @@ export class OrdersService {
         ) {
           continue;
         }
-        const next = Math.max(0, override.remainingQty - qty);
-        await tx.itemAvailabilityOverride.update({
-          where: { id: override.id },
-          data: { remainingQty: next },
+        const decremented = await tx.itemAvailabilityOverride.updateMany({
+          where: {
+            id: override.id,
+            state: 'LIMITED',
+            remainingQty: { gte: qty },
+          },
+          data: { remainingQty: { decrement: qty } },
         });
+        if (decremented.count !== 1) {
+          throw new ConflictException({
+            status: 409,
+            code: 'MENU_ITEM_LIMIT_EXCEEDED',
+            errors: { menuItemId: 'MENU_ITEM_LIMIT_EXCEEDED' },
+          });
+        }
+        const updatedOverride = await tx.itemAvailabilityOverride.findUnique({
+          where: { id: override.id },
+        });
+        const next = updatedOverride?.remainingQty ?? 0;
         if (next === 0) {
           await tx.menuItem.update({
             where: { id: menuItemId },
@@ -724,9 +740,12 @@ export class OrdersService {
         'No restaurant membership for this account.',
       );
     }
-    if (!SERVE_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Only the waiter can mark this served.');
-    }
+    this.casl.assertCan(
+      context,
+      'serve',
+      'Order',
+      'Only the waiter can mark this served.',
+    );
     if (ORDER_ROLES.includes(context.roleCode) && !context.shiftSessionId) {
       throw new ForbiddenException({
         status: 403,
@@ -786,13 +805,12 @@ export class OrdersService {
     orderId?: string,
   ): Promise<{ success: boolean; count: number; message: string }> {
     const context = await this.requireBranch(userId);
-    if (
-      !['WAITER', 'DISPATCHER', 'MANAGER', 'OWNER', 'OWNER_ADMIN'].includes(
-        context.roleCode,
-      )
-    ) {
-      throw new ForbiddenException('Only staff can send orders to kitchen.');
-    }
+    this.casl.assertCan(
+      context,
+      'send_kitchen',
+      'Order',
+      'Only staff can send orders to kitchen.',
+    );
 
     const session = await this.prisma.tableSession.findFirst({
       where: {
@@ -906,6 +924,7 @@ export class OrdersService {
 
   private async requireWaiter(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
+    // Runtime: WAITER/DISPATCHER, or CASHIER only when branch is BAKERY.
     if (
       !ORDER_ROLES.includes(context.roleCode) &&
       !(

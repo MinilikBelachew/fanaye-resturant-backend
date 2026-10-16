@@ -5,6 +5,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -17,8 +18,6 @@ import {
   WaiterOrderHistoryResponseDto,
 } from './dto/waiter-detail.dto';
 
-const ADMIN_ROLES = ['MANAGER', 'OWNER_ADMIN'];
-
 type Period = 'day' | 'week' | 'month' | 'custom';
 
 @Injectable()
@@ -26,6 +25,7 @@ export class WaiterPerformanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async list(
@@ -649,9 +649,12 @@ export class WaiterPerformanceService {
     if (!context.tenantId || !context.branchId || !context.staffMembershipId) {
       throw new ForbiddenException('No restaurant branch on this account.');
     }
-    if (!ADMIN_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Waiter performance is for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'WaiterPerformance',
+      'Waiter performance is for managers.',
+    );
     return context;
   }
 }

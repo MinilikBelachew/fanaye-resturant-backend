@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -33,6 +34,7 @@ export class InventoryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   // ─── Ingredients ───────────────────────────────────────────────────────────
@@ -65,6 +67,52 @@ export class InventoryService {
     return unit.code;
   }
 
+  /** Default BRANCH_STORE for a branch; creates one if missing. */
+  async ensureDefaultLocation(
+    tenantId: string,
+    branchId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ) {
+    const existing = await db.inventoryLocation.findFirst({
+      where: { tenantId, branchId, isDefault: true, status: 'ACTIVE' },
+    });
+    if (existing) return existing;
+
+    const branch = await db.branch.findFirst({
+      where: { id: branchId, tenantId },
+      select: { name: true, displayCode: true },
+    });
+    if (!branch) {
+      throw new NotFoundException('Branch not found for inventory location.');
+    }
+
+    return db.inventoryLocation.create({
+      data: {
+        tenantId,
+        branchId,
+        code: `BRANCH_${branch.displayCode}`.slice(0, 40),
+        name: `${branch.name} store`.slice(0, 120),
+        type: 'BRANCH_STORE',
+        isDefault: true,
+        status: 'ACTIVE',
+      },
+    });
+  }
+
+  private pickBalance<
+    T extends {
+      locationId: string | null;
+      onHandQty: Prisma.Decimal;
+      updatedAt: Date;
+    },
+  >(balances: T[] | undefined, locationId: string | null | undefined) {
+    if (!balances?.length) return null;
+    if (locationId) {
+      return balances.find((b) => b.locationId === locationId) ?? null;
+    }
+    return balances[0] ?? null;
+  }
+
   async listIngredients(userId: string, query: InventoryListQueryDto) {
     const ctx = await this.requireManager(userId);
     const { page, limit, skip } = this.pageOf(query);
@@ -80,7 +128,7 @@ export class InventoryService {
       this.prisma.inventoryIngredient.count({ where }),
       this.prisma.inventoryIngredient.findMany({
         where,
-        include: { balance: true },
+        include: { balances: true },
         orderBy: { name: 'asc' },
         skip,
         take: limit,
@@ -110,12 +158,18 @@ export class InventoryService {
 
     const initialQty = dto.initialQty ?? 0;
     const created = await this.prisma.$transaction(async (tx) => {
+      const location = await this.ensureDefaultLocation(
+        ctx.tenantId!,
+        ctx.branchId!,
+        tx,
+      );
       const ingredient = await tx.inventoryIngredient.create({
         data: {
           tenantId: ctx.tenantId!,
           branchId: ctx.branchId!,
           name,
           unit,
+          itemKind: 'RAW',
           unitCost: dec(dto.unitCost ?? 0),
           parLevel: dec(dto.parLevel ?? 0),
           status: 'ACTIVE',
@@ -125,6 +179,7 @@ export class InventoryService {
         data: {
           tenantId: ctx.tenantId!,
           branchId: ctx.branchId!,
+          locationId: location.id,
           ingredientId: ingredient.id,
           onHandQty: dec(initialQty),
         },
@@ -134,6 +189,7 @@ export class InventoryService {
           data: {
             tenantId: ctx.tenantId!,
             branchId: ctx.branchId!,
+            locationId: location.id,
             ingredientId: ingredient.id,
             entryType: 'OPENING',
             quantityDelta: dec(initialQty),
@@ -145,7 +201,7 @@ export class InventoryService {
       }
       return tx.inventoryIngredient.findUniqueOrThrow({
         where: { id: ingredient.id },
-        include: { balance: true },
+        include: { balances: true },
       });
     });
     return { data: this.toIngredientDto(created) };
@@ -181,7 +237,7 @@ export class InventoryService {
         ...(dto.parLevel !== undefined ? { parLevel: dec(dto.parLevel) } : {}),
         ...(dto.status?.trim() ? { status: dto.status.trim() } : {}),
       },
-      include: { balance: true },
+      include: { balances: true },
     });
     return { data: this.toIngredientDto(updated) };
   }
@@ -202,12 +258,12 @@ export class InventoryService {
           ? { name: { contains: query.q.trim(), mode: 'insensitive' } }
           : {}),
       },
-      include: { balance: true },
+      include: { balances: true },
       orderBy: { name: 'asc' },
     });
 
     let rows = ingredients.map((ing) => {
-      const onHand = num(ing.balance?.onHandQty);
+      const onHand = num(this.pickBalance(ing.balances, null)?.onHandQty);
       const par = num(ing.parLevel);
       const unitCost = num(ing.unitCost);
       const stockValue = roundMoney(onHand * unitCost);
@@ -221,7 +277,8 @@ export class InventoryService {
         onHandQty: onHand,
         isLowStock: onHand <= par,
         status: ing.status,
-        updatedAt: ing.balance?.updatedAt ?? ing.updatedAt,
+        updatedAt:
+          this.pickBalance(ing.balances, null)?.updatedAt ?? ing.updatedAt,
       };
     });
     if (lowStock) rows = rows.filter((r) => r.isLowStock);
@@ -284,7 +341,7 @@ export class InventoryService {
     });
     const refreshed = await this.prisma.inventoryIngredient.findUniqueOrThrow({
       where: { id: ingredient.id },
-      include: { balance: true },
+      include: { balances: true },
     });
     return { data: this.toIngredientDto(refreshed) };
   }
@@ -309,7 +366,7 @@ export class InventoryService {
     );
     const refreshed = await this.prisma.inventoryIngredient.findUniqueOrThrow({
       where: { id: ingredient.id },
-      include: { balance: true },
+      include: { balances: true },
     });
     return { data: this.toIngredientDto(refreshed) };
   }
@@ -448,7 +505,7 @@ export class InventoryService {
         branchId: ctx.branchId!,
         status: 'ACTIVE',
       },
-      include: { balance: true },
+      include: { balances: true },
       orderBy: { name: 'asc' },
     });
 
@@ -468,7 +525,8 @@ export class InventoryService {
             tenantId: ctx.tenantId!,
             countSessionId: created.id,
             ingredientId: ing.id,
-            bookQtySnapshot: ing.balance?.onHandQty ?? dec(0),
+            bookQtySnapshot:
+              this.pickBalance(ing.balances, null)?.onHandQty ?? dec(0),
           })),
         });
       }
@@ -723,6 +781,7 @@ export class InventoryService {
       tenantId: string;
       branchId: string;
       staffMembershipId?: string | null;
+      locationId?: string | null;
     },
     ingredientId: string,
     delta: Prisma.Decimal,
@@ -737,34 +796,33 @@ export class InventoryService {
       setAbsolute?: Prisma.Decimal;
     },
   ) {
-    let balance = await db.inventoryStockBalance.findUnique({
-      where: { ingredientId },
-    });
-    if (!balance) {
-      balance = await db.inventoryStockBalance.create({
-        data: {
-          tenantId: ctx.tenantId,
-          branchId: ctx.branchId,
-          ingredientId,
-          onHandQty: dec(0),
-        },
-      });
-    }
+    const locationId =
+      ctx.locationId ??
+      (await this.ensureDefaultLocation(ctx.tenantId, ctx.branchId, db)).id;
 
-    const next =
-      meta.setAbsolute !== undefined
-        ? meta.setAbsolute
-        : dec(balance.onHandQty).plus(delta);
-
-    await db.inventoryStockBalance.update({
-      where: { ingredientId },
-      data: { onHandQty: next },
+    // Atomic upsert + increment avoids lost updates under concurrent orders.
+    await db.inventoryStockBalance.upsert({
+      where: {
+        locationId_ingredientId: { locationId, ingredientId },
+      },
+      create: {
+        tenantId: ctx.tenantId,
+        branchId: ctx.branchId,
+        locationId,
+        ingredientId,
+        onHandQty: meta.setAbsolute !== undefined ? meta.setAbsolute : delta,
+      },
+      update:
+        meta.setAbsolute !== undefined
+          ? { onHandQty: meta.setAbsolute }
+          : { onHandQty: { increment: delta } },
     });
 
     await db.inventoryLedgerEntry.create({
       data: {
         tenantId: ctx.tenantId,
         branchId: ctx.branchId,
+        locationId,
         ingredientId,
         entryType: meta.entryType,
         quantityDelta: delta,
@@ -787,7 +845,7 @@ export class InventoryService {
         tenantId: ctx.tenantId!,
         branchId: ctx.branchId!,
       },
-      include: { balance: true },
+      include: { balances: true },
     });
     if (!ingredient) throw new NotFoundException('Ingredient not found.');
     return ingredient;
@@ -798,9 +856,12 @@ export class InventoryService {
     if (!context.tenantId || !context.branchId) {
       throw new ForbiddenException('No restaurant branch on this account.');
     }
-    if (context.roleCode !== 'MANAGER' && context.roleCode !== 'OWNER_ADMIN') {
-      throw new ForbiddenException('Inventory is for managers and owners.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Inventory',
+      'Inventory is for managers and owners.',
+    );
     return context;
   }
 
@@ -819,15 +880,22 @@ export class InventoryService {
     status: string;
     createdAt: Date;
     updatedAt: Date;
-    balance?: { onHandQty: Prisma.Decimal; updatedAt: Date } | null;
+    itemKind?: string;
+    balances?: Array<{
+      locationId: string | null;
+      onHandQty: Prisma.Decimal;
+      updatedAt: Date;
+    }>;
   }) {
-    const onHand = num(row.balance?.onHandQty);
+    const bal = this.pickBalance(row.balances, null);
+    const onHand = num(bal?.onHandQty);
     const par = num(row.parLevel);
     const unitCost = num(row.unitCost);
     return {
       id: row.id,
       name: row.name,
       unit: row.unit,
+      itemKind: row.itemKind ?? 'RAW',
       unitCost,
       stockValue: roundMoney(onHand * unitCost),
       parLevel: par,

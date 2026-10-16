@@ -215,6 +215,10 @@ model Tenant {
   site                   TenantSite?
   inventoryIngredients   InventoryIngredient[]
   inventoryStockBalances InventoryStockBalance[]
+  inventoryLocations     InventoryLocation[]
+  inventoryTransfers     InventoryTransfer[]
+  inventorySupplyRequests InventorySupplyRequest[]
+  inventoryProductionBatches InventoryProductionBatch[]
   menuItemRecipeLines    MenuItemRecipeLine[]
   inventoryLedgerEntries InventoryLedgerEntry[]
   inventoryCountSessions InventoryCountSession[]
@@ -350,6 +354,7 @@ model Branch {
   preferredByUsers AppUser[] @relation("UserPreferredBranch")
   inventoryIngredients InventoryIngredient[]
   inventoryStockBalances InventoryStockBalance[]
+  inventoryLocations     InventoryLocation[]
   inventoryLedgerEntries InventoryLedgerEntry[]
   inventoryCountSessions InventoryCountSession[]
 
@@ -482,6 +487,11 @@ model TenantStaffMembership {
   updatedBranchSettings BranchSettings[]
   inventoryLedgerEntries InventoryLedgerEntry[]
   inventoryCountSessions InventoryCountSession[]
+  inventoryTransfersSent       InventoryTransfer[]       @relation("TransferSentBy")
+  inventoryTransfersReceived   InventoryTransfer[]       @relation("TransferReceivedBy")
+  inventorySupplyRequests      InventorySupplyRequest[]  @relation("SupplyRequestedBy")
+  inventorySupplyDecisions     InventorySupplyRequest[]  @relation("SupplyDecidedBy")
+  inventoryProductionBatches   InventoryProductionBatch[] @relation("ProductionPostedBy")
 
   @@unique([tenantId, userId], map: "uq_tenant_staff_memberships__tenant_user")
   @@index([tenantId, status], map: "ix_tenant_staff_memberships__tenant_status")
@@ -1652,7 +1662,7 @@ model IdempotencyCommand {
   @@map("idempotency_commands")
 }
 // =============================================================================
-// Inventory — recipe-based stock (ingredients, balances, ledger, counts)
+// Inventory — tenant catalog + location stock + transfers / production
 // =============================================================================
 
 model InventoryUnit {
@@ -1669,12 +1679,48 @@ model InventoryUnit {
   @@map("inventory_units")
 }
 
+/// Stock location: main warehouse, branch store, or shared store.
+model InventoryLocation {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  /// Branch this store serves (null only for unattached MAIN if needed).
+  branchId  String?  @map("branch_id") @db.Uuid
+  code      String   @db.VarChar(40)
+  name      String   @db.VarChar(120)
+  /// MAIN_WAREHOUSE | BRANCH_STORE | SHARED_STORE
+  type      String   @db.VarChar(40)
+  isDefault Boolean  @default(false) @map("is_default")
+  status    String   @default("ACTIVE") @db.VarChar(20)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  branch   Branch? @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  balances InventoryStockBalance[]
+  ledgerEntries InventoryLedgerEntry[]
+  countSessions InventoryCountSession[]
+  transfersFrom InventoryTransfer[] @relation("TransferFromLocation")
+  transfersTo   InventoryTransfer[] @relation("TransferToLocation")
+  supplyRequestsFrom InventorySupplyRequest[] @relation("SupplyFromLocation")
+  supplyRequestsTo   InventorySupplyRequest[] @relation("SupplyToLocation")
+  productionBatches  InventoryProductionBatch[]
+
+  @@unique([tenantId, code], map: "uq_inventory_locations__tenant_code")
+  @@index([tenantId, type, status], map: "ix_inventory_locations__tenant_type")
+  @@index([branchId], map: "ix_inventory_locations__branch")
+  @@map("inventory_locations")
+}
+
+/// Tenant-wide item catalog (raw / produced / finished). branchId optional legacy.
 model InventoryIngredient {
   id        String   @id @default(uuid()) @db.Uuid
   tenantId  String   @map("tenant_id") @db.Uuid
-  branchId  String   @map("branch_id") @db.Uuid
+  /// Legacy home branch; null = pure tenant catalog item.
+  branchId  String?  @map("branch_id") @db.Uuid
   name      String   @db.VarChar(180)
   unit      String   @db.VarChar(20)
+  /// RAW | PRODUCED | FINISHED
+  itemKind  String   @default("RAW") @map("item_kind") @db.VarChar(20)
   unitCost  Decimal  @default(0) @map("unit_cost") @db.Decimal(19, 4)
   parLevel  Decimal  @default(0) @map("par_level") @db.Decimal(19, 4)
   status    String   @default("ACTIVE") @db.VarChar(20)
@@ -1682,13 +1728,18 @@ model InventoryIngredient {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   tenant        Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  branch        Branch                   @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  balance       InventoryStockBalance?
+  branch        Branch?                  @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  balances      InventoryStockBalance[]
   recipeLines   MenuItemRecipeLine[]
   ledgerEntries InventoryLedgerEntry[]
   countLines    InventoryCountLine[]
+  transferLines InventoryTransferLine[]
+  supplyRequestLines InventorySupplyRequestLine[]
+  productionOutputs  InventoryProductionBatch[] @relation("ProductionOutput")
+  productionInputs   InventoryProductionInput[]
 
-  @@unique([branchId, name], map: "uq_inventory_ingredients__branch_name")
+  @@unique([tenantId, name], map: "uq_inventory_ingredients__tenant_name")
+  @@index([tenantId, status], map: "ix_inventory_ingredients__tenant_status")
   @@index([tenantId, branchId, status], map: "ix_inventory_ingredients__branch_status")
   @@map("inventory_ingredients")
 }
@@ -1696,17 +1747,139 @@ model InventoryIngredient {
 model InventoryStockBalance {
   id           String   @id @default(uuid()) @db.Uuid
   tenantId     String   @map("tenant_id") @db.Uuid
-  branchId     String   @map("branch_id") @db.Uuid
-  ingredientId String   @unique @map("ingredient_id") @db.Uuid
+  branchId     String?  @map("branch_id") @db.Uuid
+  /// Required for new rows; backfilled for legacy balances.
+  locationId   String?  @map("location_id") @db.Uuid
+  ingredientId String   @map("ingredient_id") @db.Uuid
   onHandQty    Decimal  @default(0) @map("on_hand_qty") @db.Decimal(19, 4)
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  branch     Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  tenant     Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  branch     Branch?              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  location   InventoryLocation?   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  ingredient InventoryIngredient  @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([locationId, ingredientId], map: "uq_inventory_stock_balances__location_ingredient")
+  @@index([tenantId, locationId], map: "ix_inventory_stock_balances__location")
+  @@index([tenantId, branchId], map: "ix_inventory_stock_balances__branch")
+  @@index([ingredientId], map: "ix_inventory_stock_balances__ingredient")
+  @@map("inventory_stock_balances")
+}
+
+model InventoryTransfer {
+  id                      String    @id @default(uuid()) @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  fromLocationId          String    @map("from_location_id") @db.Uuid
+  toLocationId            String    @map("to_location_id") @db.Uuid
+  /// DRAFT | SENT | RECEIVED | CANCELLED
+  status                  String    @default("DRAFT") @db.VarChar(20)
+  note                    String?   @db.VarChar(255)
+  supplyRequestId         String?   @unique @map("supply_request_id") @db.Uuid
+  sentByMembershipId      String?   @map("sent_by_membership_id") @db.Uuid
+  receivedByMembershipId  String?   @map("received_by_membership_id") @db.Uuid
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt                  DateTime? @map("sent_at") @db.Timestamptz(6)
+  receivedAt              DateTime? @map("received_at") @db.Timestamptz(6)
+
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  fromLocation InventoryLocation       @relation("TransferFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation   InventoryLocation       @relation("TransferToLocation", fields: [toLocationId], references: [id], onDelete: Restrict)
+  supplyRequest InventorySupplyRequest? @relation(fields: [supplyRequestId], references: [id], onDelete: SetNull)
+  sentBy       TenantStaffMembership?  @relation("TransferSentBy", fields: [sentByMembershipId], references: [id], onDelete: SetNull)
+  receivedBy   TenantStaffMembership?  @relation("TransferReceivedBy", fields: [receivedByMembershipId], references: [id], onDelete: SetNull)
+  lines        InventoryTransferLine[]
+
+  @@index([tenantId, status, createdAt], map: "ix_inventory_transfers__tenant_status")
+  @@map("inventory_transfers")
+}
+
+model InventoryTransferLine {
+  id                String   @id @default(uuid()) @db.Uuid
+  transferId        String   @map("transfer_id") @db.Uuid
+  ingredientId      String   @map("ingredient_id") @db.Uuid
+  quantitySent      Decimal  @map("quantity_sent") @db.Decimal(19, 4)
+  quantityReceived  Decimal? @map("quantity_received") @db.Decimal(19, 4)
+
+  transfer   InventoryTransfer   @relation(fields: [transferId], references: [id], onDelete: Cascade)
   ingredient InventoryIngredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
 
-  @@index([tenantId, branchId], map: "ix_inventory_stock_balances__branch")
-  @@map("inventory_stock_balances")
+  @@index([transferId], map: "ix_inventory_transfer_lines__transfer")
+  @@map("inventory_transfer_lines")
+}
+
+model InventorySupplyRequest {
+  id                       String    @id @default(uuid()) @db.Uuid
+  tenantId                 String    @map("tenant_id") @db.Uuid
+  /// Restaurant store asking
+  fromLocationId           String    @map("from_location_id") @db.Uuid
+  /// Usually main warehouse
+  toLocationId             String    @map("to_location_id") @db.Uuid
+  /// DRAFT | SUBMITTED | APPROVED | REJECTED | FULFILLED | CANCELLED
+  status                   String    @default("DRAFT") @db.VarChar(20)
+  note                     String?   @db.VarChar(255)
+  decisionNote             String?   @map("decision_note") @db.VarChar(255)
+  requestedByMembershipId  String?   @map("requested_by_membership_id") @db.Uuid
+  decidedByMembershipId    String?   @map("decided_by_membership_id") @db.Uuid
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  submittedAt              DateTime? @map("submitted_at") @db.Timestamptz(6)
+  decidedAt                DateTime? @map("decided_at") @db.Timestamptz(6)
+
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  fromLocation InventoryLocation  @relation("SupplyFromLocation", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation   InventoryLocation  @relation("SupplyToLocation", fields: [toLocationId], references: [id], onDelete: Restrict)
+  requestedBy  TenantStaffMembership? @relation("SupplyRequestedBy", fields: [requestedByMembershipId], references: [id], onDelete: SetNull)
+  decidedBy    TenantStaffMembership? @relation("SupplyDecidedBy", fields: [decidedByMembershipId], references: [id], onDelete: SetNull)
+  lines        InventorySupplyRequestLine[]
+  transfer     InventoryTransfer?
+
+  @@index([tenantId, status, createdAt], map: "ix_inventory_supply_requests__tenant_status")
+  @@map("inventory_supply_requests")
+}
+
+model InventorySupplyRequestLine {
+  id               String  @id @default(uuid()) @db.Uuid
+  supplyRequestId  String  @map("supply_request_id") @db.Uuid
+  ingredientId     String  @map("ingredient_id") @db.Uuid
+  quantityRequested Decimal @map("quantity_requested") @db.Decimal(19, 4)
+
+  supplyRequest InventorySupplyRequest @relation(fields: [supplyRequestId], references: [id], onDelete: Cascade)
+  ingredient    InventoryIngredient    @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@index([supplyRequestId], map: "ix_inventory_supply_request_lines__request")
+  @@map("inventory_supply_request_lines")
+}
+
+model InventoryProductionBatch {
+  id                    String   @id @default(uuid()) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  locationId            String   @map("location_id") @db.Uuid
+  outputIngredientId    String   @map("output_ingredient_id") @db.Uuid
+  outputQuantity        Decimal  @map("output_quantity") @db.Decimal(19, 4)
+  note                  String?  @db.VarChar(255)
+  postedByMembershipId  String?  @map("posted_by_membership_id") @db.Uuid
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant           Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  location         InventoryLocation      @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  outputIngredient InventoryIngredient    @relation("ProductionOutput", fields: [outputIngredientId], references: [id], onDelete: Restrict)
+  postedBy         TenantStaffMembership? @relation("ProductionPostedBy", fields: [postedByMembershipId], references: [id], onDelete: SetNull)
+  inputs           InventoryProductionInput[]
+
+  @@index([tenantId, locationId, createdAt], map: "ix_inventory_production_batches__location")
+  @@map("inventory_production_batches")
+}
+
+model InventoryProductionInput {
+  id           String  @id @default(uuid()) @db.Uuid
+  batchId      String  @map("batch_id") @db.Uuid
+  ingredientId String  @map("ingredient_id") @db.Uuid
+  quantity     Decimal @db.Decimal(19, 4)
+
+  batch      InventoryProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  ingredient InventoryIngredient      @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@index([batchId], map: "ix_inventory_production_inputs__batch")
+  @@map("inventory_production_inputs")
 }
 
 model MenuItemRecipeLine {
@@ -1729,7 +1902,8 @@ model MenuItemRecipeLine {
 model InventoryLedgerEntry {
   id                    String   @id @default(uuid()) @db.Uuid
   tenantId              String   @map("tenant_id") @db.Uuid
-  branchId              String   @map("branch_id") @db.Uuid
+  branchId              String?  @map("branch_id") @db.Uuid
+  locationId            String?  @map("location_id") @db.Uuid
   ingredientId          String   @map("ingredient_id") @db.Uuid
   entryType             String   @map("entry_type") @db.VarChar(40)
   quantityDelta         Decimal  @map("quantity_delta") @db.Decimal(19, 4)
@@ -1739,17 +1913,21 @@ model InventoryLedgerEntry {
   invoiceRef            String?  @map("invoice_ref") @db.VarChar(80)
   orderItemId           String?  @map("order_item_id") @db.Uuid
   countSessionId        String?  @map("count_session_id") @db.Uuid
+  transferId            String?  @map("transfer_id") @db.Uuid
+  productionBatchId     String?  @map("production_batch_id") @db.Uuid
   createdByMembershipId String?  @map("created_by_membership_id") @db.Uuid
   createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  branch       Branch                 @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch       Branch?                @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  location     InventoryLocation?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
   ingredient   InventoryIngredient    @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
   orderItem    OrderItem?             @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
   countSession InventoryCountSession? @relation(fields: [countSessionId], references: [id], onDelete: SetNull)
   createdBy    TenantStaffMembership? @relation(fields: [createdByMembershipId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, branchId, createdAt], map: "ix_inventory_ledger__branch_created")
+  @@index([tenantId, locationId, createdAt], map: "ix_inventory_ledger__location_created")
   @@index([ingredientId, createdAt], map: "ix_inventory_ledger__ingredient_created")
   @@index([orderItemId], map: "ix_inventory_ledger__order_item")
   @@index([entryType], map: "ix_inventory_ledger__type")
@@ -1760,6 +1938,7 @@ model InventoryCountSession {
   id                    String    @id @default(uuid()) @db.Uuid
   tenantId              String    @map("tenant_id") @db.Uuid
   branchId              String    @map("branch_id") @db.Uuid
+  locationId            String?   @map("location_id") @db.Uuid
   status                String    @default("DRAFT") @db.VarChar(20)
   notes                 String?   @db.VarChar(255)
   createdByMembershipId String?   @map("created_by_membership_id") @db.Uuid
@@ -1768,6 +1947,7 @@ model InventoryCountSession {
 
   tenant        Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   branch        Branch                 @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  location      InventoryLocation?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
   createdBy     TenantStaffMembership? @relation(fields: [createdByMembershipId], references: [id], onDelete: SetNull)
   lines         InventoryCountLine[]
   ledgerEntries InventoryLedgerEntry[]

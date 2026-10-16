@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -9,16 +8,9 @@ import { ConfigService } from '@nestjs/config';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Expose } from 'class-transformer';
 import OpenAI from 'openai';
+import { CaslService } from '../casl/casl.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { VerifyEtBank } from '../verify-et/verify-et.types';
-
-const COLLECT_ROLES = [
-  'WAITER',
-  'DISPATCHER',
-  'MANAGER',
-  'OWNER_ADMIN',
-  'CASHIER',
-];
 
 export class ReceiptExtractResponseDto {
   @ApiProperty({ example: 'DJ58FLU9JE' })
@@ -60,6 +52,7 @@ export class ReceiptExtractService {
   constructor(
     private readonly identity: IdentityContextService,
     private readonly config: ConfigService,
+    private readonly casl: CaslService,
   ) {}
 
   async extractFromImage(
@@ -68,9 +61,12 @@ export class ReceiptExtractService {
     hintChannel?: 'TELEBIRR' | 'BANK',
   ): Promise<ReceiptExtractResponseDto> {
     const context = await this.identity.getByUserId(userId);
-    if (!COLLECT_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Only collectors can scan receipts.');
-    }
+    this.casl.assertCan(
+      context,
+      'extract',
+      'Receipt',
+      'Only collectors can scan receipts.',
+    );
     if (!file?.buffer?.length) {
       throw new BadRequestException('Receipt image is required.');
     }

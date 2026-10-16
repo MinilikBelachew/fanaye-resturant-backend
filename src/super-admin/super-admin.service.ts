@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -9,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
+import { PLATFORM_ROLE_CODE } from '../identity/identity.constants';
 import {
   CityDistributionItemDto,
   CreatePlatformStaffDto,
@@ -27,8 +29,14 @@ import {
   ResetPlatformStaffPinDto,
   SuspendPlatformStaffDto,
   NetworkGmvTrendPointDto,
+  PermissionDto,
+  PermissionListResponseDto,
   PlanDistributionItemDto,
   PlatformHealthRadarPointDto,
+  RestaurantRoleDto,
+  RestaurantRoleListResponseDto,
+  RolePermissionsResponseDto,
+  SetRolePermissionsDto,
   SuperAdminDashboardDataDto,
   SuperAdminDashboardResponseDto,
   SuperAdminKpisDto,
@@ -119,18 +127,29 @@ export class SuperAdminService {
     private readonly identity: IdentityContextService,
   ) {}
 
-  private async verifySuperAdminAccess(userId: string): Promise<boolean> {
-    try {
-      if (!userId) return true;
-      await this.prisma.appUser.findUnique({
-        where: { id: String(userId) },
-        include: {
-          platformRoles: { where: { status: 'ACTIVE' } },
+  private async verifySuperAdminAccess(userId: string): Promise<void> {
+    if (!userId) {
+      throw new UnauthorizedException();
+    }
+
+    const user = await this.prisma.appUser.findUnique({
+      where: { id: String(userId) },
+      include: {
+        platformRoles: {
+          where: {
+            status: 'ACTIVE',
+            roleCode: PLATFORM_ROLE_CODE,
+          },
         },
-      });
-      return true;
-    } catch {
-      return true;
+      },
+    });
+
+    if (!user || user.accountStatus !== 'ACTIVE') {
+      throw new UnauthorizedException();
+    }
+
+    if (user.platformRoles.length === 0) {
+      throw new ForbiddenException('Platform super-admin access required.');
     }
   }
 
@@ -734,6 +753,144 @@ export class SuperAdminService {
     });
 
     return { data: plans.map((plan) => this.mapPlanDto(plan)) };
+  }
+
+  async listRestaurantRoles(
+    userId: string,
+  ): Promise<RestaurantRoleListResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const roles = await this.prisma.restaurantRole.findMany({
+      orderBy: { id: 'asc' },
+    });
+
+    return {
+      data: roles.map((role) => this.mapRestaurantRoleDto(role)),
+    };
+  }
+
+  async listPermissions(userId: string): Promise<PermissionListResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const rows = await this.prisma.permission.findMany({
+      orderBy: [{ domain: 'asc' }, { code: 'asc' }],
+    });
+
+    return {
+      data: rows.map((row) => this.mapPermissionDto(row)),
+    };
+  }
+
+  async getRolePermissions(
+    userId: string,
+    roleIdRaw: string,
+  ): Promise<RolePermissionsResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+    const role = await this.findRestaurantRole(roleIdRaw);
+
+    const links = await this.prisma.rolePermission.findMany({
+      where: { roleId: role.id, allowed: true },
+      include: { permission: true },
+      orderBy: { permissionId: 'asc' },
+    });
+
+    return {
+      roleId: role.id,
+      roleCode: role.code,
+      editable: role.code !== 'OWNER_ADMIN',
+      permissionIds: links.map((link) => link.permissionId),
+      permissionCodes: links.map((link) => link.permission.code),
+    };
+  }
+
+  async setRolePermissions(
+    userId: string,
+    roleIdRaw: string,
+    dto: SetRolePermissionsDto,
+  ): Promise<RolePermissionsResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+    const role = await this.findRestaurantRole(roleIdRaw);
+
+    if (role.code === 'OWNER_ADMIN') {
+      throw new ForbiddenException(
+        'Owner role has full access and cannot be edited.',
+      );
+    }
+
+    const uniqueIds = [...new Set(dto.permissionIds.map((id) => Number(id)))];
+    if (uniqueIds.some((id) => !Number.isInteger(id) || id < 1)) {
+      throw new BadRequestException('permissionIds must be positive integers.');
+    }
+
+    if (uniqueIds.length > 0) {
+      const found = await this.prisma.permission.findMany({
+        where: { id: { in: uniqueIds } },
+        select: { id: true },
+      });
+      if (found.length !== uniqueIds.length) {
+        throw new BadRequestException(
+          'One or more permission ids are invalid.',
+        );
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.rolePermission.deleteMany({ where: { roleId: role.id } });
+      if (uniqueIds.length > 0) {
+        await tx.rolePermission.createMany({
+          data: uniqueIds.map((permissionId) => ({
+            roleId: role.id,
+            permissionId,
+            allowed: true,
+          })),
+        });
+      }
+    });
+
+    return this.getRolePermissions(userId, String(role.id));
+  }
+
+  private async findRestaurantRole(roleIdRaw: string) {
+    const roleId = Number(roleIdRaw);
+    if (!Number.isInteger(roleId) || roleId < 1) {
+      throw new BadRequestException('Invalid role id.');
+    }
+    const role = await this.prisma.restaurantRole.findUnique({
+      where: { id: roleId },
+    });
+    if (!role) {
+      throw new NotFoundException('Role not found.');
+    }
+    return role;
+  }
+
+  private mapRestaurantRoleDto(role: {
+    id: number;
+    code: string;
+    name: string;
+    isSystem: boolean;
+  }): RestaurantRoleDto {
+    return {
+      id: role.id,
+      code: role.code,
+      name: role.name,
+      isSystem: role.isSystem,
+      editable: role.code !== 'OWNER_ADMIN',
+    };
+  }
+
+  private mapPermissionDto(row: {
+    id: number;
+    code: string;
+    domain: string;
+    description: string | null;
+  }): PermissionDto {
+    return {
+      id: row.id,
+      code: row.code,
+      domain: row.domain,
+      description: row.description,
+    };
   }
 
   async createPlan(

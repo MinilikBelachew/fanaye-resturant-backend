@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { DailyCloseService } from '../daily-close/daily-close.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
@@ -34,7 +35,6 @@ import {
 const INITIATE_COMMAND = 'cash_drop.initiate';
 const RECEIVE_COMMAND = 'cash_drop.receive';
 const RESOLVE_COMMAND = 'cash_drop.resolve_dispute';
-const CASHIER_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN'];
 
 @Injectable()
 export class CashCustodyService {
@@ -43,6 +43,7 @@ export class CashCustodyService {
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
     private readonly dailyClose: DailyCloseService,
+    private readonly casl: CaslService,
   ) {}
 
   async waiterCashSummary(userId: string): Promise<WaiterCashSummaryDto> {
@@ -726,9 +727,12 @@ export class CashCustodyService {
 
   private async requireWaiterOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!['WAITER', 'DISPATCHER'].includes(context.roleCode)) {
-      throw new ForbiddenException('Cash pouch is for waiters.');
-    }
+    this.casl.assertCan(
+      context,
+      'read',
+      'CashPouch',
+      'Cash pouch is for waiters.',
+    );
     if (!context.staffMembershipId || !context.shiftSessionId) {
       throw new ForbiddenException({
         status: 403,
@@ -741,9 +745,12 @@ export class CashCustodyService {
 
   private async requireCashier(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!CASHIER_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Cash drops queue is for cashiers.');
-    }
+    this.casl.assertCan(
+      context,
+      'read',
+      'CashDrop',
+      'Cash drops queue is for cashiers.',
+    );
     return context;
   }
 

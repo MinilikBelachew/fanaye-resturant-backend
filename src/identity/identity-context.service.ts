@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -11,7 +12,7 @@ import { PLATFORM_ROLE_CODE } from './identity.constants';
 
 export interface PinTenantMatch {
   userId: string;
-  email: string;
+  email?: string;
   displayName: string;
   tenantId: string;
   tenantName: string;
@@ -198,41 +199,101 @@ export class IdentityContextService {
     return user?.email ?? null;
   }
 
-  async getTerminalStaffList(): Promise<
-    { id: string; name: string; role: string; photoUrl: string | null }[]
+  async getTerminalStaffList(tenantIdentifier: string): Promise<
+    {
+      id: string;
+      name: string;
+      role: string;
+      photoUrl: string | null;
+      tenantId: string;
+    }[]
   > {
-    const users = await this.prisma.appUser.findMany({
+    const trimmed = tenantIdentifier?.trim();
+    if (!trimmed) {
+      throw new BadRequestException(
+        'tenantId is required to list terminal staff.',
+      );
+    }
+
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        trimmed,
+      );
+
+    const tenant = await this.prisma.tenant.findFirst({
       where: {
-        accountStatus: 'ACTIVE',
-        staffMemberships: {
-          some: { status: 'ACTIVE' },
-        },
+        status: 'ACTIVE',
+        OR: [
+          ...(isUuid ? [{ id: trimmed }] : []),
+          { displayName: { equals: trimmed, mode: 'insensitive' } },
+          { legalName: { equals: trimmed, mode: 'insensitive' } },
+          { site: { slug: { equals: trimmed, mode: 'insensitive' } } },
+        ],
       },
-      include: {
-        photo: true,
-        staffMemberships: {
-          where: { status: 'ACTIVE' },
-          include: {
-            roleAssignments: {
-              where: { status: 'ACTIVE', revokedAt: null },
-              include: { role: true },
-            },
-          },
-        },
-      },
-      take: 24,
+      select: { id: true },
     });
 
-    return users.map((u) => {
-      const membership = u.staffMemberships[0];
-      const role = membership?.roleAssignments[0]?.role?.code || 'STAFF';
+    if (!tenant) {
+      throw new NotFoundException('Restaurant not found.');
+    }
+
+    const memberships = await this.prisma.tenantStaffMembership.findMany({
+      where: {
+        tenantId: tenant.id,
+        status: 'ACTIVE',
+        user: { accountStatus: 'ACTIVE' },
+      },
+      include: {
+        user: { include: { photo: true } },
+        roleAssignments: {
+          where: { status: 'ACTIVE', revokedAt: null },
+          include: { role: true },
+        },
+      },
+      take: 48,
+      orderBy: { employeeDisplayName: 'asc' },
+    });
+
+    return memberships.map((membership) => {
+      const role = membership.roleAssignments[0]?.role?.code || 'STAFF';
       return {
-        id: u.id,
-        name: membership?.employeeDisplayName || u.displayName,
+        id: membership.userId,
+        name:
+          membership.employeeDisplayName ||
+          membership.user.displayName ||
+          'Staff',
         role,
-        photoUrl: u.photo?.path || null,
+        photoUrl: membership.user.photo?.path || null,
+        tenantId: tenant.id,
       };
     });
+  }
+
+  private async resolveTenantId(
+    tenantIdentifier?: string,
+  ): Promise<string | null> {
+    const trimmed = tenantIdentifier?.trim();
+    if (!trimmed) return null;
+
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        trimmed,
+      );
+
+    const tenant = await this.prisma.tenant.findFirst({
+      where: {
+        status: 'ACTIVE',
+        OR: [
+          ...(isUuid ? [{ id: trimmed }] : []),
+          { displayName: { equals: trimmed, mode: 'insensitive' } },
+          { legalName: { equals: trimmed, mode: 'insensitive' } },
+          { site: { slug: { equals: trimmed, mode: 'insensitive' } } },
+        ],
+      },
+      select: { id: true },
+    });
+
+    return tenant?.id ?? null;
   }
 
   async findUserByPin(
@@ -243,15 +304,40 @@ export class IdentityContextService {
     const trimmedPin = pin.trim();
     if (!trimmedPin) return null;
 
+    // Always scope PIN checks to a paired restaurant (or an explicit staff pick).
+    if (!staffId && !tenantIdentifier?.trim()) {
+      throw new BadRequestException(
+        'Restaurant pairing is required before PIN login.',
+      );
+    }
+
+    const tenantId = tenantIdentifier?.trim()
+      ? await this.resolveTenantId(tenantIdentifier)
+      : null;
+
+    if (tenantIdentifier?.trim() && !tenantId) {
+      return null;
+    }
+
     if (staffId) {
       const user = await this.prisma.appUser.findUnique({
         where: { id: staffId },
-        include: { credential: true },
+        include: {
+          credential: true,
+          staffMemberships: {
+            where: {
+              status: 'ACTIVE',
+              ...(tenantId ? { tenantId } : {}),
+            },
+            take: 1,
+          },
+        },
       });
       if (
         !user ||
         user.accountStatus !== 'ACTIVE' ||
-        !user.credential?.passwordHash
+        !user.credential?.passwordHash ||
+        user.staffMemberships.length === 0
       ) {
         return null;
       }
@@ -262,48 +348,14 @@ export class IdentityContextService {
       return isMatch ? (user.email ?? null) : null;
     }
 
-    const isUuid =
-      typeof tenantIdentifier === 'string' &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-        tenantIdentifier.trim(),
-      );
-
-    const tenantFilter = tenantIdentifier
-      ? isUuid
-        ? { id: tenantIdentifier.trim() }
-        : {
-            OR: [
-              {
-                displayName: {
-                  equals: tenantIdentifier.trim(),
-                  mode: 'insensitive' as const,
-                },
-              },
-              {
-                legalName: {
-                  equals: tenantIdentifier.trim(),
-                  mode: 'insensitive' as const,
-                },
-              },
-              {
-                site: {
-                  slug: {
-                    equals: tenantIdentifier.trim(),
-                    mode: 'insensitive' as const,
-                  },
-                },
-              },
-            ],
-          }
-      : undefined;
-
+    // Tenant-scoped only — never scan the whole network.
     const users = await this.prisma.appUser.findMany({
       where: {
         accountStatus: 'ACTIVE',
         staffMemberships: {
           some: {
             status: 'ACTIVE',
-            ...(tenantFilter ? { tenant: tenantFilter } : {}),
+            tenantId: tenantId!,
           },
         },
       },
@@ -312,7 +364,7 @@ export class IdentityContextService {
         staffMemberships: {
           where: {
             status: 'ACTIVE',
-            ...(tenantFilter ? { tenant: tenantFilter } : {}),
+            tenantId: tenantId!,
           },
           include: {
             tenant: true,
@@ -323,6 +375,7 @@ export class IdentityContextService {
           },
         },
       },
+      take: 64,
     });
 
     const matches: PinTenantMatch[] = [];
@@ -350,17 +403,22 @@ export class IdentityContextService {
     }
 
     if (matches.length === 1) {
-      return matches[0].email;
+      return matches[0].email ?? null;
     }
 
     if (matches.length > 1) {
-      // Multiple restaurants match this PIN -> Disambiguation needed!
+      // Disambiguate without leaking emails/credentials.
       throw new ConflictException({
         statusCode: 409,
         error: 'MULTIPLE_TENANTS_FOUND',
-        message:
-          'Multiple restaurants match this PIN. Please select your restaurant.',
-        matches,
+        message: 'Multiple staff match this PIN. Please select your profile.',
+        matches: matches.map((m) => ({
+          userId: m.userId,
+          displayName: m.displayName,
+          tenantId: m.tenantId,
+          tenantName: m.tenantName,
+          role: m.role,
+        })),
       });
     }
 

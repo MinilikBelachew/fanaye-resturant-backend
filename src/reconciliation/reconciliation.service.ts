@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -22,14 +23,13 @@ import {
 } from './dto/reconciliation-response.dto';
 
 const SUBMIT_COMMAND = 'cashier.reconcile.submit';
-const CASHIER_ROLES = ['CASHIER', 'MANAGER', 'OWNER_ADMIN'];
-const REVIEWER_ROLES = ['MANAGER', 'OWNER_ADMIN'];
 
 @Injectable()
 export class ReconciliationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async preview(userId: string): Promise<ReconciliationPreviewResponseDto> {
@@ -403,9 +403,12 @@ export class ReconciliationService {
 
   private async requireCashierOnShift(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!CASHIER_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Reconciliation is for cashiers.');
-    }
+    this.casl.assertCan(
+      context,
+      'reconcile',
+      'CashierDrawer',
+      'Reconciliation is for cashiers.',
+    );
     if (!context.staffMembershipId || !context.shiftSessionId) {
       throw new ForbiddenException({
         status: 403,
@@ -418,9 +421,13 @@ export class ReconciliationService {
 
   private async requireReviewer(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (!REVIEWER_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Reconciliation review is for managers.');
-    }
+    // Managers/owners review; manage Report mirrors prior REVIEWER_ROLES.
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Report',
+      'Reconciliation review is for managers.',
+    );
     if (!context.staffMembershipId) {
       throw new ForbiddenException('Staff membership required.');
     }

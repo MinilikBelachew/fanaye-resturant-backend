@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -28,7 +29,6 @@ import {
 } from './dto/table-detail.dto';
 import { Prisma } from '@prisma/client';
 
-const ADMIN_ROLES = ['MANAGER', 'OWNER_ADMIN'];
 const ACTIVE_COOKING = ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'];
 const READY_STATES = ['READY'];
 
@@ -37,6 +37,7 @@ export class FloorLayoutService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async layout(userId: string): Promise<AdminFloorLayoutResponseDto> {
@@ -903,9 +904,12 @@ export class FloorLayoutService {
     if (!context.tenantId || !context.branchId) {
       throw new ForbiddenException('No restaurant branch on this account.');
     }
-    if (!ADMIN_ROLES.includes(context.roleCode)) {
-      throw new ForbiddenException('Floor layout is for managers.');
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Floor',
+      'Floor layout is for managers.',
+    );
     return context;
   }
 }

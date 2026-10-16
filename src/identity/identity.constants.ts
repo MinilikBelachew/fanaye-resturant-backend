@@ -5,6 +5,7 @@ export const RESTAURANT_ROLE_CODES = [
   'CASHIER',
   'STATION_OPERATOR',
   'DISPATCHER',
+  'STORE_MANAGER',
 ] as const;
 
 export type RestaurantRoleCode = (typeof RESTAURANT_ROLE_CODES)[number];

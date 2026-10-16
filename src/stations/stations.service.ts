@@ -6,6 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -58,6 +59,7 @@ export class StationsService {
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
     private readonly orderSlaQueue: OrderSlaQueueService,
+    private readonly casl: CaslService,
   ) {}
 
   async listStations(userId: string): Promise<StationManagementResponseDto[]> {
@@ -613,16 +615,7 @@ export class StationsService {
     if (!station) {
       throw new NotFoundException('Station not found.');
     }
-    if (context.roleCode === 'STATION_OPERATOR') {
-      if (context.stationId !== station.id) {
-        throw new ForbiddenException('This is not your station.');
-      }
-    } else if (
-      context.roleCode !== 'MANAGER' &&
-      context.roleCode !== 'OWNER_ADMIN'
-    ) {
-      throw new ForbiddenException('Station queue is for station staff.');
-    }
+    this.assertStationQueueAccess(context, station.id);
 
     if (station.status !== 'ACTIVE') {
       return {
@@ -1352,26 +1345,39 @@ export class StationsService {
           'This station is offline. A manager must turn it back on before tickets can be worked.',
       });
     }
-    if (context.roleCode === 'STATION_OPERATOR') {
-      if (context.stationId !== station.id) {
+    this.assertStationQueueAccess(context, station.id);
+    return { context, station };
+  }
+
+  private assertStationQueueAccess(
+    context: AuthContextDto,
+    stationId: string,
+  ): void {
+    if (this.casl.can(context, 'operate', 'Station')) {
+      if (
+        context.roleCode === 'STATION_OPERATOR' &&
+        context.stationId !== stationId
+      ) {
         throw new ForbiddenException('This is not your station.');
       }
-    } else if (
-      context.roleCode !== 'MANAGER' &&
-      context.roleCode !== 'OWNER_ADMIN'
-    ) {
-      throw new ForbiddenException('Station queue is for station staff.');
+      return;
     }
-    return { context, station };
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Station',
+      'Station queue is for station staff.',
+    );
   }
 
   private async requireManager(userId: string): Promise<AuthContextDto> {
     const context = await this.requireBranch(userId);
-    if (context.roleCode !== 'MANAGER' && context.roleCode !== 'OWNER_ADMIN') {
-      throw new ForbiddenException(
-        'Station management is for managers and admins.',
-      );
-    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Station',
+      'Station management is for managers and admins.',
+    );
     return context;
   }
 }

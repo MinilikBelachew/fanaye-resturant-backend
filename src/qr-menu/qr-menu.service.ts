@@ -117,9 +117,18 @@ export class QrMenuService {
     }
 
     const rawConfig = (site.qrMenuConfigJson as Record<string, unknown>) || {};
-    const config: QrMenuConfigDto = {
+    const fullConfig: QrMenuConfigDto = {
       ...DEFAULT_CONFIG,
       ...rawConfig,
+    };
+    // Never expose Wi-Fi password on the public guest menu API.
+    const config: QrMenuConfigDto = {
+      ...fullConfig,
+      wifiRequiresPassword: Boolean(
+        typeof fullConfig.wifiPassword === 'string' &&
+        fullConfig.wifiPassword.trim().length > 0,
+      ),
+      wifiPassword: undefined,
     };
 
     // Load active menu items & categories
@@ -221,51 +230,9 @@ export class QrMenuService {
         ? publicItems.filter((i) => featuredIds.has(i.id))
         : publicItems.slice(0, 4);
 
-    // Check active table session
-    const session = await this.prisma.tableSession.findFirst({
-      where: {
-        tableId: table.id,
-        status: { in: ['OPEN', 'ACTIVE_ORDER', 'BILL_REQUESTED'] },
-        closedAt: null,
-      },
-      include: {
-        orders: {
-          include: {
-            items: true,
-          },
-        },
-      },
-      orderBy: { openedAt: 'desc' },
-    });
-
-    let activeSession: PublicActiveSessionDto | null = null;
-    if (session) {
-      const orderItems = session.orders.flatMap((o) => o.items);
-      const activeLines: PublicActiveOrderItemDto[] = orderItems.map((oi) => ({
-        id: oi.id,
-        name: oi.itemNameSnapshot,
-        quantity: oi.quantity,
-        state: oi.state,
-        price: money(new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity)),
-        comment: oi.specialInstruction,
-        createdAt: oi.createdAt.toISOString(),
-      }));
-
-      const total = orderItems.reduce(
-        (sum, oi) =>
-          sum.plus(new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity)),
-        new Prisma.Decimal(0),
-      );
-
-      activeSession = {
-        sessionId: session.id,
-        status: session.status,
-        customerCount: session.guestCount ?? 2,
-        openedAt: session.openedAt.toISOString(),
-        items: activeLines,
-        totalAmount: money(total),
-      };
-    }
+    const { session, activeSession } = await this.loadPublicActiveSession(
+      table.id,
+    );
 
     const publicTable: PublicTableInfoDto = {
       id: table.id,
@@ -296,6 +263,94 @@ export class QrMenuService {
       featuredItems,
       items: publicItems,
       activeSession,
+    };
+  }
+
+  /**
+   * Lightweight poll target for guest tables — session/order status only.
+   * Avoids re-downloading the full menu every few seconds.
+   */
+  async getPublicTableSession(
+    slug: string,
+    tableId: string,
+  ): Promise<{ activeSession: PublicActiveSessionDto | null }> {
+    const site = await this.prisma.tenantSite.findUnique({
+      where: { slug },
+      include: { tenant: true },
+    });
+    if (!site) throw new NotFoundException('Restaurant not found.');
+
+    let table = await this.prisma.diningTable.findFirst({
+      where: {
+        id: tableId,
+        tenantId: site.tenantId,
+      },
+    });
+    if (!table) {
+      table = await this.prisma.diningTable.findFirst({
+        where: {
+          displayNumber: tableId,
+          tenantId: site.tenantId,
+        },
+      });
+    }
+    if (!table) throw new NotFoundException('Table not found.');
+
+    const { activeSession } = await this.loadPublicActiveSession(table.id);
+    return { activeSession };
+  }
+
+  private async loadPublicActiveSession(tableId: string): Promise<{
+    session: { id: string } | null;
+    activeSession: PublicActiveSessionDto | null;
+  }> {
+    const session = await this.prisma.tableSession.findFirst({
+      where: {
+        tableId,
+        status: { in: ['OPEN', 'ACTIVE_ORDER', 'BILL_REQUESTED'] },
+        closedAt: null,
+      },
+      include: {
+        orders: {
+          include: {
+            items: true,
+          },
+        },
+      },
+      orderBy: { openedAt: 'desc' },
+    });
+
+    if (!session) {
+      return { session: null, activeSession: null };
+    }
+
+    const orderItems = session.orders.flatMap((o) => o.items);
+    const activeLines: PublicActiveOrderItemDto[] = orderItems.map((oi) => ({
+      id: oi.id,
+      name: oi.itemNameSnapshot,
+      quantity: oi.quantity,
+      state: oi.state,
+      price: money(new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity)),
+      comment: oi.specialInstruction,
+      createdAt: oi.createdAt.toISOString(),
+    }));
+
+    const total = orderItems.reduce(
+      (sum, oi) =>
+        sum.plus(new Prisma.Decimal(oi.unitPriceSnapshot).mul(oi.quantity)),
+      new Prisma.Decimal(0),
+    );
+
+    return {
+      session: { id: session.id },
+      activeSession: {
+        sessionId: session.id,
+        status: session.status,
+        customerCount: session.guestCount ?? 2,
+        openedAt: session.openedAt.toISOString(),
+        items: activeLines,
+        totalAmount: money(total),
+      },
     };
   }
 
@@ -379,36 +434,13 @@ export class QrMenuService {
       }
     }
 
-    // Fallback if no shifts currently clocked in
     if (!waiterMembershipId || !waiterShiftSessionId) {
-      const anyStaff = await this.prisma.tenantStaffMembership.findFirst({
-        where: {
-          tenantId: tenant.id,
-          status: 'ACTIVE',
-        },
+      throw new BadRequestException({
+        statusCode: 400,
+        code: 'NO_WAITER_ON_SHIFT',
+        message:
+          'No waiter is currently on shift. Please call staff to place your order.',
       });
-      if (!anyStaff) {
-        throw new BadRequestException('No active restaurant staff available.');
-      }
-      waiterMembershipId = anyStaff.id;
-
-      let dummyShift = await this.prisma.shiftSession.findFirst({
-        where: { staffMembershipId: waiterMembershipId },
-      });
-      if (!dummyShift) {
-        const now = new Date();
-        dummyShift = await this.prisma.shiftSession.create({
-          data: {
-            tenantId: tenant.id,
-            branchId: branch.id,
-            staffMembershipId: waiterMembershipId,
-            businessDate: now,
-            state: 'OPEN',
-            clockInAt: now,
-          },
-        });
-      }
-      waiterShiftSessionId = dummyShift.id;
     }
 
     // Fetch or create table session
