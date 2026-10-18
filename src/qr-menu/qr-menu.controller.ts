@@ -27,6 +27,7 @@ import {
   ServiceRequestDto,
   ServiceRequestResponseDto,
 } from './dto/service-request.dto';
+import { UpdateQrSlugDto } from './dto/update-qr-slug.dto';
 
 @ApiTags('Public Table QR')
 @Controller({
@@ -107,5 +108,13 @@ export class AdminQrMenuController {
   @Get('tables')
   getTables(@Request() request) {
     return this.qrMenuService.getTablesQrData(String(request.user.id));
+  }
+
+  @Put('slug')
+  updateSlug(@Request() request, @Body() dto: UpdateQrSlugDto) {
+    return this.qrMenuService.updatePublicSlug(
+      String(request.user.id),
+      dto.slug,
+    );
   }
 }

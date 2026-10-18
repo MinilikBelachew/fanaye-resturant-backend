@@ -297,7 +297,10 @@ export class FloorService {
       include: {
         table: { include: { location: true } },
         primaryWaiter: true,
-        orders: { select: { id: true } },
+        orderItems: {
+          where: { cancelledAt: null, state: { not: 'CANCELLED' } },
+          select: { id: true },
+        },
       },
     });
     if (!session) {
@@ -326,12 +329,14 @@ export class FloorService {
       });
     }
 
+    // Cancelled-only tickets leave Order rows behind; gate on chargeable items.
+    const hasChargeableItems = session.orderItems.length > 0;
     const unpaidBusy =
-      session.orders.length > 0 &&
+      hasChargeableItems &&
       session.status !== 'PAID' &&
       session.status !== 'OPEN';
     const unpaidOpenWithOrders =
-      session.orders.length > 0 && session.status === 'OPEN';
+      hasChargeableItems && session.status === 'OPEN';
     if (unpaidBusy || unpaidOpenWithOrders) {
       throw new ConflictException({
         status: 409,
@@ -454,8 +459,10 @@ export class FloorService {
         },
       });
     }
+    const hasChargeableItems = session.orderItems.length > 0;
     if (
-      ['ACTIVE_ORDER', 'BILL_REQUESTED', 'BILL_READY'].includes(session.status)
+      ['BILL_REQUESTED', 'BILL_READY'].includes(session.status) ||
+      (session.status === 'ACTIVE_ORDER' && hasChargeableItems)
     ) {
       throw new ConflictException({
         status: 409,

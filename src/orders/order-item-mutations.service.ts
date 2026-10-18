@@ -145,6 +145,27 @@ export class OrderItemMutationsService {
         },
         context.staffMembershipId,
       );
+
+      // If nothing chargeable remains, clear ACTIVE_ORDER so the table can close.
+      if (cancelled.tableSessionId) {
+        const remaining = await tx.orderItem.count({
+          where: {
+            tableSessionId: cancelled.tableSessionId,
+            cancelledAt: null,
+            state: { not: 'CANCELLED' },
+          },
+        });
+        if (remaining === 0) {
+          await tx.tableSession.updateMany({
+            where: {
+              id: cancelled.tableSessionId,
+              status: 'ACTIVE_ORDER',
+            },
+            data: { status: 'OPEN', version: { increment: 1 } },
+          });
+        }
+      }
+
       return cancelled;
     });
 
@@ -559,6 +580,24 @@ export class OrderItemMutationsService {
           },
           context.staffMembershipId,
         );
+        if (updated.tableSessionId) {
+          const remaining = await tx.orderItem.count({
+            where: {
+              tableSessionId: updated.tableSessionId,
+              cancelledAt: null,
+              state: { not: 'CANCELLED' },
+            },
+          });
+          if (remaining === 0) {
+            await tx.tableSession.updateMany({
+              where: {
+                id: updated.tableSessionId,
+                status: 'ACTIVE_ORDER',
+              },
+              data: { status: 'OPEN', version: { increment: 1 } },
+            });
+          }
+        }
         return updated;
       }
 

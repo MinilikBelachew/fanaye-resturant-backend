@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { SiteModule } from '../site/site.module';
 import { FloorController } from './floor.controller';
 import { FloorLayoutController } from './floor-layout.controller';
 import { FloorLayoutService } from './floor-layout.service';
@@ -15,7 +16,7 @@ import { WaiterPerformanceService } from './waiter-performance.service';
 import { WaiterTablesController } from './waiter-tables.controller';
 
 @Module({
-  imports: [IdentityModule, RealtimeModule],
+  imports: [IdentityModule, RealtimeModule, SiteModule],
   controllers: [
     FloorController,
     FloorLayoutController,

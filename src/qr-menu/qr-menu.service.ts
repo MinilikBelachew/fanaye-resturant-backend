@@ -29,6 +29,7 @@ import {
   ServiceRequestDto,
   ServiceRequestResponseDto,
 } from './dto/service-request.dto';
+import { SiteService } from '../site/site.service';
 
 function money(
   val: Prisma.Decimal | number | string | null | undefined,
@@ -57,6 +58,7 @@ export class QrMenuService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly opsNotify: OpsNotifyService,
+    private readonly sites: SiteService,
   ) {}
 
   async getPublicTableMenu(
@@ -824,14 +826,7 @@ export class QrMenuService {
       throw new ForbiddenException('Tenant context required.');
     }
 
-    const site = await this.prisma.tenantSite.findUnique({
-      where: { tenantId: context.tenantId },
-    });
-
-    if (!site) {
-      return DEFAULT_CONFIG;
-    }
-
+    const site = await this.sites.ensureSiteForTenant(context.tenantId);
     const raw = (site.qrMenuConfigJson as Record<string, unknown>) || {};
     return {
       ...DEFAULT_CONFIG,
@@ -848,26 +843,23 @@ export class QrMenuService {
       throw new ForbiddenException('Tenant context required.');
     }
 
-    const site = await this.prisma.tenantSite.upsert({
-      where: { tenantId: context.tenantId },
-      update: {
-        qrMenuConfigJson: dto as unknown as Prisma.InputJsonValue,
-      },
-      create: {
-        tenantId: context.tenantId,
-        slug: `tenant-${context.tenantId.slice(0, 8)}`,
-        status: 'PUBLISHED',
-        themeJson: {},
-        draftDataJson: {},
+    const site = await this.sites.ensureSiteForTenant(context.tenantId);
+    const updated = await this.prisma.tenantSite.update({
+      where: { id: site.id },
+      data: {
         qrMenuConfigJson: dto as unknown as Prisma.InputJsonValue,
       },
     });
 
-    const raw = (site.qrMenuConfigJson as Record<string, unknown>) || {};
+    const raw = (updated.qrMenuConfigJson as Record<string, unknown>) || {};
     return {
       ...DEFAULT_CONFIG,
       ...raw,
     };
+  }
+
+  async updatePublicSlug(userId: string, slug: string) {
+    return this.sites.updatePublicSlug(userId, slug);
   }
 
   async getTablesQrData(userId: string) {
@@ -876,11 +868,8 @@ export class QrMenuService {
       throw new ForbiddenException('Tenant context required.');
     }
 
-    const site = await this.prisma.tenantSite.findUnique({
-      where: { tenantId: context.tenantId },
-    });
-
-    const slug = site?.slug ?? 'restaurant';
+    const site = await this.sites.ensureSiteForTenant(context.tenantId);
+    const slug = site.slug;
 
     const membership = context.staffMembershipId
       ? await this.prisma.tenantStaffMembership.findUnique({

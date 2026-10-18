@@ -28,6 +28,7 @@ import {
   TableVisitHistoryResponseDto,
 } from './dto/table-detail.dto';
 import { Prisma } from '@prisma/client';
+import { SiteService } from '../site/site.service';
 
 const ACTIVE_COOKING = ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'];
 const READY_STATES = ['READY'];
@@ -38,6 +39,7 @@ export class FloorLayoutService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly casl: CaslService,
+    private readonly sites: SiteService,
   ) {}
 
   async layout(userId: string): Promise<AdminFloorLayoutResponseDto> {
@@ -308,11 +310,8 @@ export class FloorLayoutService {
       throw new NotFoundException('Table not found.');
     }
 
-    const site = await this.prisma.tenantSite.findUnique({
-      where: { tenantId: context.tenantId! },
-      select: { slug: true },
-    });
-    const slug = site?.slug ?? 'restaurant';
+    const site = await this.sites.ensureSiteForTenant(context.tenantId!);
+    const slug = site.slug;
 
     const openSession = await this.prisma.tableSession.findFirst({
       where: {

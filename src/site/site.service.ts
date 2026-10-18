@@ -272,6 +272,11 @@ export class SiteService {
     return `${this.slugify(base)}-${Date.now().toString(36)}`;
   }
 
+  /** Create a TenantSite with a unique slug from the restaurant name if missing. */
+  async ensureSiteForTenant(tenantId: string) {
+    return this.ensureSite(tenantId);
+  }
+
   private async ensureSite(tenantId: string) {
     const existing = await this.prisma.tenantSite.findUnique({
       where: { tenantId },
@@ -299,6 +304,37 @@ export class SiteService {
       },
       include: { tenant: true },
     });
+  }
+
+  /** Update public QR/site slug. Changing it breaks previously printed stickers. */
+  async updatePublicSlug(
+    userId: string,
+    rawSlug: string,
+  ): Promise<{ slug: string; publicPath: string }> {
+    const context = await this.identity.getByUserId(userId);
+    this.assertEditorRole(context);
+    if (!context.tenantId) {
+      throw new BadRequestException('No tenant workspace selected.');
+    }
+
+    const cleaned = this.slugify(rawSlug.trim());
+    if (!cleaned || cleaned.length < 2) {
+      throw new BadRequestException(
+        'Slug must be at least 2 characters (letters, numbers, hyphens).',
+      );
+    }
+
+    const site = await this.ensureSite(context.tenantId);
+    const nextSlug = await this.uniqueSlug(cleaned, context.tenantId);
+    const updated = await this.prisma.tenantSite.update({
+      where: { id: site.id },
+      data: { slug: nextSlug },
+    });
+
+    return {
+      slug: updated.slug,
+      publicPath: `/r/${updated.slug}`,
+    };
   }
 
   async getMine(userId: string): Promise<SiteSingleResponseDto> {

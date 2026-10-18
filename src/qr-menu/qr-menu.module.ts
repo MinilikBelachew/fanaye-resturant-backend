@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../database/prisma.module';
 import { IdentityModule } from '../identity/identity.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { SiteModule } from '../site/site.module';
 import {
   AdminQrMenuController,
   PublicQrMenuController,
@@ -9,7 +10,7 @@ import {
 import { QrMenuService } from './qr-menu.service';
 
 @Module({
-  imports: [PrismaModule, IdentityModule, RealtimeModule],
+  imports: [PrismaModule, IdentityModule, RealtimeModule, SiteModule],
   controllers: [PublicQrMenuController, AdminQrMenuController],
   providers: [QrMenuService],
   exports: [QrMenuService],
