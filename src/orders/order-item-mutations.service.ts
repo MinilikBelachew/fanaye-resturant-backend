@@ -28,6 +28,7 @@ import {
   MutationDataResponseDto,
   OrderItemMutationResultDto,
 } from './dto/order-item-mutation-response.dto';
+import { isEffectiveVip, resolveVipUnitPrice } from './vip-pricing.util';
 
 const DIRECT_CANCEL_STATES = ['CONFIRMED', 'QUEUED', 'ACKNOWLEDGED'];
 const PROTECTED_CANCEL_STATES = ['IN_PREPARATION', 'READY'];
@@ -43,6 +44,7 @@ const approvalItemInclude = {
   orderItem: {
     include: {
       tableSession: { include: { table: true } },
+      roomSession: { include: { hotelRoom: true } },
     },
   },
 } as const;
@@ -77,6 +79,52 @@ export class OrderItemMutationsService {
       });
     }
 
+    return this.applyCancel(context, item, dto.reason.trim());
+  }
+
+  /** Manager daily-close: cancel any non-terminal ticket with a reason. */
+  async forceCancel(
+    userId: string,
+    orderItemId: string,
+    dto: CancelOrderItemDto,
+  ): Promise<MutationDataResponseDto> {
+    const context = await this.requireBranch(userId);
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Floor',
+      'Only managers can force-cancel tickets.',
+    );
+    if (!context.staffMembershipId) {
+      throw new ForbiddenException(
+        'No restaurant membership for this account.',
+      );
+    }
+    const item = await this.prisma.orderItem.findFirst({
+      where: { id: orderItemId, branchId: context.branchId! },
+    });
+    if (!item) throw new NotFoundException('Order item not found.');
+    this.assertVersion(item.version, dto.expectedVersion);
+    if (['CANCELLED', 'SERVED'].includes(item.state) || item.cancelledAt) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'ORDER_ITEM_NOT_CANCELLABLE',
+        errors: { state: item.state },
+      });
+    }
+    return this.applyCancel(context, item, dto.reason.trim());
+  }
+
+  private async applyCancel(
+    context: AuthContextDto,
+    item: {
+      id: string;
+      tenantId: string;
+      branchId: string;
+      itemNameSnapshot: string;
+    },
+    reason: string,
+  ): Promise<MutationDataResponseDto> {
     const updated = await this.prisma.$transaction(async (tx) => {
       const cancelled = await tx.orderItem.update({
         where: { id: item.id },
@@ -84,7 +132,7 @@ export class OrderItemMutationsService {
           state: 'CANCELLED',
           cancelledAt: new Date(),
           cancelledByMembershipId: context.staffMembershipId!,
-          cancellationReason: dto.reason.trim(),
+          cancellationReason: reason,
           version: { increment: 1 },
         },
       });
@@ -735,10 +783,35 @@ export class OrderItemMutationsService {
           ? branchSettings.rushModeBufferMinutes
           : 0;
 
+      const seating = await this.prisma.orderItem.findFirst({
+        where: { id: item.id },
+        select: {
+          tableSession: {
+            select: {
+              table: {
+                select: { isVip: true, location: { select: { isVip: true } } },
+              },
+            },
+          },
+        },
+      });
+      const tenantSettings = await this.prisma.tenantSettings.findUnique({
+        where: { tenantId: context.tenantId! },
+        select: { defaultVipPercent: true },
+      });
+      const unitPriceSnapshot = resolveVipUnitPrice(
+        menuItem.currentPrice,
+        seating?.tableSession?.table
+          ? isEffectiveVip(seating.tableSession.table)
+          : false,
+        menuItem.vipPercent,
+        tenantSettings?.defaultVipPercent ?? 0,
+      );
+
       menuPatch = {
         menuItem: { connect: { id: menuItem.id } },
         itemNameSnapshot: menuItem.name,
-        unitPriceSnapshot: menuItem.currentPrice,
+        unitPriceSnapshot,
         currencyCode: menuItem.currencyCode,
         originalStation: { connect: { id: menuItem.station.id } },
         currentStation: { connect: { id: menuItem.station.id } },
@@ -820,14 +893,18 @@ export class OrderItemMutationsService {
   private async loadOwnedItem(context: AuthContextDto, orderItemId: string) {
     const item = await this.prisma.orderItem.findFirst({
       where: { id: orderItemId, branchId: context.branchId! },
-      include: { tableSession: true },
+      include: { tableSession: true, roomSession: true },
     });
     if (!item) throw new NotFoundException('Order item not found.');
+    const ownerMembershipId =
+      item.tableSession?.primaryWaiterMembershipId ??
+      item.roomSession?.primaryWaiterMembershipId ??
+      null;
     if (
       SHIFT_OWNER_ROLES.includes(context.roleCode) &&
-      item.tableSession.primaryWaiterMembershipId !== context.staffMembershipId
+      ownerMembershipId !== context.staffMembershipId
     ) {
-      throw new ForbiddenException('This is not your table.');
+      throw new ForbiddenException('This is not your seating.');
     }
     if (['CANCELLED', 'SERVED'].includes(item.state)) {
       throw new UnprocessableEntityException({
@@ -917,24 +994,30 @@ export class OrderItemMutationsService {
           displayName: string;
           displayNumber: string | null;
         };
-      };
+      } | null;
+      roomSession?: {
+        hotelRoom: { id: string; roomNumber: string };
+      } | null;
     };
   }): ApprovalQueueItemDto {
     const unit = new Prisma.Decimal(row.orderItem.unitPriceSnapshot);
     const line = unit.mul(row.orderItem.quantity);
+    const table = row.orderItem.tableSession?.table;
+    const room = row.orderItem.roomSession?.hotelRoom;
     return {
       type: 'CANCELLATION',
       requestId: row.id,
       orderItemId: row.orderItemId,
       orderId: row.orderItem.orderId,
-      tableId: row.orderItem.tableSession.table.id,
+      tableId: table?.id ?? room?.id ?? '',
       itemName: row.orderItem.itemNameSnapshot,
       quantity: row.orderItem.quantity,
       unitPrice: unit.toFixed(2),
       lineTotal: line.toFixed(2),
       currencyCode: row.orderItem.currencyCode,
-      tableDisplayName: row.orderItem.tableSession.table.displayName,
-      tableDisplayNumber: row.orderItem.tableSession.table.displayNumber,
+      tableDisplayName:
+        table?.displayName ?? (room ? `Room ${room.roomNumber}` : 'Seating'),
+      tableDisplayNumber: table?.displayNumber ?? room?.roomNumber ?? null,
       stationName: row.orderItem.stationNameSnapshot,
       stationId: row.orderItem.currentPreparationStationId,
       itemState: row.orderItem.state,
@@ -981,24 +1064,30 @@ export class OrderItemMutationsService {
           displayName: string;
           displayNumber: string | null;
         };
-      };
+      } | null;
+      roomSession?: {
+        hotelRoom: { id: string; roomNumber: string };
+      } | null;
     };
   }): ApprovalQueueItemDto {
     const unit = new Prisma.Decimal(row.orderItem.unitPriceSnapshot);
     const line = unit.mul(row.orderItem.quantity);
+    const table = row.orderItem.tableSession?.table;
+    const room = row.orderItem.roomSession?.hotelRoom;
     return {
       type: 'CHANGE',
       requestId: row.id,
       orderItemId: row.orderItemId,
       orderId: row.orderItem.orderId,
-      tableId: row.orderItem.tableSession.table.id,
+      tableId: table?.id ?? room?.id ?? '',
       itemName: row.orderItem.itemNameSnapshot,
       quantity: row.orderItem.quantity,
       unitPrice: unit.toFixed(2),
       lineTotal: line.toFixed(2),
       currencyCode: row.orderItem.currencyCode,
-      tableDisplayName: row.orderItem.tableSession.table.displayName,
-      tableDisplayNumber: row.orderItem.tableSession.table.displayNumber,
+      tableDisplayName:
+        table?.displayName ?? (room ? `Room ${room.roomNumber}` : 'Seating'),
+      tableDisplayNumber: table?.displayNumber ?? room?.roomNumber ?? null,
       stationName: row.orderItem.stationNameSnapshot,
       stationId: row.orderItem.currentPreparationStationId,
       itemState: row.orderItem.state,

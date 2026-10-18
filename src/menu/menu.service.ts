@@ -15,6 +15,7 @@ import {
   CreateMenuItemDto,
   CreateModifierGroupDto,
   ModifierGroupInputDto,
+  UpdateDefaultVipPercentDto,
   UpdateMenuItemDto,
 } from './dto/menu-item.dto';
 import {
@@ -25,7 +26,9 @@ import {
   AdminModifierGroupDto,
   AdminModifierGroupListResponseDto,
   AdminModifierGroupResponseDto,
+  VipPricingResponseDto,
 } from './dto/menu-item-response.dto';
+import { effectiveVipPercentNumber } from '../orders/vip-pricing.util';
 
 @Injectable()
 export class MenuService {
@@ -403,6 +406,14 @@ export class MenuService {
                 badge: dto.badge?.trim() ? dto.badge.trim().slice(0, 40) : null,
               }
             : {}),
+          ...(dto.vipPercent !== undefined
+            ? {
+                vipPercent:
+                  dto.vipPercent === null
+                    ? null
+                    : new Prisma.Decimal(dto.vipPercent),
+              }
+            : {}),
           ...imagePatch,
           version: { increment: 1 },
         },
@@ -444,6 +455,72 @@ export class MenuService {
       include: this.itemInclude(),
     });
     return { data: this.toDto(updated) };
+  }
+
+  async getVipPricing(userId: string): Promise<VipPricingResponseDto> {
+    const context = await this.requireAdmin(userId);
+    const [settings, items] = await Promise.all([
+      this.prisma.tenantSettings.upsert({
+        where: { tenantId: context.tenantId! },
+        create: { tenantId: context.tenantId! },
+        update: {},
+        select: { defaultVipPercent: true },
+      }),
+      this.prisma.menuItem.findMany({
+        where: {
+          tenantId: context.tenantId!,
+          status: 'ACTIVE',
+          menu: {
+            OR: [{ branchId: context.branchId! }, { branchId: null }],
+          },
+        },
+        include: {
+          category: true,
+          station: true,
+        },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      }),
+    ]);
+    const defaultVip = settings.defaultVipPercent;
+    return {
+      defaultVipPercent: money(defaultVip),
+      items: items.map((item) => {
+        const effective = effectiveVipPercentNumber(
+          item.vipPercent,
+          defaultVip,
+        );
+        return {
+          id: item.id,
+          name: item.name,
+          price: money(item.currentPrice),
+          currencyCode: item.currencyCode,
+          categoryName: item.category?.name ?? item.station.name,
+          vipPercent: item.vipPercent != null ? money(item.vipPercent) : null,
+          effectiveVipPercent: money(effective),
+        };
+      }),
+    };
+  }
+
+  async updateDefaultVipPercent(
+    userId: string,
+    dto: UpdateDefaultVipPercentDto,
+  ): Promise<VipPricingResponseDto> {
+    const context = await this.requireAdmin(userId);
+    await this.prisma.tenantSettings.upsert({
+      where: { tenantId: context.tenantId! },
+      create: {
+        tenantId: context.tenantId!,
+        defaultVipPercent: new Prisma.Decimal(dto.defaultVipPercent),
+        updatedByMembershipId: context.staffMembershipId ?? null,
+      },
+      update: {
+        defaultVipPercent: new Prisma.Decimal(dto.defaultVipPercent),
+        updatedByMembershipId: context.staffMembershipId ?? null,
+        settingsVersion: { increment: 1 },
+      },
+    });
+    return this.getVipPricing(userId);
   }
 
   private async requireModifierGroupIds(
@@ -708,6 +785,7 @@ export class MenuService {
     name: string;
     description: string | null;
     currentPrice: Prisma.Decimal;
+    vipPercent?: Prisma.Decimal | null;
     currencyCode: string;
     soldOut: boolean;
     menuCategoryId: string | null;
@@ -774,6 +852,7 @@ export class MenuService {
         ? item.imageFile.path.replace(/\\/g, '/')
         : null,
       badge: item.badge ?? null,
+      vipPercent: item.vipPercent != null ? money(item.vipPercent) : null,
       modifierGroups: item.modifiers
         .filter((assignment) => assignment.group.status === 'ACTIVE')
         .map((assignment) => toModifierGroupDto(assignment)),

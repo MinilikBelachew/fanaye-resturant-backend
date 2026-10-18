@@ -680,6 +680,8 @@ export class BranchesService {
           rushModeEnabled: false,
           rushModeBufferMinutes: 10,
           unacknowledgedAlertMinutes: 3,
+          sessionIdleWarnMinutes: 240,
+          ticketStaleWarnMinutes: 180,
         },
       });
     }
@@ -689,6 +691,8 @@ export class BranchesService {
       rushModeEnabled: settings.rushModeEnabled,
       rushModeBufferMinutes: settings.rushModeBufferMinutes,
       unacknowledgedAlertMinutes: settings.unacknowledgedAlertMinutes,
+      sessionIdleWarnMinutes: settings.sessionIdleWarnMinutes,
+      ticketStaleWarnMinutes: settings.ticketStaleWarnMinutes,
       stationDelayDefaultMinutes: settings.stationDelayDefaultMinutes,
       shiftEndWarningMinutes: settings.shiftEndWarningMinutes,
     };
@@ -725,6 +729,8 @@ export class BranchesService {
         rushModeEnabled: dto.rushModeEnabled ?? false,
         rushModeBufferMinutes: dto.rushModeBufferMinutes ?? 10,
         unacknowledgedAlertMinutes: dto.unacknowledgedAlertMinutes ?? 3,
+        sessionIdleWarnMinutes: dto.sessionIdleWarnMinutes ?? 240,
+        ticketStaleWarnMinutes: dto.ticketStaleWarnMinutes ?? 180,
         updatedByMembershipId: context.staffMembershipId,
       },
       update: {
@@ -736,6 +742,12 @@ export class BranchesService {
           : {}),
         ...(dto.unacknowledgedAlertMinutes !== undefined
           ? { unacknowledgedAlertMinutes: dto.unacknowledgedAlertMinutes }
+          : {}),
+        ...(dto.sessionIdleWarnMinutes !== undefined
+          ? { sessionIdleWarnMinutes: dto.sessionIdleWarnMinutes }
+          : {}),
+        ...(dto.ticketStaleWarnMinutes !== undefined
+          ? { ticketStaleWarnMinutes: dto.ticketStaleWarnMinutes }
           : {}),
         updatedByMembershipId: context.staffMembershipId,
       },
@@ -763,6 +775,8 @@ export class BranchesService {
       rushModeEnabled: updated.rushModeEnabled,
       rushModeBufferMinutes: updated.rushModeBufferMinutes,
       unacknowledgedAlertMinutes: updated.unacknowledgedAlertMinutes,
+      sessionIdleWarnMinutes: updated.sessionIdleWarnMinutes,
+      ticketStaleWarnMinutes: updated.ticketStaleWarnMinutes,
       stationDelayDefaultMinutes: updated.stationDelayDefaultMinutes,
       shiftEndWarningMinutes: updated.shiftEndWarningMinutes,
     };

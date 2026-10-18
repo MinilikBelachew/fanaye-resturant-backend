@@ -55,14 +55,18 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
     const now = new Date();
     const nowMs = now.getTime();
 
-    // Query active cooking tickets that have not yet triggered both alerts
+    // Query active cooking tickets that have not yet triggered alerts
     const activeItems = await this.prisma.orderItem.findMany({
       where: {
         state: { in: ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'] },
         cancelledAt: null,
         servedAt: null,
         queuedAt: { not: null },
-        OR: [{ unacknowledgedAlertSentAt: null }, { delayAlertSentAt: null }],
+        OR: [
+          { unacknowledgedAlertSentAt: null },
+          { delayAlertSentAt: null },
+          { staleWarnAlertSentAt: null, state: 'QUEUED' },
+        ],
       },
       include: {
         tableSession: {
@@ -71,9 +75,15 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
             primaryWaiter: true,
           },
         },
+        roomSession: {
+          include: {
+            hotelRoom: true,
+            primaryWaiter: true,
+          },
+        },
         currentStation: true,
       },
-      take: 150,
+      take: 200,
     });
 
     if (activeItems.length === 0) {
@@ -91,6 +101,7 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
 
     let unackCount = 0;
     let delayCount = 0;
+    let staleCount = 0;
 
     for (const item of activeItems) {
       const queuedTime = item.queuedAt?.getTime() ?? nowMs;
@@ -98,7 +109,7 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
       const elapsedMins = Math.floor(elapsedMs / 60_000);
 
       const branchSettings = settingsByBranch.get(item.branchId);
-      const tableName = formatTableName(item.tableSession);
+      const tableName = formatTableName(item.tableSession, item.roomSession);
 
       // =========================================================================
       // 1. UNACKNOWLEDGED ALERT CHECK (Timer 1)
@@ -154,7 +165,10 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
             severity: 'ATTENTION',
             title: `Preparation Delay · Table ${tableName}`,
             body: `${item.quantity}× ${item.itemNameSnapshot} is overdue (${elapsedMins}m elapsed, target was ${targetMins}m)`,
-            recipientMembershipId: item.tableSession.primaryWaiterMembershipId,
+            recipientMembershipId:
+              item.tableSession?.primaryWaiterMembershipId ??
+              item.roomSession?.primaryWaiterMembershipId ??
+              undefined,
             rooms: [
               managerRoom(item.branchId),
               stationRoom(item.currentPreparationStationId),
@@ -172,17 +186,65 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
           delayCount += 1;
         }
       }
+
+      // =========================================================================
+      // 3. LONG QUEUED STALE WARN (default 3h) — once
+      // =========================================================================
+      if (item.state === 'QUEUED' && !item.staleWarnAlertSentAt) {
+        const staleMins = branchSettings?.ticketStaleWarnMinutes ?? 180;
+        if (elapsedMins >= staleMins) {
+          await this.prisma.orderItem.update({
+            where: { id: item.id },
+            data: { staleWarnAlertSentAt: now },
+          });
+
+          await this.opsNotify.notify({
+            type: OpsEventType.TICKET_STALE,
+            tenantId: item.tenantId,
+            branchId: item.branchId,
+            severity: 'URGENT',
+            title: `Stale ticket · ${tableName}`,
+            body: `${item.quantity}× ${item.itemNameSnapshot} still New for ${elapsedMins}m — resolve before daily close.`,
+            rooms: [
+              managerRoom(item.branchId),
+              stationRoom(item.currentPreparationStationId),
+            ],
+            relatedEntityType: 'OrderItem',
+            relatedEntityId: item.id,
+            payload: {
+              orderItemId: item.id,
+              tableSessionId: item.tableSessionId,
+              roomSessionId: item.roomSessionId,
+              stationId: item.currentPreparationStationId,
+              elapsedMinutes: elapsedMins,
+              staleThresholdMinutes: staleMins,
+            },
+          });
+          staleCount += 1;
+        }
+      }
+    }
+
+    if (staleCount > 0) {
+      this.logger.log(`Stale QUEUED ticket warnings sent: ${staleCount}`);
     }
 
     return { unackCount, delayCount };
   }
 }
 
-function formatTableName(session: {
-  sessionKind?: string | null;
-  customerName?: string | null;
-  table?: { displayName: string; displayNumber: string | null } | null;
-}): string {
+function formatTableName(
+  session: {
+    sessionKind?: string | null;
+    customerName?: string | null;
+    table?: { displayName: string; displayNumber: string | null } | null;
+  } | null,
+  roomSession?: { hotelRoom?: { roomNumber: string } | null } | null,
+): string {
+  if (roomSession?.hotelRoom) {
+    return `Room ${roomSession.hotelRoom.roomNumber}`;
+  }
+  if (!session) return 'Seating';
   if (session.sessionKind === 'CALL_PICKUP') {
     const name = session.customerName?.trim();
     return name ? `Call · ${name}` : 'Call pickup';

@@ -53,6 +53,17 @@ export class OrderItemMutationsController {
     return this.mutations.directCancel(String(request.user.id), id, dto);
   }
 
+  @Post(':id/force-cancel')
+  @ApiOkResponse({ type: MutationDataResponseDto })
+  @HttpCode(HttpStatus.OK)
+  forceCancel(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CancelOrderItemDto,
+  ): Promise<MutationDataResponseDto> {
+    return this.mutations.forceCancel(String(request.user.id), id, dto);
+  }
+
   @Post(':id/cancellation-requests')
   @ApiOkResponse({ type: MutationDataResponseDto })
   @HttpCode(HttpStatus.OK)

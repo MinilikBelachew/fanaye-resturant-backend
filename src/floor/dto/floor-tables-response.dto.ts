@@ -17,6 +17,10 @@ export class FloorLocationDto {
   @ApiProperty()
   @Expose()
   sortOrder: number;
+
+  @ApiProperty()
+  @Expose()
+  isVip: boolean;
 }
 
 export class FloorTableDto {
@@ -95,6 +99,14 @@ export class FloorTableDto {
   @ApiProperty()
   @Expose()
   delayedItemCount: number;
+
+  @ApiProperty({ description: 'Table-level VIP flag' })
+  @Expose()
+  isVip: boolean;
+
+  @ApiProperty({ description: 'True when table or place is VIP' })
+  @Expose()
+  effectiveVip: boolean;
 
   @ApiProperty()
   @Expose()

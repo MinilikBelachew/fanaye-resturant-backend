@@ -95,7 +95,8 @@ export class DailyCloseService {
         itemCount: snapshot.itemCount,
         tableCount: snapshot.tableCount,
         openTableCount: snapshot.blockers.filter(
-          (b) => b.code === 'OPEN_TABLE_SESSION',
+          (b) =>
+            b.code === 'OPEN_TABLE_SESSION' || b.code === 'OPEN_ROOM_SESSION',
         ).length,
         waiters: snapshot.waiters,
         stations: snapshot.stations,
@@ -421,11 +422,23 @@ export class DailyCloseService {
     const dayYmd = ymd(businessDate);
     const { start: dayStart, end: dayEnd } = localDayRange(dayYmd);
     const duringDay = { gte: dayStart, lte: dayEnd };
+    const openKitchenStates = [
+      'CONFIRMED',
+      'QUEUED',
+      'ACKNOWLEDGED',
+      'IN_PREPARATION',
+      'READY',
+      'DELAYED',
+      'CANNOT_PREPARE',
+    ];
     const [
       bills,
       payments,
       openSessions,
       leftoverOpenSessions,
+      openRoomSessions,
+      leftoverOpenRoomSessions,
+      openKitchenTickets,
       openDrops,
       receivedDrops,
       cashierSessions,
@@ -451,7 +464,12 @@ export class DailyCloseService {
           ],
         },
         include: {
-          bill: { include: { tableSession: { include: { table: true } } } },
+          bill: {
+            include: {
+              tableSession: { include: { table: true } },
+              roomSession: { include: { hotelRoom: true } },
+            },
+          },
         },
       }),
       this.prisma.tableSession.findMany({
@@ -471,6 +489,34 @@ export class DailyCloseService {
           NOT: { businessDate },
         },
         include: { table: true },
+      }),
+      this.prisma.roomSession.findMany({
+        where: {
+          branchId,
+          businessDate,
+          status: { not: 'CLOSED' },
+        },
+        include: { hotelRoom: true },
+      }),
+      this.prisma.roomSession.findMany({
+        where: {
+          branchId,
+          status: { not: 'CLOSED' },
+          NOT: { businessDate },
+        },
+        include: { hotelRoom: true },
+      }),
+      this.prisma.orderItem.findMany({
+        where: {
+          branchId,
+          cancelledAt: null,
+          state: { in: openKitchenStates },
+        },
+        include: {
+          tableSession: { include: { table: true } },
+          roomSession: { include: { hotelRoom: true } },
+        },
+        take: 200,
       }),
       this.prisma.cashDrop.findMany({
         where: {
@@ -657,6 +703,7 @@ export class DailyCloseService {
         code: 'OPEN_TABLE_SESSION',
         message: `${session.table.displayName} is still ${session.status}.`,
         entityId: session.id,
+        expectedVersion: session.version,
       });
     }
 
@@ -668,6 +715,41 @@ export class DailyCloseService {
         code: 'OPEN_TABLE_SESSION',
         message: `${session.table.displayName} is still open from ${ymd(session.businessDate)}. Close it before lock.`,
         entityId: session.id,
+        expectedVersion: session.version,
+      });
+    }
+
+    for (const session of openRoomSessions) {
+      if (session.status === 'CLOSED') continue;
+      blockers.push({
+        code: 'OPEN_ROOM_SESSION',
+        message: `Room ${session.hotelRoom.roomNumber} is still ${session.status}.`,
+        entityId: session.id,
+        expectedVersion: session.version,
+      });
+    }
+
+    for (const session of leftoverOpenRoomSessions) {
+      if (session.status === 'CLOSED') continue;
+      blockers.push({
+        code: 'OPEN_ROOM_SESSION',
+        message: `Room ${session.hotelRoom.roomNumber} is still open from ${ymd(session.businessDate)}. Close it before lock.`,
+        entityId: session.id,
+        expectedVersion: session.version,
+      });
+    }
+
+    for (const item of openKitchenTickets) {
+      const seat =
+        item.tableSession?.table.displayName ??
+        (item.roomSession
+          ? `Room ${item.roomSession.hotelRoom.roomNumber}`
+          : 'Unknown seat');
+      blockers.push({
+        code: 'OPEN_KITCHEN_TICKET',
+        message: `${item.quantity}× ${item.itemNameSnapshot} on ${seat} is still ${item.state}.`,
+        entityId: item.id,
+        expectedVersion: item.version,
       });
     }
 
@@ -679,7 +761,10 @@ export class DailyCloseService {
         )
       ) {
         const tableName =
-          payment.bill.tableSession.table.displayName ?? 'a table';
+          payment.bill.tableSession?.table.displayName ??
+          (payment.bill.roomSession
+            ? `Room ${payment.bill.roomSession.hotelRoom.roomNumber}`
+            : 'a table');
         blockers.push({
           code: 'PENDING_TRANSFER',
           message: `${tableName} has a pending transfer of ${money(payment.amount)}.`,
@@ -1271,6 +1356,7 @@ function parseBlockers(json: Prisma.JsonValue | null): DailyCloseBlockerDto[] {
   if (!json || !Array.isArray(json)) return [];
   return json.map((item) => {
     const row = item as Record<string, unknown>;
+    const versionRaw = row.expectedVersion;
     return {
       code: String(row.code ?? 'UNKNOWN'),
       message: String(
@@ -1281,6 +1367,12 @@ function parseBlockers(json: Prisma.JsonValue | null): DailyCloseBlockerDto[] {
         (row.tableId as string) ??
         (row.cashierSessionId as string) ??
         null,
+      expectedVersion:
+        typeof versionRaw === 'number'
+          ? versionRaw
+          : versionRaw != null
+            ? Number(versionRaw)
+            : null,
     };
   });
 }

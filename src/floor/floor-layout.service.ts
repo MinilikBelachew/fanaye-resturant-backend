@@ -97,6 +97,7 @@ export class FloorLayoutService {
           code,
           sortOrder,
           status: 'ACTIVE',
+          isVip: dto.isVip ?? false,
         },
         include: {
           tables: {
@@ -141,6 +142,7 @@ export class FloorLayoutService {
             ? { code: dto.code.trim().toUpperCase().replace(/\s+/g, '_') }
             : {}),
           ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+          ...(dto.isVip !== undefined ? { isVip: dto.isVip } : {}),
         },
         include: {
           tables: {
@@ -193,6 +195,7 @@ export class FloorLayoutService {
         assignedWaiterMembershipId: dto.assignedWaiterMembershipId ?? null,
         status: 'AVAILABLE',
         sortOrder,
+        isVip: dto.isVip ?? false,
       },
       include: {
         location: true,
@@ -265,6 +268,7 @@ export class FloorLayoutService {
           ? { assignedWaiterMembershipId: dto.assignedWaiterMembershipId }
           : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        ...(dto.isVip !== undefined ? { isVip: dto.isVip } : {}),
         version: { increment: 1 },
       },
       include: {
@@ -845,6 +849,7 @@ export class FloorLayoutService {
     code: string;
     sortOrder: number;
     status: string;
+    isVip: boolean;
     tables: Array<{
       id: string;
       locationId: string;
@@ -852,10 +857,11 @@ export class FloorLayoutService {
       displayNumber: string | null;
       status: string;
       sortOrder: number;
+      isVip: boolean;
       assignedWaiterMembershipId: string | null;
       version: number;
       assignedWaiter: { employeeDisplayName: string } | null;
-      location?: { name: string };
+      location?: { name: string; isVip?: boolean };
     }>;
   }): AdminTableLocationDto {
     return {
@@ -864,10 +870,11 @@ export class FloorLayoutService {
       code: location.code,
       sortOrder: location.sortOrder,
       status: location.status,
+      isVip: location.isVip,
       tables: location.tables.map((table) =>
         this.toTableDto({
           ...table,
-          location: { name: location.name },
+          location: { name: location.name, isVip: location.isVip },
         }),
       ),
     };
@@ -880,11 +887,13 @@ export class FloorLayoutService {
     displayNumber: string | null;
     status: string;
     sortOrder: number;
+    isVip: boolean;
     assignedWaiterMembershipId: string | null;
     version: number;
     assignedWaiter: { employeeDisplayName: string } | null;
-    location: { name: string };
+    location: { name: string; isVip?: boolean };
   }): AdminDiningTableDto {
+    const placeVip = Boolean(table.location.isVip);
     return {
       id: table.id,
       locationId: table.locationId,
@@ -895,6 +904,8 @@ export class FloorLayoutService {
       sortOrder: table.sortOrder,
       assignedWaiterMembershipId: table.assignedWaiterMembershipId,
       assignedWaiterName: table.assignedWaiter?.employeeDisplayName ?? null,
+      isVip: table.isVip,
+      effectiveVip: table.isVip || placeVip,
       version: table.version,
     };
   }

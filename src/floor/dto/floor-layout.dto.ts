@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -28,6 +29,13 @@ export class CreateTableLocationDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @ApiPropertyOptional({
+    description: 'When true, every table in this place is VIP',
+  })
+  @IsOptional()
+  @IsBoolean()
+  isVip?: boolean;
 }
 
 export class UpdateTableLocationDto {
@@ -49,6 +57,11 @@ export class UpdateTableLocationDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isVip?: boolean;
 }
 
 export class CreateDiningTableDto {
@@ -84,6 +97,13 @@ export class CreateDiningTableDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @ApiPropertyOptional({
+    description: 'Table-level VIP (also VIP if its place is VIP)',
+  })
+  @IsOptional()
+  @IsBoolean()
+  isVip?: boolean;
 }
 
 export class UpdateDiningTableDto {
@@ -119,4 +139,9 @@ export class UpdateDiningTableDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isVip?: boolean;
 }

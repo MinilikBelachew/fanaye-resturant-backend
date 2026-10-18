@@ -36,13 +36,23 @@ export class BillDto {
   @Expose()
   billId: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({ nullable: true })
   @Expose()
-  tableSessionId: string;
+  tableSessionId: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @Expose()
+  roomSessionId: string | null;
 
   @ApiProperty()
   @Expose()
   billNumber: string;
+
+  @ApiPropertyOptional({
+    description: 'True when seating was VIP (prices already include VIP %)',
+  })
+  @Expose()
+  isVip?: boolean;
 
   @ApiProperty()
   @Expose()
@@ -95,9 +105,13 @@ export class BillRequestCreatedDto {
   @Expose()
   requestedAt: Date;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
   @Expose()
-  tableSession: { status: string; version: number };
+  tableSession?: { status: string; version: number };
+
+  @ApiPropertyOptional()
+  @Expose()
+  roomSession?: { status: string; version: number };
 }
 
 export class CashierBillRequestDto {
@@ -105,9 +119,13 @@ export class CashierBillRequestDto {
   @Expose()
   billRequestId: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({ nullable: true })
   @Expose()
-  tableSessionId: string;
+  tableSessionId: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @Expose()
+  roomSessionId: string | null;
 
   @ApiProperty()
   @Expose()
@@ -133,9 +151,13 @@ export class CashierBillRequestDto {
   @Expose()
   currencyCode: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
   @Expose()
-  expectedTableSessionVersion: number;
+  expectedTableSessionVersion?: number;
+
+  @ApiPropertyOptional()
+  @Expose()
+  expectedRoomSessionVersion?: number;
 
   @ApiProperty({ type: [String] })
   @Expose()
@@ -201,6 +223,13 @@ export class CashPaymentResponseDto {
   @Expose()
   change: string;
 
+  @ApiProperty({
+    description: 'Amount still owed on the bill after this payment.',
+    example: '200.00',
+  })
+  @Expose()
+  remainingAmount: string;
+
   @ApiProperty()
   @Expose()
   bill: {
@@ -210,9 +239,13 @@ export class CashPaymentResponseDto {
     version: number;
   };
 
-  @ApiProperty()
+  @ApiPropertyOptional()
   @Expose()
-  tableSession: { status: string; version: number };
+  tableSession?: { status: string; version: number };
+
+  @ApiPropertyOptional()
+  @Expose()
+  roomSession?: { status: string; version: number };
 }
 
 export class TransferPaymentResponseDto {
@@ -222,7 +255,7 @@ export class TransferPaymentResponseDto {
   payment: PaymentDto;
 
   @ApiPropertyOptional({
-    description: 'Verified bank amount above bill due (tip).',
+    description: 'Verified bank amount above the claimed portion (tip).',
     example: '20.00',
   })
   @Expose()
@@ -235,6 +268,13 @@ export class TransferPaymentResponseDto {
   @Expose()
   verifiedAmount?: string;
 
+  @ApiProperty({
+    description: 'Amount still owed on the bill after this payment.',
+    example: '200.00',
+  })
+  @Expose()
+  remainingAmount: string;
+
   @ApiProperty()
   @Expose()
   bill: {
@@ -244,9 +284,13 @@ export class TransferPaymentResponseDto {
     version: number;
   };
 
-  @ApiProperty()
+  @ApiPropertyOptional()
   @Expose()
-  tableSession: { status: string; version: number };
+  tableSession?: { status: string; version: number };
+
+  @ApiPropertyOptional()
+  @Expose()
+  roomSession?: { status: string; version: number };
 }
 
 export class VerifyTransferResponseDto {
@@ -289,10 +333,18 @@ export class SessionBillResponseDto {
     requestedAt: Date;
   } | null;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
   @Expose()
-  tableSession: {
+  tableSession?: {
     tableSessionId: string;
+    status: string;
+    version: number;
+  };
+
+  @ApiPropertyOptional()
+  @Expose()
+  roomSession?: {
+    roomSessionId: string;
     status: string;
     version: number;
   };
@@ -367,6 +419,12 @@ export class PublicReceiptDto {
   @ApiPropertyOptional()
   @Expose()
   tableName: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when the seating was VIP (table or place)',
+  })
+  @Expose()
+  isVip?: boolean;
 
   @ApiProperty()
   @Expose()

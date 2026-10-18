@@ -10,8 +10,10 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -260,6 +262,29 @@ export class UpdateMenuItemDto {
   @IsString()
   @MaxLength(40)
   badge?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'VIP surcharge % override. Null = inherit house default; 0 = no VIP surcharge for this item.',
+    nullable: true,
+    example: 30,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(500)
+  vipPercent?: number | null;
+}
+
+export class UpdateDefaultVipPercentDto {
+  @ApiProperty({ example: 30, description: 'House-wide VIP surcharge %' })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(500)
+  defaultVipPercent: number;
 }
 
 export class CreateModifierGroupDto extends ModifierGroupInputDto {}

@@ -71,9 +71,13 @@ export class ConfirmOrderResponseDto {
   @Expose()
   orderId: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({ nullable: true })
   @Expose()
-  tableSessionId: string;
+  tableSessionId: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @Expose()
+  roomSessionId: string | null;
 
   @ApiProperty()
   @Expose()
@@ -96,9 +100,16 @@ export class ConfirmOrderResponseDto {
   @Type(() => ConfirmedOrderItemDto)
   items: ConfirmedOrderItemDto[];
 
-  @ApiProperty()
+  @ApiPropertyOptional()
   @Expose()
-  tableSession: {
+  tableSession?: {
+    status: string;
+    version: number;
+  };
+
+  @ApiPropertyOptional()
+  @Expose()
+  roomSession?: {
     status: string;
     version: number;
   };
@@ -142,9 +153,13 @@ export class ServedOrderItemDto {
 }
 
 export class SessionOrdersResponseDto {
-  @ApiProperty()
+  @ApiPropertyOptional({ nullable: true })
   @Expose()
-  tableSessionId: string;
+  tableSessionId?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @Expose()
+  roomSessionId?: string | null;
 
   @ApiProperty()
   @Expose()

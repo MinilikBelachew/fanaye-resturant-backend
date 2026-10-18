@@ -13,6 +13,7 @@ import { CashierPaymentsController } from './payments.controller';
 import { PublicReceiptsController } from './public-receipts.controller';
 import { ReceiptExtractController } from './receipt-extract.controller';
 import { ReceiptExtractService } from './receipt-extract.service';
+import { RoomSessionBillingController } from './room-session-billing.controller';
 import { TableSessionBillController } from './table-session-bill.controller';
 import { TableSessionBillingController } from './table-session-billing.controller';
 
@@ -21,6 +22,7 @@ import { TableSessionBillingController } from './table-session-billing.controlle
   controllers: [
     TableSessionBillingController,
     TableSessionBillController,
+    RoomSessionBillingController,
     BillRequestsController,
     CashierBillingController,
     BillsController,

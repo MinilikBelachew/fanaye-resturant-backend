@@ -26,9 +26,13 @@ export class StationQueueItemDto {
   @Expose()
   orderItemId: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({ nullable: true })
   @Expose()
-  tableSessionId: string;
+  tableSessionId: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @Expose()
+  roomSessionId?: string | null;
 
   @ApiProperty()
   @Expose()

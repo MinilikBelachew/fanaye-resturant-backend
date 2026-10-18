@@ -26,6 +26,7 @@ import {
   SessionOrdersResponseDto,
 } from './dto/order-response.dto';
 import { WaiterMenuResponseDto } from './dto/waiter-menu-response.dto';
+import { isEffectiveVip, resolveVipUnitPrice } from './vip-pricing.util';
 
 /** Floor ownership roles (table assignment) — not a CASL subject alone. */
 const ORDER_ROLES = ['WAITER', 'DISPATCHER'];
@@ -57,16 +58,27 @@ export class OrdersService {
     },
   ): Promise<WaiterMenuResponseDto> {
     const context = await this.requireWaiter(userId);
+    let seatingVip = false;
+    let defaultVipPercent: Prisma.Decimal | number = 0;
     if (query.tableSessionId) {
       const session = await this.prisma.tableSession.findFirst({
         where: {
           id: query.tableSessionId,
           branchId: context.branchId!,
         },
+        include: {
+          table: { include: { location: true } },
+        },
       });
       if (!session) {
         throw new NotFoundException('Table session not found.');
       }
+      seatingVip = isEffectiveVip(session.table);
+      const tenantSettings = await this.prisma.tenantSettings.findUnique({
+        where: { tenantId: context.tenantId! },
+        select: { defaultVipPercent: true },
+      });
+      defaultVipPercent = tenantSettings?.defaultVipPercent ?? 0;
     }
 
     let menu = await this.prisma.menu.findFirst({
@@ -216,6 +228,7 @@ export class OrdersService {
 
     return {
       menuId: menu.id,
+      isVip: seatingVip,
       activePeriod: activePeriod
         ? { id: activePeriod.id, name: activePeriod.name }
         : null,
@@ -236,7 +249,14 @@ export class OrdersService {
           id: item.id,
           name: item.name,
           description: item.description,
-          price: money(item.currentPrice),
+          price: money(
+            resolveVipUnitPrice(
+              item.currentPrice,
+              seatingVip,
+              item.vipPercent,
+              defaultVipPercent,
+            ),
+          ),
           currencyCode: item.currencyCode,
           soldOut,
           remainingQty,
@@ -295,43 +315,144 @@ export class OrdersService {
       return existing as unknown as ConfirmOrderResponseDto;
     }
 
-    const session = await this.prisma.tableSession.findFirst({
-      where: {
-        id: dto.tableSessionId,
-        branchId: context.branchId!,
-      },
+    const hasTable = Boolean(dto.tableSessionId);
+    const hasRoom = Boolean(dto.roomSessionId);
+    if (hasTable === hasRoom) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'SESSION_XOR_REQUIRED',
+        errors: {
+          session: 'Provide exactly one of tableSessionId or roomSessionId.',
+        },
+      });
+    }
+
+    type ConfirmSession = {
+      kind: 'table' | 'room';
+      id: string;
+      businessDate: Date;
+      version: number;
+      seatingVip: boolean;
+      label: string;
+    };
+
+    let confirmSession: ConfirmSession;
+
+    if (hasTable) {
+      const session = await this.prisma.tableSession.findFirst({
+        where: {
+          id: dto.tableSessionId!,
+          branchId: context.branchId!,
+        },
+        include: {
+          table: { include: { location: true } },
+        },
+      });
+      if (!session) {
+        throw new NotFoundException('Table session not found.');
+      }
+      if (session.primaryWaiterMembershipId !== context.staffMembershipId) {
+        throw new ForbiddenException('This table belongs to another waiter.');
+      }
+      if (session.closedAt || session.status === 'CLOSED') {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'SESSION_CLOSED',
+          errors: { session: 'SESSION_CLOSED' },
+        });
+      }
+      await this.dailyClose.assertBusinessDayNotLocked(
+        context.branchId!,
+        session.businessDate,
+      );
+      if (!ORDERABLE.includes(session.status)) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'SESSION_NOT_ORDERABLE',
+          errors: { session: 'SESSION_NOT_ORDERABLE' },
+        });
+      }
+      if (session.version !== dto.expectedTableSessionVersion) {
+        throw new ConflictException({
+          status: 409,
+          errors: { version: 'stale' },
+          expectedVersion: session.version,
+        });
+      }
+      confirmSession = {
+        kind: 'table',
+        id: session.id,
+        businessDate: session.businessDate,
+        version: session.version,
+        seatingVip: isEffectiveVip(session.table),
+        label:
+          session.table.displayNumber ?? session.table.displayName ?? 'Table',
+      };
+    } else {
+      const session = await this.prisma.roomSession.findFirst({
+        where: {
+          id: dto.roomSessionId!,
+          branchId: context.branchId!,
+        },
+        include: {
+          hotelRoom: true,
+          roomStay: true,
+        },
+      });
+      if (!session) {
+        throw new NotFoundException('Room session not found.');
+      }
+      if (session.primaryWaiterMembershipId !== context.staffMembershipId) {
+        throw new ForbiddenException('This room belongs to another waiter.');
+      }
+      if (session.closedAt || session.status === 'CLOSED') {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'SESSION_CLOSED',
+          errors: { session: 'SESSION_CLOSED' },
+        });
+      }
+      if (session.roomStay.status !== 'IN_HOUSE') {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'STAY_NOT_IN_HOUSE',
+          errors: { stay: 'STAY_NOT_IN_HOUSE' },
+        });
+      }
+      await this.dailyClose.assertBusinessDayNotLocked(
+        context.branchId!,
+        session.businessDate,
+      );
+      if (!ORDERABLE.includes(session.status)) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'SESSION_NOT_ORDERABLE',
+          errors: { session: 'SESSION_NOT_ORDERABLE' },
+        });
+      }
+      if (session.version !== dto.expectedRoomSessionVersion) {
+        throw new ConflictException({
+          status: 409,
+          errors: { version: 'stale' },
+          expectedVersion: session.version,
+        });
+      }
+      confirmSession = {
+        kind: 'room',
+        id: session.id,
+        businessDate: session.businessDate,
+        version: session.version,
+        seatingVip: false,
+        label: `Room ${session.hotelRoom.roomNumber}`,
+      };
+    }
+
+    const seatingVip = confirmSession.seatingVip;
+    const tenantSettings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId: context.tenantId! },
+      select: { defaultVipPercent: true },
     });
-    if (!session) {
-      throw new NotFoundException('Table session not found.');
-    }
-    if (session.primaryWaiterMembershipId !== context.staffMembershipId) {
-      throw new ForbiddenException('This table belongs to another waiter.');
-    }
-    if (session.closedAt || session.status === 'CLOSED') {
-      throw new UnprocessableEntityException({
-        status: 422,
-        code: 'SESSION_CLOSED',
-        errors: { session: 'SESSION_CLOSED' },
-      });
-    }
-    await this.dailyClose.assertBusinessDayNotLocked(
-      context.branchId!,
-      session.businessDate,
-    );
-    if (!ORDERABLE.includes(session.status)) {
-      throw new UnprocessableEntityException({
-        status: 422,
-        code: 'SESSION_NOT_ORDERABLE',
-        errors: { session: 'SESSION_NOT_ORDERABLE' },
-      });
-    }
-    if (session.version !== dto.expectedTableSessionVersion) {
-      throw new ConflictException({
-        status: 409,
-        errors: { version: 'stale' },
-        expectedVersion: session.version,
-      });
-    }
+    const defaultVipPercent = tenantSettings?.defaultVipPercent ?? 0;
 
     const menuItemIds = [...new Set(dto.items.map((item) => item.menuItemId))];
     const menuItems = await this.prisma.menuItem.findMany({
@@ -449,13 +570,15 @@ export class OrdersService {
         : 0;
 
     const now = new Date();
+    const isRoom = confirmSession.kind === 'room';
     const created = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
           tenantId: context.tenantId!,
           branchId: context.branchId!,
-          businessDate: session.businessDate,
-          tableSessionId: session.id,
+          businessDate: confirmSession.businessDate,
+          tableSessionId: isRoom ? null : confirmSession.id,
+          roomSessionId: isRoom ? confirmSession.id : null,
           createdByWaiterMembershipId: context.staffMembershipId!,
           waiterShiftSessionId: context.shiftSessionId!,
           status: 'CONFIRMED',
@@ -464,11 +587,17 @@ export class OrdersService {
             create: prepared.map(({ line, item, selected }) => ({
               tenantId: context.tenantId!,
               branchId: context.branchId!,
-              businessDate: session.businessDate,
-              tableSessionId: session.id,
+              businessDate: confirmSession.businessDate,
+              tableSessionId: isRoom ? null : confirmSession.id,
+              roomSessionId: isRoom ? confirmSession.id : null,
               menuItemId: item.id,
               itemNameSnapshot: item.name,
-              unitPriceSnapshot: item.currentPrice,
+              unitPriceSnapshot: resolveVipUnitPrice(
+                item.currentPrice,
+                seatingVip,
+                item.vipPercent,
+                defaultVipPercent,
+              ),
               currencyCode: item.currencyCode,
               quantity: line.quantity,
               originalPreparationStationId: item.station.id,
@@ -567,26 +696,52 @@ export class OrdersService {
         }
       }
 
-      const updatedSession = await tx.tableSession.update({
-        where: { id: session.id },
-        data: {
-          status: 'ACTIVE_ORDER',
-          version: { increment: 1 },
-        },
-      });
+      let sessionStatus = 'ACTIVE_ORDER';
+      let sessionVersion = confirmSession.version + 1;
+      if (isRoom) {
+        const updatedRoom = await tx.roomSession.update({
+          where: { id: confirmSession.id },
+          data: {
+            status: 'ACTIVE_ORDER',
+            version: { increment: 1 },
+          },
+        });
+        sessionStatus = updatedRoom.status;
+        sessionVersion = updatedRoom.version;
+      } else {
+        const updatedTable = await tx.tableSession.update({
+          where: { id: confirmSession.id },
+          data: {
+            status: 'ACTIVE_ORDER',
+            version: { increment: 1 },
+          },
+        });
+        sessionStatus = updatedTable.status;
+        sessionVersion = updatedTable.version;
+      }
 
       const payload: ConfirmOrderResponseDto = {
         orderId: order.id,
         tableSessionId: order.tableSessionId,
+        roomSessionId: order.roomSessionId,
         status: order.status,
         confirmedAt: order.confirmedAt,
         businessDate: order.businessDate.toISOString().slice(0, 10),
         createdByWaiterMembershipId: order.createdByWaiterMembershipId,
         items: order.items.map(toItemDto),
-        tableSession: {
-          status: updatedSession.status,
-          version: updatedSession.version,
-        },
+        ...(isRoom
+          ? {
+              roomSession: {
+                status: sessionStatus,
+                version: sessionVersion,
+              },
+            }
+          : {
+              tableSession: {
+                status: sessionStatus,
+                version: sessionVersion,
+              },
+            }),
       };
 
       await this.storeIdempotent(
@@ -630,18 +785,7 @@ export class OrdersService {
       byStation.set(item.stationId, (byStation.get(item.stationId) ?? 0) + 1);
     }
 
-    const sessionMeta = await this.prisma.tableSession.findUnique({
-      where: { id: created.payload.tableSessionId },
-      select: {
-        table: {
-          select: { displayName: true, displayNumber: true },
-        },
-      },
-    });
-    const tableLabel =
-      sessionMeta?.table.displayNumber ??
-      sessionMeta?.table.displayName ??
-      'Table';
+    const seatingLabel = confirmSession.label;
 
     for (const [stationId, count] of byStation) {
       this.opsNotify.broadcast({
@@ -649,17 +793,19 @@ export class OrdersService {
         tenantId: context.tenantId!,
         branchId: context.branchId!,
         severity: 'ATTENTION',
-        title: `New tickets · ${tableLabel}`,
+        title: `New tickets · ${seatingLabel}`,
         body: `${count} item(s) queued for your station.`,
         rooms: [
           stationRoom(stationId),
           branchRoom(context.branchId!),
           managerRoom(context.branchId!),
         ],
-        relatedEntityType: 'TableSession',
-        relatedEntityId: created.payload.tableSessionId,
+        relatedEntityType: isRoom ? 'RoomSession' : 'TableSession',
+        relatedEntityId: confirmSession.id,
         payload: {
-          tableSessionId: created.payload.tableSessionId,
+          ...(isRoom
+            ? { roomSessionId: confirmSession.id }
+            : { tableSessionId: confirmSession.id }),
           stationId,
           orderId: created.payload.orderId,
           count,
@@ -674,7 +820,7 @@ export class OrdersService {
           orderItemId: item.id,
           tenantId: item.tenantId,
           branchId: item.branchId,
-          tableSessionId: item.tableSessionId,
+          tableSessionId: item.tableSessionId ?? undefined,
           stationId: item.currentPreparationStationId,
           expectedPrepMinutes: item.expectedPrepMinutesSnapshot ?? 15,
           unacknowledgedMinutes: unackMinutes,
@@ -718,6 +864,47 @@ export class OrdersService {
 
     return {
       tableSessionId: session.id,
+      roomSessionId: null,
+      sessionStatus: session.status,
+      version: session.version,
+      data: session.orders.map((order) => ({
+        orderId: order.id,
+        status: order.status,
+        confirmedAt: order.confirmedAt,
+        items: order.items.map(toItemDto),
+      })),
+    };
+  }
+
+  async listRoomSessionOrders(
+    userId: string,
+    roomSessionId: string,
+  ): Promise<SessionOrdersResponseDto> {
+    const context = await this.requireBranch(userId);
+    const session = await this.prisma.roomSession.findFirst({
+      where: {
+        id: roomSessionId,
+        branchId: context.branchId!,
+      },
+      include: {
+        orders: {
+          orderBy: { confirmedAt: 'asc' },
+          include: {
+            items: {
+              orderBy: { confirmedAt: 'asc' },
+              include: { modifiers: { orderBy: { sortOrder: 'asc' } } },
+            },
+          },
+        },
+      },
+    });
+    if (!session) {
+      throw new NotFoundException('Room session not found.');
+    }
+
+    return {
+      tableSessionId: null,
+      roomSessionId: session.id,
       sessionStatus: session.status,
       version: session.version,
       data: session.orders.map((order) => ({
@@ -756,16 +943,20 @@ export class OrdersService {
 
     const item = await this.prisma.orderItem.findFirst({
       where: { id: orderItemId, branchId: context.branchId! },
-      include: { tableSession: true },
+      include: { tableSession: true, roomSession: true },
     });
     if (!item) {
       throw new NotFoundException('Order item not found.');
     }
+    const ownerMembershipId =
+      item.tableSession?.primaryWaiterMembershipId ??
+      item.roomSession?.primaryWaiterMembershipId ??
+      null;
     if (
       ORDER_ROLES.includes(context.roleCode) &&
-      item.tableSession.primaryWaiterMembershipId !== context.staffMembershipId
+      ownerMembershipId !== context.staffMembershipId
     ) {
-      throw new ForbiddenException('This is not your table.');
+      throw new ForbiddenException('This is not your seating.');
     }
     if (item.state !== READY_STATE) {
       throw new UnprocessableEntityException({

@@ -31,6 +31,7 @@ import { MenuScanService } from './menu-scan.service';
 import {
   CreateMenuItemDto,
   CreateModifierGroupDto,
+  UpdateDefaultVipPercentDto,
   UpdateMenuItemDto,
 } from './dto/menu-item.dto';
 import {
@@ -39,6 +40,7 @@ import {
   AdminMenuMetaResponseDto,
   AdminModifierGroupListResponseDto,
   AdminModifierGroupResponseDto,
+  VipPricingResponseDto,
 } from './dto/menu-item-response.dto';
 import {
   ImportScannedMenuDto,
@@ -93,6 +95,21 @@ export class MenuAdminController {
     @Query('stationId') stationId?: string,
   ): Promise<AdminMenuItemListResponseDto> {
     return this.menu.list(String(request.user.id), { q, stationId });
+  }
+
+  @Get('vip-pricing')
+  @ApiOkResponse({ type: VipPricingResponseDto })
+  vipPricing(@Request() request): Promise<VipPricingResponseDto> {
+    return this.menu.getVipPricing(String(request.user.id));
+  }
+
+  @Patch('vip-pricing/default')
+  @ApiOkResponse({ type: VipPricingResponseDto })
+  updateDefaultVip(
+    @Request() request,
+    @Body() dto: UpdateDefaultVipPercentDto,
+  ): Promise<VipPricingResponseDto> {
+    return this.menu.updateDefaultVipPercent(String(request.user.id), dto);
   }
 
   // Static paths must be registered BEFORE :id routes

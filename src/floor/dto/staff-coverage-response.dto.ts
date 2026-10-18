@@ -51,6 +51,23 @@ export class AdminStaffShiftCoverageDto {
   tables: AdminStaffCoverageTableDto[];
 }
 
+export class AdminStaffDayShiftDto {
+  @ApiProperty({ example: 'Mon' })
+  dayCode: string;
+
+  @ApiProperty()
+  shiftDefinitionId: string;
+
+  @ApiProperty()
+  shiftName: string;
+
+  @ApiProperty({ example: '07:00' })
+  startLocalTime: string;
+
+  @ApiProperty({ example: '15:00' })
+  endLocalTime: string;
+}
+
 export class AdminStaffMemberDto {
   @ApiProperty()
   id: string;
@@ -72,6 +89,12 @@ export class AdminStaffMemberDto {
     example: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
   })
   workingDays: string[];
+
+  @ApiProperty({
+    type: [AdminStaffDayShiftDto],
+    description: 'Per-day shift windows for the weekly roster',
+  })
+  dayShifts: AdminStaffDayShiftDto[];
 
   @ApiPropertyOptional()
   phone: string | null;
@@ -111,6 +134,45 @@ export class AdminStaffMemberDto {
 
   @ApiPropertyOptional()
   shiftsCoveredCount?: number;
+
+  @ApiPropertyOptional()
+  employeeCode?: string | null;
+
+  @ApiPropertyOptional()
+  jobTitle?: string | null;
+
+  @ApiPropertyOptional()
+  employmentType?: string | null;
+
+  @ApiPropertyOptional()
+  payType?: string | null;
+
+  @ApiPropertyOptional()
+  basePay?: number | null;
+
+  @ApiPropertyOptional()
+  hireDate?: string | null;
+
+  @ApiPropertyOptional()
+  probationEndDate?: string | null;
+
+  @ApiPropertyOptional()
+  emergencyContactName?: string | null;
+
+  @ApiPropertyOptional()
+  emergencyContactPhone?: string | null;
+
+  @ApiPropertyOptional()
+  hrNotes?: string | null;
+
+  @ApiPropertyOptional()
+  annualLeaveBalanceDays?: number | null;
+
+  @ApiPropertyOptional()
+  photoId?: string | null;
+
+  @ApiPropertyOptional()
+  photoPath?: string | null;
 }
 
 export class AdminStaffDetailResponseDto {

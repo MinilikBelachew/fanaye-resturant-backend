@@ -5,7 +5,8 @@ export type RestaurantRoleCode =
   | 'CASHIER'
   | 'STATION_OPERATOR'
   | 'DISPATCHER'
-  | 'STORE_MANAGER';
+  | 'STORE_MANAGER'
+  | 'RECEPTIONIST';
 
 /**
  * Canonical permission catalog. Codes are what Identity loads into
@@ -20,6 +21,10 @@ export const PERMISSIONS: Array<{ code: string; domain: string }> = [
   { code: 'table.reassign', domain: 'TABLE' },
   { code: 'table.close_paid', domain: 'TABLE' },
   { code: 'floor.manage', domain: 'TABLE' },
+  // Rooms / lodging
+  { code: 'rooms.admin', domain: 'ROOM' },
+  { code: 'rooms.operate', domain: 'ROOM' },
+  { code: 'rooms.read', domain: 'ROOM' },
   // Orders
   { code: 'order.create', domain: 'ORDER' },
   { code: 'order.confirm', domain: 'ORDER' },
@@ -101,6 +106,9 @@ export const ROLE_PERMISSIONS: Record<RestaurantRoleCode, string[] | '*'> = {
     'table.reassign',
     'table.close_paid',
     'floor.manage',
+    'rooms.admin',
+    'rooms.operate',
+    'rooms.read',
     'order.create',
     'order.confirm',
     'order.change_eligible',
@@ -131,12 +139,8 @@ export const ROLE_PERMISSIONS: Record<RestaurantRoleCode, string[] | '*'> = {
     'inventory.manage',
     'inventory.view',
     'inventory.receive_purchase',
-    'inventory.transfer.send',
     'inventory.transfer.receive',
     'inventory.supply.request',
-    'inventory.supply.approve',
-    'inventory.produce',
-    'inventory.location.manage',
     'station.manage',
     'staff.manage',
     'shift.manage',
@@ -156,6 +160,8 @@ export const ROLE_PERMISSIONS: Record<RestaurantRoleCode, string[] | '*'> = {
     'table.start_session',
     'table.view_assigned',
     'table.close_paid',
+    'rooms.read',
+    'rooms.operate',
     'order.create',
     'order.confirm',
     'order.change_eligible',
@@ -172,6 +178,10 @@ export const ROLE_PERMISSIONS: Record<RestaurantRoleCode, string[] | '*'> = {
     'receipt.extract',
     'cash_drop.initiate',
     'cash_pouch.read',
+  ],
+  RECEPTIONIST: [
+    'rooms.read',
+    'rooms.operate',
   ],
   DISPATCHER: [
     'table.start_session',

@@ -152,6 +152,12 @@ export class WaiterMenuResponseDto {
   @Expose()
   menuId: string;
 
+  @ApiPropertyOptional({
+    description: 'True when the table session seating is VIP',
+  })
+  @Expose()
+  isVip?: boolean;
+
   @ApiPropertyOptional({ type: () => MenuPeriodSummaryDto })
   @Expose()
   @Type(() => MenuPeriodSummaryDto)

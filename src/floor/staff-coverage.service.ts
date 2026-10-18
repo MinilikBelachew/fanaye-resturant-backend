@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
@@ -96,6 +97,38 @@ function normalizeWorkingDays(days?: string[] | null): string[] {
   return WEEKDAY_ORDER.filter((day) => selected.has(day));
 }
 
+type DayShiftInput = { dayCode: string; shiftDefinitionId: string };
+
+function normalizeExplicitDayShifts(
+  dayShifts: DayShiftInput[],
+): DayShiftInput[] {
+  const byDay = new Map<string, string>();
+  for (const row of dayShifts) {
+    if (
+      (WEEKDAY_ORDER as readonly string[]).includes(row.dayCode) &&
+      row.shiftDefinitionId
+    ) {
+      byDay.set(row.dayCode, row.shiftDefinitionId);
+    }
+  }
+  return WEEKDAY_ORDER.filter((day) => byDay.has(day)).map((dayCode) => ({
+    dayCode,
+    shiftDefinitionId: byDay.get(dayCode)!,
+  }));
+}
+
+/** Legacy: one shift applied to every working day. */
+function dayShiftsFromLegacy(
+  workingDays?: string[] | null,
+  shiftDefinitionId?: string | null,
+): DayShiftInput[] {
+  if (!shiftDefinitionId) return [];
+  return normalizeWorkingDays(workingDays).map((dayCode) => ({
+    dayCode,
+    shiftDefinitionId,
+  }));
+}
+
 @Injectable()
 export class StaffCoverageService {
   constructor(
@@ -149,7 +182,12 @@ export class StaffCoverageService {
       this.prisma.tenantStaffMembership.findMany({
         where: membershipWhere,
         include: {
-          user: { include: { credential: true } },
+          user: {
+            include: {
+              credential: true,
+              photo: { select: { id: true, path: true } },
+            },
+          },
           roleAssignments: {
             where: { status: 'ACTIVE' },
             include: { role: true },
@@ -183,6 +221,10 @@ export class StaffCoverageService {
               table: { include: { location: true } },
             },
           },
+          dayShifts: {
+            include: { shiftDefinition: true },
+            orderBy: { dayCode: 'asc' },
+          },
           shiftAssignments: {
             where: {
               status: 'SCHEDULED',
@@ -190,7 +232,7 @@ export class StaffCoverageService {
             },
             include: { definition: true },
             orderBy: { createdAt: 'desc' },
-            take: 1,
+            take: 5,
           },
         },
         orderBy: { employeeDisplayName: 'asc' },
@@ -238,6 +280,7 @@ export class StaffCoverageService {
         createdAt: member.createdAt.toISOString(),
         tablesCoveredCount,
         shiftsCoveredCount: base.shiftCoverages.length,
+        ...this.hrFieldsFromMember(member as Record<string, unknown>),
       },
     };
   }
@@ -317,6 +360,15 @@ export class StaffCoverageService {
     const password = rawPin.slice(0, 72);
     const passwordHash = await bcrypt.hash(password, 10);
 
+    const plannedDayShifts =
+      dto.dayShifts !== undefined
+        ? normalizeExplicitDayShifts(dto.dayShifts)
+        : dayShiftsFromLegacy(dto.workingDays, dto.shiftDefinitionId);
+    const plannedWorkingDays =
+      plannedDayShifts.length > 0
+        ? plannedDayShifts.map((row) => row.dayCode)
+        : normalizeWorkingDays(dto.workingDays);
+
     const membershipId = await this.prisma.$transaction(async (tx) => {
       const user = await tx.appUser.create({
         data: {
@@ -324,6 +376,7 @@ export class StaffCoverageService {
           email,
           phone,
           accountStatus: dto.active === false ? 'INACTIVE' : 'ACTIVE',
+          ...(dto.photoId ? { photoId: dto.photoId } : {}),
         },
       });
 
@@ -341,8 +394,9 @@ export class StaffCoverageService {
           userId: user.id,
           employeeDisplayName: name,
           status: dto.active === false ? 'INACTIVE' : 'ACTIVE',
-          workingDays: normalizeWorkingDays(dto.workingDays),
+          workingDays: plannedWorkingDays,
           joinedAt: new Date(),
+          ...(dto.hireDate ? { hireDate: new Date(dto.hireDate) } : {}),
         },
       });
 
@@ -398,48 +452,38 @@ export class StaffCoverageService {
         },
       });
 
-      if (dto.shiftDefinitionId) {
-        const shiftDef = await tx.shiftDefinition.findFirst({
-          where: {
-            id: dto.shiftDefinitionId,
-            branchId: targetBranchId,
-            status: 'ACTIVE',
-          },
-        });
-        if (shiftDef) {
-          const { startAt, endAt } = computeShiftWindowDates(
-            shiftDef.startLocalTime,
-            shiftDef.endLocalTime,
-          );
-          await tx.shiftAssignment.create({
-            data: {
-              tenantId: context.tenantId!,
-              branchId: targetBranchId,
-              staffMembershipId: membership.id,
-              shiftDefinitionId: shiftDef.id,
-              roleId: role.id,
-              scheduledStartAt: startAt,
-              scheduledEndAt: endAt,
-              graceMinutes: shiftDef.graceMinutes,
-              status: 'SCHEDULED',
-            },
-          });
-        }
+      if (plannedDayShifts.length > 0) {
+        await this.replaceStaffDayShifts(
+          tx,
+          context.tenantId!,
+          membership.id,
+          targetBranchId,
+          plannedDayShifts,
+          role.id,
+        );
       }
 
       return membership.id;
     });
 
-    if (
-      roleCode === 'WAITER' &&
-      dto.shiftDefinitionId &&
-      dto.tableIds &&
-      dto.tableIds.length > 0
-    ) {
-      await this.setWaiterCoverage(userId, membershipId, {
-        shiftDefinitionId: dto.shiftDefinitionId,
-        tableIds: dto.tableIds,
-      });
+    if (roleCode === 'WAITER') {
+      if (dto.tableCoverages && dto.tableCoverages.length > 0) {
+        for (const coverage of dto.tableCoverages) {
+          await this.setWaiterCoverage(userId, membershipId, {
+            shiftDefinitionId: coverage.shiftDefinitionId,
+            tableIds: coverage.tableIds,
+          });
+        }
+      } else if (
+        dto.shiftDefinitionId &&
+        dto.tableIds &&
+        dto.tableIds.length > 0
+      ) {
+        await this.setWaiterCoverage(userId, membershipId, {
+          shiftDefinitionId: dto.shiftDefinitionId,
+          tableIds: dto.tableIds,
+        });
+      }
     }
 
     const member = await this.loadStaffMember(
@@ -467,7 +511,12 @@ export class StaffCoverageService {
         tenantId: context.tenantId!,
       },
       include: {
-        user: { include: { credential: true } },
+        user: {
+          include: {
+            credential: true,
+            photo: { select: { id: true, path: true } },
+          },
+        },
         roleAssignments: {
           where: { status: 'ACTIVE' },
           include: { role: true },
@@ -540,14 +589,94 @@ export class StaffCoverageService {
         });
       }
 
-      if (dto.workingDays !== undefined) {
+      if (dto.dayShifts !== undefined) {
+        const planned = normalizeExplicitDayShifts(dto.dayShifts);
+        const activeRole = existing.roleAssignments[0]?.role;
+        await this.replaceStaffDayShifts(
+          tx,
+          context.tenantId!,
+          membershipId,
+          workingBranchId,
+          planned,
+          activeRole?.id ?? null,
+        );
+      } else if (dto.shiftDefinitionId !== undefined) {
+        const planned = dayShiftsFromLegacy(
+          dto.workingDays ?? existing.workingDays,
+          dto.shiftDefinitionId,
+        );
+        const activeRole = existing.roleAssignments[0]?.role;
+        await this.replaceStaffDayShifts(
+          tx,
+          context.tenantId!,
+          membershipId,
+          workingBranchId,
+          planned,
+          activeRole?.id ?? null,
+        );
+      } else if (dto.workingDays !== undefined) {
+        // Days-only change: keep existing per-day shifts where possible
+        const nextDays = normalizeWorkingDays(dto.workingDays);
+        const existingDayRows = await tx.staffDayShift.findMany({
+          where: { staffMembershipId: membershipId },
+        });
+        const byDay = new Map(
+          existingDayRows.map((row) => [row.dayCode, row.shiftDefinitionId]),
+        );
+        const fallbackShiftId =
+          existingDayRows[0]?.shiftDefinitionId ??
+          (
+            await tx.shiftAssignment.findFirst({
+              where: {
+                staffMembershipId: membershipId,
+                branchId: workingBranchId,
+                status: 'SCHEDULED',
+                shiftDefinitionId: { not: null },
+              },
+              orderBy: { createdAt: 'desc' },
+            })
+          )?.shiftDefinitionId ??
+          null;
+
+        const planned: DayShiftInput[] = [];
+        for (const dayCode of nextDays) {
+          const shiftId = byDay.get(dayCode) ?? fallbackShiftId;
+          if (shiftId) {
+            planned.push({ dayCode, shiftDefinitionId: shiftId });
+          }
+        }
+
+        if (planned.length > 0 || existingDayRows.length > 0) {
+          const activeRole = existing.roleAssignments[0]?.role;
+          await this.replaceStaffDayShifts(
+            tx,
+            context.tenantId!,
+            membershipId,
+            workingBranchId,
+            planned,
+            activeRole?.id ?? null,
+          );
+        } else {
+          await tx.tenantStaffMembership.update({
+            where: { id: membershipId },
+            data: { workingDays: nextDays },
+          });
+        }
+      }
+
+      const hrPatch = this.buildHrPatch(dto);
+      if (Object.keys(hrPatch).length > 0) {
         await tx.tenantStaffMembership.update({
           where: { id: membershipId },
-          data: { workingDays: normalizeWorkingDays(dto.workingDays) },
+          data: hrPatch,
         });
       }
 
-      if (dto.email !== undefined || dto.phone !== undefined) {
+      if (
+        dto.email !== undefined ||
+        dto.phone !== undefined ||
+        dto.photoId !== undefined
+      ) {
         await tx.appUser.update({
           where: { id: existing.userId },
           data: {
@@ -556,6 +685,9 @@ export class StaffCoverageService {
               : {}),
             ...(dto.phone !== undefined
               ? { phone: dto.phone.trim() || null }
+              : {}),
+            ...(dto.photoId !== undefined
+              ? { photoId: dto.photoId || null }
               : {}),
           },
         });
@@ -659,46 +791,16 @@ export class StaffCoverageService {
           }
         }
       }
-
-      if (dto.shiftDefinitionId) {
-        const shiftDef = await tx.shiftDefinition.findFirst({
-          where: {
-            id: dto.shiftDefinitionId,
-            branchId: workingBranchId,
-            status: 'ACTIVE',
-          },
-        });
-        if (shiftDef) {
-          await tx.shiftAssignment.updateMany({
-            where: {
-              staffMembershipId: membershipId,
-              branchId: workingBranchId,
-              status: 'SCHEDULED',
-            },
-            data: { status: 'CANCELLED' },
-          });
-
-          const { startAt, endAt } = computeShiftWindowDates(
-            shiftDef.startLocalTime,
-            shiftDef.endLocalTime,
-          );
-          const activeRole = existing.roleAssignments[0]?.role;
-          await tx.shiftAssignment.create({
-            data: {
-              tenantId: context.tenantId!,
-              branchId: workingBranchId,
-              staffMembershipId: membershipId,
-              shiftDefinitionId: shiftDef.id,
-              roleId: activeRole?.id ?? null,
-              scheduledStartAt: startAt,
-              scheduledEndAt: endAt,
-              graceMinutes: shiftDef.graceMinutes,
-              status: 'SCHEDULED',
-            },
-          });
-        }
-      }
     });
+
+    if (dto.tableCoverages && dto.tableCoverages.length > 0) {
+      for (const coverage of dto.tableCoverages) {
+        await this.setWaiterCoverage(userId, membershipId, {
+          shiftDefinitionId: coverage.shiftDefinitionId,
+          tableIds: coverage.tableIds,
+        });
+      }
+    }
 
     const member = await this.loadStaffMember(
       context,
@@ -950,7 +1052,12 @@ export class StaffCoverageService {
     employeeDisplayName: string;
     status: string;
     workingDays: string[];
-    user: { phone: string | null; email: string | null } | null;
+    user: {
+      phone: string | null;
+      email: string | null;
+      photoId?: string | null;
+      photo?: { id: string; path: string } | null;
+    } | null;
     roleAssignments: Array<{ role: { code: string; name: string } }>;
     branchAssignments?: Array<{
       branchId: string;
@@ -973,6 +1080,16 @@ export class StaffCoverageService {
         displayName: string;
         displayNumber: string | null;
         location: { name: string };
+      };
+    }>;
+    dayShifts?: Array<{
+      dayCode: string;
+      shiftDefinitionId: string;
+      shiftDefinition: {
+        id: string;
+        name: string;
+        startLocalTime: Date;
+        endLocalTime: Date;
       };
     }>;
   }): AdminStaffMemberDto {
@@ -1009,19 +1126,57 @@ export class StaffCoverageService {
       });
     }
 
-    const primaryAssignment = (member as any).shiftAssignments?.[0];
-    if (
-      primaryAssignment?.definition &&
-      !byShift.has(primaryAssignment.definition.id)
-    ) {
-      byShift.set(primaryAssignment.definition.id, {
-        shiftDefinitionId: primaryAssignment.definition.id,
-        shiftName: primaryAssignment.definition.name,
-        startLocalTime: formatTime(primaryAssignment.definition.startLocalTime),
-        endLocalTime: formatTime(primaryAssignment.definition.endLocalTime),
-        tables: [],
-      });
+    const assignments = ((member as any).shiftAssignments ?? []) as Array<{
+      definition?: {
+        id: string;
+        name: string;
+        startLocalTime: Date;
+        endLocalTime: Date;
+      } | null;
+    }>;
+    for (const assignment of assignments) {
+      if (assignment?.definition && !byShift.has(assignment.definition.id)) {
+        byShift.set(assignment.definition.id, {
+          shiftDefinitionId: assignment.definition.id,
+          shiftName: assignment.definition.name,
+          startLocalTime: formatTime(assignment.definition.startLocalTime),
+          endLocalTime: formatTime(assignment.definition.endLocalTime),
+          tables: [],
+        });
+      }
     }
+
+    const dayShiftRows = member.dayShifts ?? [];
+    const dayShifts: AdminStaffMemberDto['dayShifts'] = WEEKDAY_ORDER.filter(
+      (day) => dayShiftRows.some((row) => row.dayCode === day),
+    ).map((dayCode) => {
+      const row = dayShiftRows.find((r) => r.dayCode === dayCode)!;
+      return {
+        dayCode,
+        shiftDefinitionId: row.shiftDefinition.id,
+        shiftName: row.shiftDefinition.name,
+        startLocalTime: formatTime(row.shiftDefinition.startLocalTime),
+        endLocalTime: formatTime(row.shiftDefinition.endLocalTime),
+      };
+    });
+
+    // Also surface day-plan shifts in shiftCoverages when no table rows yet
+    for (const row of dayShifts) {
+      if (!byShift.has(row.shiftDefinitionId)) {
+        byShift.set(row.shiftDefinitionId, {
+          shiftDefinitionId: row.shiftDefinitionId,
+          shiftName: row.shiftName,
+          startLocalTime: row.startLocalTime,
+          endLocalTime: row.endLocalTime,
+          tables: [],
+        });
+      }
+    }
+
+    const workingDaysFromPlan =
+      dayShifts.length > 0
+        ? dayShifts.map((row) => row.dayCode)
+        : normalizeWorkingDays(member.workingDays);
 
     const hasCred = Boolean((member as any).user?.credential?.passwordHash);
     const roleLabel =
@@ -1035,9 +1190,12 @@ export class StaffCoverageService {
       roleCode,
       roleLabel,
       active: member.status === 'ACTIVE',
-      workingDays: normalizeWorkingDays(member.workingDays),
+      workingDays: workingDaysFromPlan,
+      dayShifts,
       phone: member.user?.phone ?? null,
       email: member.user?.email ?? null,
+      photoId: member.user?.photoId ?? member.user?.photo?.id ?? null,
+      photoPath: member.user?.photo?.path ?? null,
       hasPin: hasCred,
       hasPassword: hasCred,
       stationId: station?.id ?? null,
@@ -1047,7 +1205,82 @@ export class StaffCoverageService {
       shiftCoverages: [...byShift.values()].sort((a, b) =>
         a.startLocalTime.localeCompare(b.startLocalTime),
       ),
+      ...this.hrFieldsFromMember(member as Record<string, unknown>),
     };
+  }
+
+  private hrFieldsFromMember(member: Record<string, unknown>) {
+    const num = (v: unknown) => {
+      if (v == null) return null;
+      if (typeof v === 'number') return v;
+      if (
+        typeof v === 'object' &&
+        v !== null &&
+        'toNumber' in v &&
+        typeof (v as { toNumber: () => number }).toNumber === 'function'
+      ) {
+        return (v as { toNumber: () => number }).toNumber();
+      }
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const dateOnly = (d: unknown) =>
+      d instanceof Date ? d.toISOString().slice(0, 10) : null;
+    return {
+      employeeCode: (member.employeeCode as string | null) ?? null,
+      jobTitle: (member.jobTitle as string | null) ?? null,
+      employmentType: (member.employmentType as string | null) ?? null,
+      payType: (member.payType as string | null) ?? null,
+      basePay: num(member.basePay),
+      hireDate: dateOnly(member.hireDate),
+      probationEndDate: dateOnly(member.probationEndDate),
+      emergencyContactName:
+        (member.emergencyContactName as string | null) ?? null,
+      emergencyContactPhone:
+        (member.emergencyContactPhone as string | null) ?? null,
+      hrNotes: (member.hrNotes as string | null) ?? null,
+      annualLeaveBalanceDays: num(member.annualLeaveBalanceDays) ?? 0,
+    };
+  }
+
+  private buildHrPatch(dto: UpdateAdminStaffDto) {
+    const data: Record<string, unknown> = {};
+    if (dto.employeeCode !== undefined) {
+      data.employeeCode = dto.employeeCode.trim() || null;
+    }
+    if (dto.jobTitle !== undefined) {
+      data.jobTitle = dto.jobTitle.trim() || null;
+    }
+    if (dto.employmentType !== undefined) {
+      data.employmentType = dto.employmentType;
+    }
+    if (dto.payType !== undefined) {
+      data.payType = dto.payType;
+    }
+    if (dto.basePay !== undefined) {
+      data.basePay = dto.basePay;
+    }
+    if (dto.hireDate !== undefined) {
+      data.hireDate = dto.hireDate ? new Date(dto.hireDate) : null;
+    }
+    if (dto.probationEndDate !== undefined) {
+      data.probationEndDate = dto.probationEndDate
+        ? new Date(dto.probationEndDate)
+        : null;
+    }
+    if (dto.emergencyContactName !== undefined) {
+      data.emergencyContactName = dto.emergencyContactName.trim() || null;
+    }
+    if (dto.emergencyContactPhone !== undefined) {
+      data.emergencyContactPhone = dto.emergencyContactPhone.trim() || null;
+    }
+    if (dto.hrNotes !== undefined) {
+      data.hrNotes = dto.hrNotes.trim() || null;
+    }
+    if (dto.annualLeaveBalanceDays !== undefined) {
+      data.annualLeaveBalanceDays = dto.annualLeaveBalanceDays;
+    }
+    return data;
   }
 
   async resetStaffPin(
@@ -1295,7 +1528,12 @@ export class StaffCoverageService {
         tenantId: context.tenantId!,
       },
       include: {
-        user: { include: { credential: true } },
+        user: {
+          include: {
+            credential: true,
+            photo: { select: { id: true, path: true } },
+          },
+        },
         roleAssignments: {
           where: { status: 'ACTIVE' },
           include: { role: true },
@@ -1326,6 +1564,10 @@ export class StaffCoverageService {
             table: { include: { location: true } },
           },
         },
+        dayShifts: {
+          include: { shiftDefinition: true },
+          orderBy: { dayCode: 'asc' },
+        },
         shiftAssignments: {
           where: {
             status: 'SCHEDULED',
@@ -1333,7 +1575,7 @@ export class StaffCoverageService {
           },
           include: { definition: true },
           orderBy: { createdAt: 'desc' },
-          take: 1,
+          take: 5,
         },
       },
     });
@@ -1341,6 +1583,94 @@ export class StaffCoverageService {
       throw new NotFoundException('Staff member not found.');
     }
     return member;
+  }
+
+  private async replaceStaffDayShifts(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    membershipId: string,
+    branchId: string,
+    planned: DayShiftInput[],
+    roleId: number | null,
+  ) {
+    const uniqueShiftIds = [
+      ...new Set(planned.map((row) => row.shiftDefinitionId)),
+    ];
+    if (uniqueShiftIds.length > 0) {
+      const shifts = await tx.shiftDefinition.findMany({
+        where: {
+          id: { in: uniqueShiftIds },
+          branchId,
+          status: 'ACTIVE',
+        },
+      });
+      if (shifts.length !== uniqueShiftIds.length) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          errors: { dayShifts: 'invalid_shift' },
+          message: 'One or more shift windows are invalid for this branch.',
+        });
+      }
+    }
+
+    await tx.staffDayShift.deleteMany({
+      where: { staffMembershipId: membershipId },
+    });
+
+    if (planned.length > 0) {
+      await tx.staffDayShift.createMany({
+        data: planned.map((row) => ({
+          tenantId,
+          staffMembershipId: membershipId,
+          dayCode: row.dayCode,
+          shiftDefinitionId: row.shiftDefinitionId,
+        })),
+      });
+    }
+
+    await tx.tenantStaffMembership.update({
+      where: { id: membershipId },
+      data: {
+        workingDays: planned.map((row) => row.dayCode),
+      },
+    });
+
+    await tx.shiftAssignment.updateMany({
+      where: {
+        staffMembershipId: membershipId,
+        branchId,
+        status: 'SCHEDULED',
+      },
+      data: { status: 'CANCELLED' },
+    });
+
+    if (uniqueShiftIds.length === 0) {
+      return;
+    }
+
+    const shiftDefs = await tx.shiftDefinition.findMany({
+      where: { id: { in: uniqueShiftIds } },
+    });
+
+    for (const shiftDef of shiftDefs) {
+      const { startAt, endAt } = computeShiftWindowDates(
+        shiftDef.startLocalTime,
+        shiftDef.endLocalTime,
+      );
+      await tx.shiftAssignment.create({
+        data: {
+          tenantId,
+          branchId,
+          staffMembershipId: membershipId,
+          shiftDefinitionId: shiftDef.id,
+          roleId,
+          scheduledStartAt: startAt,
+          scheduledEndAt: endAt,
+          graceMinutes: shiftDef.graceMinutes,
+          status: 'SCHEDULED',
+        },
+      });
+    }
   }
 
   private async requireWaiter(

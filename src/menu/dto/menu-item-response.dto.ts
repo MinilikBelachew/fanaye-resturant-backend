@@ -109,6 +109,12 @@ export class AdminMenuItemDto {
   @ApiPropertyOptional({ nullable: true })
   badge: string | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Null = inherit TenantSettings.defaultVipPercent',
+  })
+  vipPercent: string | null;
+
   @ApiProperty({ type: [AdminModifierGroupDto] })
   modifierGroups: AdminModifierGroupDto[];
 
@@ -117,6 +123,39 @@ export class AdminMenuItemDto {
 
   @ApiProperty()
   hasRecipe: boolean;
+}
+
+export class VipPricingItemDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty()
+  price: string;
+
+  @ApiProperty()
+  currencyCode: string;
+
+  @ApiProperty()
+  categoryName: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  vipPercent: string | null;
+
+  @ApiProperty({
+    description: 'Resolved % used at VIP tables (override or house default)',
+  })
+  effectiveVipPercent: string;
+}
+
+export class VipPricingResponseDto {
+  @ApiProperty()
+  defaultVipPercent: string;
+
+  @ApiProperty({ type: [VipPricingItemDto] })
+  items: VipPricingItemDto[];
 }
 
 export class AdminMenuItemListResponseDto {

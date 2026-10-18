@@ -13,7 +13,10 @@ import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { businessDateUtc } from '../common/business-date';
 import { StartTableSessionDto } from './dto/start-table-session.dto';
-import { CloseTableSessionDto } from './dto/close-table-session.dto';
+import {
+  CloseTableSessionDto,
+  ForceCloseSessionDto,
+} from './dto/close-table-session.dto';
 import { OpenCallPickupDto } from './dto/open-call-pickup.dto';
 import {
   FloorTableDto,
@@ -388,6 +391,121 @@ export class FloorService {
     return closed;
   }
 
+  /** Manager daily-close path: close empty / PAID sessions with a reason. */
+  async forceCloseSession(
+    userId: string,
+    tableSessionId: string,
+    dto: ForceCloseSessionDto,
+  ): Promise<TableSessionResponseDto> {
+    const context = await this.requireBranch(userId);
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Floor',
+      'Only managers can force-close tables.',
+    );
+
+    const session = await this.prisma.tableSession.findFirst({
+      where: { id: tableSessionId, branchId: context.branchId! },
+      include: {
+        table: { include: { location: true } },
+        primaryWaiter: true,
+        orders: { select: { id: true } },
+        bill: true,
+        orderItems: {
+          where: { cancelledAt: null, state: { not: 'CANCELLED' } },
+          select: { id: true, state: true },
+        },
+      },
+    });
+    if (!session) throw new NotFoundException('Table session not found.');
+    if (session.status === 'CLOSED' || session.closedAt) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { session: 'alreadyClosed' },
+      });
+    }
+    if (session.version !== dto.expectedVersion) {
+      throw new ConflictException({
+        status: 409,
+        errors: { version: 'stale' },
+        expectedVersion: session.version,
+      });
+    }
+
+    const liveItems = session.orderItems.filter((item) =>
+      [
+        'QUEUED',
+        'ACKNOWLEDGED',
+        'IN_PREPARATION',
+        'READY',
+        'CANNOT_PREPARE',
+        'SERVED',
+      ].includes(item.state),
+    );
+    if (liveItems.length > 0 && session.status !== 'PAID') {
+      throw new ConflictException({
+        status: 409,
+        code: 'TABLE_FORCE_CLOSE_BLOCKED',
+        errors: {
+          session:
+            'Cancel kitchen tickets or settle the bill before force-closing.',
+          openTicketCount: liveItems.length,
+        },
+      });
+    }
+    if (
+      ['ACTIVE_ORDER', 'BILL_REQUESTED', 'BILL_READY'].includes(session.status)
+    ) {
+      throw new ConflictException({
+        status: 409,
+        code: 'TABLE_FORCE_CLOSE_UNPAID',
+        errors: {
+          session: 'Settle or void unpaid items before force-closing.',
+        },
+      });
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const closed = await tx.tableSession.update({
+        where: { id: session.id },
+        data: {
+          status: 'CLOSED',
+          closedAt: new Date(),
+          closedByMembershipId: context.staffMembershipId,
+          closeReason: dto.reason.trim(),
+          version: { increment: 1 },
+        },
+        include: {
+          table: { include: { location: true } },
+          primaryWaiter: true,
+        },
+      });
+      await tx.diningTable.update({
+        where: { id: session.tableId },
+        data: { status: 'AVAILABLE', version: { increment: 1 } },
+      });
+      await tx.tableAssignment.updateMany({
+        where: { tableSessionId: session.id, releasedAt: null },
+        data: { releasedAt: new Date() },
+      });
+      if (session.status === 'PAID' || session.bill?.status === 'PAID') {
+        await tx.bill.updateMany({
+          where: { tableSessionId: session.id, status: 'PAID' },
+          data: {
+            status: 'CLOSED',
+            closedAt: new Date(),
+            closedByMembershipId: context.staffMembershipId,
+            version: { increment: 1 },
+          },
+        });
+      }
+      return closed;
+    });
+
+    return this.toSessionDto(updated, context.staffMembershipId);
+  }
+
   async listDispatcherBoard(
     userId: string,
   ): Promise<DispatcherBoardResponseDto> {
@@ -588,6 +706,7 @@ export class FloorService {
     const data: FloorTableDto[] = tables.map((table) => {
       const session = table.sessions[0] ?? null;
       const items = session?.orderItems ?? [];
+      const effectiveVip = Boolean(table.isVip || table.location.isVip);
       return {
         tableId: table.id,
         displayName: table.displayName,
@@ -611,6 +730,8 @@ export class FloorService {
           COOKING_STATES.includes(item.state),
         ).length,
         delayedItemCount: 0,
+        isVip: table.isVip,
+        effectiveVip,
         version: session?.version ?? table.version,
       };
     });
@@ -621,6 +742,7 @@ export class FloorService {
         code: location.code,
         name: location.name,
         sortOrder: location.sortOrder,
+        isVip: location.isVip,
       })),
       data,
     };

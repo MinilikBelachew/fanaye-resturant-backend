@@ -18,7 +18,11 @@ export const OpsEventType = {
   MENU_ITEM_AVAILABILITY: 'menu.item.availability',
   TICKET_UNACKNOWLEDGED: 'ticket.unacknowledged',
   ITEM_DELAYED: 'item.delayed',
+  TICKET_STALE: 'ticket.stale',
+  SESSION_IDLE: 'session.idle',
   RUSH_MODE_TOGGLED: 'branch.rush_mode.toggled',
+  LEAVE_REQUEST_CREATED: 'leave.request.created',
+  LEAVE_REQUEST_DECIDED: 'leave.request.decided',
 } as const;
 
 export type OpsEventTypeName = (typeof OpsEventType)[keyof typeof OpsEventType];

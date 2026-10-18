@@ -43,6 +43,9 @@ export class CaslAbilityFactory {
       'table.reassign': ['manage', 'Table'],
       'table.close_paid': ['manage', 'Table'],
       'floor.manage': ['manage', 'Floor'],
+      'rooms.admin': ['manage', 'Room'],
+      'rooms.operate': ['operate', 'RoomStay'],
+      'rooms.read': ['read', 'Room'],
       // Orders
       'order.create': ['create', 'Order'],
       'order.confirm': ['create', 'Order'],

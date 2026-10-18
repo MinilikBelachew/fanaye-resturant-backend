@@ -538,6 +538,11 @@ export class StationsService {
               },
             },
           },
+          roomSession: {
+            include: {
+              hotelRoom: { select: { roomNumber: true } },
+            },
+          },
           order: {
             include: {
               createdBy: { select: { employeeDisplayName: true } },
@@ -554,10 +559,12 @@ export class StationsService {
       period,
       periodLabel,
       data: rows.map((item) => {
-        const table = item.tableSession.table;
-        const tableDisplayName =
-          table.displayName ||
-          (table.displayNumber ? `Table ${table.displayNumber}` : 'Table');
+        const table = item.tableSession?.table;
+        const room = item.roomSession?.hotelRoom;
+        const tableDisplayName = room
+          ? `Room ${room.roomNumber}`
+          : table?.displayName ||
+            (table?.displayNumber ? `Table ${table.displayNumber}` : 'Seating');
         let prepMinutes: number | null = null;
         if (item.readyAt && item.preparationStartedAt) {
           prepMinutes = Math.max(
@@ -918,7 +925,10 @@ export class StationsService {
       });
     });
 
-    const tableName = callPickupLabel(updated.tableSession);
+    const tableName = callPickupLabel(
+      updated.tableSession,
+      updated.roomSession,
+    );
     await this.opsNotify.notify({
       type: OpsEventType.PRODUCTION_EXCEPTION,
       tenantId: loaded.context.tenantId!,
@@ -926,7 +936,10 @@ export class StationsService {
       severity: 'URGENT',
       title: `Cannot prepare · ${tableName}`,
       body: `${updated.quantity}× ${updated.itemNameSnapshot} at ${updated.stationNameSnapshot}`,
-      recipientMembershipId: updated.tableSession.primaryWaiterMembershipId,
+      recipientMembershipId:
+        updated.tableSession?.primaryWaiterMembershipId ??
+        updated.roomSession?.primaryWaiterMembershipId ??
+        undefined,
       rooms: [
         managerRoom(loaded.context.branchId!),
         stationRoom(updated.currentPreparationStationId),
@@ -1229,10 +1242,14 @@ export class StationsService {
     item: TicketRecord,
     toState: string,
   ) {
-    const tableName = callPickupLabel(item.tableSession);
+    const tableName = callPickupLabel(item.tableSession, item.roomSession);
     const stationId = item.currentPreparationStationId;
-    const tableId = item.tableSession.tableId;
-    const waiterMembershipId = item.tableSession.primaryWaiterMembershipId;
+    const tableId =
+      item.tableSession?.tableId ?? item.roomSession?.hotelRoomId ?? null;
+    const waiterMembershipId =
+      item.tableSession?.primaryWaiterMembershipId ??
+      item.roomSession?.primaryWaiterMembershipId ??
+      null;
     const basePayload = {
       orderItemId: item.id,
       tableSessionId: item.tableSessionId,
@@ -1498,6 +1515,12 @@ const ticketInclude = {
       primaryWaiter: true,
     },
   },
+  roomSession: {
+    include: {
+      hotelRoom: true,
+      primaryWaiter: true,
+    },
+  },
   modifiers: { orderBy: { sortOrder: 'asc' as const } },
   productionExceptions: {
     where: { status: 'OPEN' },
@@ -1523,15 +1546,25 @@ function money(value: Prisma.Decimal | number | string): string {
   return new Prisma.Decimal(value).toFixed(2);
 }
 
-function callPickupLabel(session: {
-  sessionKind?: string | null;
-  customerName?: string | null;
-  table: { displayName: string; displayNumber: string | null };
-}): string {
+function callPickupLabel(
+  session: {
+    sessionKind?: string | null;
+    customerName?: string | null;
+    table?: { displayName: string; displayNumber: string | null } | null;
+  } | null,
+  roomSession?: {
+    hotelRoom?: { roomNumber: string } | null;
+  } | null,
+): string {
+  if (roomSession?.hotelRoom) {
+    return `Room ${roomSession.hotelRoom.roomNumber}`;
+  }
+  if (!session) return 'Seating';
   if (session.sessionKind === 'CALL_PICKUP') {
     const name = session.customerName?.trim();
     return name ? `Call · ${name}` : 'Call pickup';
   }
+  if (!session.table) return 'Seating';
   return (
     session.table.displayNumber ??
     session.table.displayName.replace(/^Table\s+/i, '')
@@ -1550,11 +1583,20 @@ function toTicketDto(item: TicketRecord): StationQueueItemDto {
     expectedPrepMinutes > 0 &&
     elapsedSeconds > expectedPrepMinutes * 60;
   const exception = item.productionExceptions[0];
+  const waiterMembershipId =
+    item.tableSession?.primaryWaiterMembershipId ??
+    item.roomSession?.primaryWaiterMembershipId ??
+    '';
+  const waiterName =
+    item.tableSession?.primaryWaiter.employeeDisplayName ??
+    item.roomSession?.primaryWaiter.employeeDisplayName ??
+    'Waiter';
 
   return {
     orderItemId: item.id,
     tableSessionId: item.tableSessionId,
-    tableDisplayName: callPickupLabel(item.tableSession),
+    roomSessionId: item.roomSessionId,
+    tableDisplayName: callPickupLabel(item.tableSession, item.roomSession),
     itemName: item.itemNameSnapshot,
     quantity: item.quantity,
     unitPrice: money(item.unitPriceSnapshot),
@@ -1565,8 +1607,8 @@ function toTicketDto(item: TicketRecord): StationQueueItemDto {
     })),
     specialInstruction: item.specialInstruction,
     waiter: {
-      membershipId: item.tableSession.primaryWaiterMembershipId,
-      displayName: item.tableSession.primaryWaiter.employeeDisplayName,
+      membershipId: waiterMembershipId,
+      displayName: waiterName,
     },
     state: item.state,
     queuedAt,

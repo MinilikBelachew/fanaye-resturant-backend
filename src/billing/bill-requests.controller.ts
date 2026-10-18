@@ -20,7 +20,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { BillingService } from './billing.service';
-import { ExpectedTableSessionVersionDto } from './dto/expected-table-session-version.dto';
+import { ExpectedSessionVersionDto } from './dto/expected-table-session-version.dto';
 import {
   BillDto,
   BillRequestCreatedDto,
@@ -44,7 +44,7 @@ export class BillRequestsController {
   generate(
     @Request() request,
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: ExpectedTableSessionVersionDto,
+    @Body() dto: ExpectedSessionVersionDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<BillDto> {
     return this.billingService.generateBill(

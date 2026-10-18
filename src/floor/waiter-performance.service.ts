@@ -540,6 +540,13 @@ export class WaiterPerformanceService {
               },
             },
           },
+          roomSession: {
+            include: {
+              hotelRoom: {
+                select: { id: true, roomNumber: true },
+              },
+            },
+          },
         },
       }),
     ]);
@@ -559,15 +566,18 @@ export class WaiterPerformanceService {
             new Prisma.Decimal(item.unitPriceSnapshot).mul(item.quantity),
           );
         }
-        const table = order.tableSession.table;
+        const table = order.tableSession?.table;
+        const room = order.roomSession?.hotelRoom;
         return {
           orderId: order.id,
           status: order.status,
           confirmedAt: order.confirmedAt.toISOString(),
           businessDate: ymd(order.businessDate),
-          tableDisplayName: table.displayName,
-          tableDisplayNumber: table.displayNumber,
-          tableId: table.id,
+          tableDisplayName:
+            table?.displayName ??
+            (room ? `Room ${room.roomNumber}` : 'Seating'),
+          tableDisplayNumber: table?.displayNumber ?? room?.roomNumber ?? null,
+          tableId: table?.id ?? room?.id ?? '',
           itemCount,
           netSales: money(netSales),
           currencyCode: 'ETB',

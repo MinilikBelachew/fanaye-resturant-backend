@@ -49,6 +49,8 @@ import { QrMenuModule } from './qr-menu/qr-menu.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { BranchesModule } from './branches/branches.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { HrModule } from './hr/hr.module';
+import { RoomsModule } from './rooms/rooms.module';
 import { CaslModule } from './casl/casl.module';
 
 @Module({
@@ -141,6 +143,8 @@ import { CaslModule } from './casl/casl.module';
     RealtimeModule,
     BranchesModule,
     InventoryModule,
+    HrModule,
+    RoomsModule,
   ],
   providers: [
     {

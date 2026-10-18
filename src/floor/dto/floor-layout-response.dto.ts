@@ -36,6 +36,14 @@ export class AdminDiningTableDto {
   @ApiPropertyOptional()
   assignedWaiterName: string | null;
 
+  @ApiProperty({ description: 'Table-level VIP flag' })
+  isVip: boolean;
+
+  @ApiProperty({
+    description: 'True when this table or its place is VIP',
+  })
+  effectiveVip: boolean;
+
   @ApiProperty()
   version: number;
 }
@@ -55,6 +63,9 @@ export class AdminTableLocationDto {
 
   @ApiProperty()
   status: string;
+
+  @ApiProperty()
+  isVip: boolean;
 
   @ApiProperty({ type: [AdminDiningTableDto] })
   tables: AdminDiningTableDto[];

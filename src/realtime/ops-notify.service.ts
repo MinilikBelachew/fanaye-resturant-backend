@@ -161,4 +161,64 @@ export class OpsNotifyService {
       rooms: [managerRoom(input.branchId)],
     });
   }
+
+  /**
+   * Fan-out to managers + owners (inbox + manager socket room).
+   */
+  async notifyManagers(
+    input: Omit<OpsNotifyPayload, 'recipientMembershipId' | 'rooms'>,
+  ): Promise<void> {
+    const managers = await this.prisma.tenantStaffMembership.findMany({
+      where: {
+        tenantId: input.tenantId,
+        status: 'ACTIVE',
+        roleAssignments: {
+          some: {
+            status: 'ACTIVE',
+            revokedAt: null,
+            role: { code: { in: ['MANAGER', 'OWNER_ADMIN'] } },
+          },
+        },
+        OR: [
+          {
+            branchAssignments: {
+              some: { branchId: input.branchId, status: 'ACTIVE' },
+            },
+          },
+          {
+            roleAssignments: {
+              some: {
+                status: 'ACTIVE',
+                revokedAt: null,
+                role: { code: 'OWNER_ADMIN' },
+              },
+            },
+          },
+        ],
+      },
+      select: { id: true },
+      take: 40,
+    });
+
+    if (managers.length === 0) {
+      this.broadcast({
+        ...input,
+        rooms: [managerRoom(input.branchId)],
+      });
+      return;
+    }
+
+    for (const manager of managers) {
+      await this.notify({
+        ...input,
+        recipientMembershipId: manager.id,
+      });
+    }
+
+    this.broadcast({
+      ...input,
+      severity: 'INFO',
+      rooms: [managerRoom(input.branchId)],
+    });
+  }
 }

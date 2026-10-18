@@ -9,6 +9,7 @@ import {
   IsUUID,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -36,16 +37,36 @@ export class ConfirmOrderItemDto {
   specialInstruction?: string;
 }
 
+/** Exactly one of tableSessionId | roomSessionId is required (XOR). */
 export class ConfirmOrderDto {
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description:
+      'Dine-in / call pickup. Mutually exclusive with roomSessionId.',
+  })
+  @ValidateIf((o: ConfirmOrderDto) => !o.roomSessionId)
   @IsUUID()
-  tableSessionId: string;
+  tableSessionId?: string;
 
-  @ApiProperty({ example: 1 })
+  @ApiPropertyOptional({
+    description: 'Room service. Mutually exclusive with tableSessionId.',
+  })
+  @ValidateIf((o: ConfirmOrderDto) => !o.tableSessionId)
+  @IsUUID()
+  roomSessionId?: string;
+
+  @ApiPropertyOptional({ example: 1 })
+  @ValidateIf((o: ConfirmOrderDto) => Boolean(o.tableSessionId))
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  expectedTableSessionVersion: number;
+  expectedTableSessionVersion?: number;
+
+  @ApiPropertyOptional({ example: 1 })
+  @ValidateIf((o: ConfirmOrderDto) => Boolean(o.roomSessionId))
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  expectedRoomSessionVersion?: number;
 
   @ApiProperty({ type: () => [ConfirmOrderItemDto] })
   @IsArray()

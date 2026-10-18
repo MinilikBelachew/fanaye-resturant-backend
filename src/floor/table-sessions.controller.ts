@@ -20,7 +20,10 @@ import {
 } from '@nestjs/swagger';
 import { FloorService } from './floor.service';
 import { StartTableSessionDto } from './dto/start-table-session.dto';
-import { CloseTableSessionDto } from './dto/close-table-session.dto';
+import {
+  CloseTableSessionDto,
+  ForceCloseSessionDto,
+} from './dto/close-table-session.dto';
 import { TableSessionResponseDto } from './dto/table-session-response.dto';
 
 @ApiTags('Table sessions')
@@ -73,6 +76,21 @@ export class TableSessionsController {
       id,
       dto,
       idempotencyKey,
+    );
+  }
+
+  @Post(':id/force-close')
+  @ApiOkResponse({ type: TableSessionResponseDto })
+  @HttpCode(HttpStatus.OK)
+  forceClose(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ForceCloseSessionDto,
+  ): Promise<TableSessionResponseDto> {
+    return this.floorService.forceCloseSession(
+      String(request.user.id),
+      id,
+      dto,
     );
   }
 }

@@ -32,6 +32,7 @@ async function seedRolesAndPlans() {
     { id: 5, code: 'STATION_OPERATOR', name: 'Station operator' },
     { id: 6, code: 'DISPATCHER', name: 'Dispatcher' },
     { id: 7, code: 'STORE_MANAGER', name: 'Store manager' },
+    { id: 8, code: 'RECEPTIONIST', name: 'Receptionist' },
   ];
 
   for (const role of roles) {
@@ -142,6 +143,9 @@ async function seedInventoryUnits() {
     { code: 'pack', name: 'Pack', category: 'pack', sortOrder: 80 },
     { code: 'box', name: 'Box', category: 'pack', sortOrder: 90 },
     { code: 'bottle', name: 'Bottle', category: 'pack', sortOrder: 100 },
+    { code: 'can', name: 'Can', category: 'pack', sortOrder: 110 },
+    { code: 'keg', name: 'Keg', category: 'pack', sortOrder: 120 },
+    { code: 'crate', name: 'Crate', category: 'pack', sortOrder: 130 },
   ];
 
   for (const unit of units) {

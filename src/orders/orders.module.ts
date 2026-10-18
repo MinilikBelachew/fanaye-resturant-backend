@@ -15,6 +15,7 @@ import { OrdersController } from './orders.controller';
 import { OrderSlaMonitorService } from './order-sla-monitor.service';
 import { OrdersService } from './orders.service';
 import { OrderSlaQueueModule } from './queues/order-sla-queue.module';
+import { RoomSessionOrdersController } from './room-session-orders.controller';
 import { TableSessionOrdersController } from './table-session-orders.controller';
 import { WaiterMenuController } from './waiter-menu.controller';
 
@@ -30,6 +31,7 @@ import { WaiterMenuController } from './waiter-menu.controller';
     WaiterMenuController,
     OrdersController,
     TableSessionOrdersController,
+    RoomSessionOrdersController,
     OrderItemsServedController,
     OrderItemMutationsController,
     OrderApprovalsController,

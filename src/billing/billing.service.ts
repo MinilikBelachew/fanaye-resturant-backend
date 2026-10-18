@@ -20,7 +20,11 @@ import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
 import { VerifyEtService } from '../verify-et/verify-et.service';
 import { VerifyEtBank } from '../verify-et/verify-et.types';
-import { ExpectedTableSessionVersionDto } from './dto/expected-table-session-version.dto';
+import {
+  ExpectedRoomSessionVersionDto,
+  ExpectedSessionVersionDto,
+  ExpectedTableSessionVersionDto,
+} from './dto/expected-table-session-version.dto';
 import { CashPaymentDto, TransferPaymentDto } from './dto/payment.dto';
 import { CounterSaleDto } from './dto/counter-sale.dto';
 import {
@@ -195,6 +199,139 @@ export class BillingService {
     return payload;
   }
 
+  async requestBillForRoom(
+    userId: string,
+    roomSessionId: string,
+    dto: ExpectedRoomSessionVersionDto,
+    idempotencyKey?: string,
+  ): Promise<BillRequestCreatedDto> {
+    const context = await this.requireWaiterOnShift(userId);
+    const key = this.requireIdempotencyKey(idempotencyKey);
+    const existing = await this.findIdempotent(context, REQUEST_COMMAND, key, {
+      roomSessionId,
+      ...dto,
+    });
+    if (existing) return existing as unknown as BillRequestCreatedDto;
+
+    const session = await this.prisma.roomSession.findFirst({
+      where: { id: roomSessionId, branchId: context.branchId! },
+      include: {
+        hotelRoom: true,
+        orders: {
+          include: {
+            items: { include: { modifiers: true } },
+          },
+        },
+        bill: true,
+        billRequests: {
+          where: { status: 'PENDING' },
+          orderBy: { requestedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+    if (!session) throw new NotFoundException('Room session not found.');
+
+    this.assertPrimaryWaiter(context, session);
+    if (session.version !== dto.expectedRoomSessionVersion) {
+      this.staleVersion(session.version);
+    }
+    if (!REQUESTABLE.includes(session.status)) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'SESSION_NOT_BILLABLE',
+        errors: { status: session.status },
+      });
+    }
+    if (session.bill) {
+      throw new ConflictException({
+        status: 409,
+        code: 'BILL_ALREADY_EXISTS',
+        errors: { bill: 'BILL_ALREADY_EXISTS' },
+      });
+    }
+    if (session.billRequests.length > 0) {
+      throw new ConflictException({
+        status: 409,
+        code: 'BILL_REQUEST_PENDING',
+        errors: { billRequest: 'BILL_REQUEST_PENDING' },
+      });
+    }
+
+    const chargeable = session.orders.flatMap((order) =>
+      order.items.filter((item) =>
+        CHARGEABLE_ITEM(item.state, item.cancelledAt),
+      ),
+    );
+    if (chargeable.length === 0) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'BILL_REQUEST_EMPTY',
+        errors: { items: 'BILL_REQUEST_EMPTY' },
+      });
+    }
+
+    const now = new Date();
+    const payload = await this.prisma.$transaction(async (tx) => {
+      const request = await tx.billRequest.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          businessDate: session.businessDate,
+          roomSessionId: session.id,
+          requestedByMembershipId: context.staffMembershipId!,
+          requestedAt: now,
+          status: 'PENDING',
+        },
+      });
+      const updated = await tx.roomSession.update({
+        where: { id: session.id },
+        data: {
+          status: 'BILL_REQUESTED',
+          billRequestedAt: now,
+          version: { increment: 1 },
+        },
+      });
+      const created: BillRequestCreatedDto = {
+        billRequestId: request.id,
+        status: request.status,
+        requestedAt: request.requestedAt,
+        roomSession: {
+          status: updated.status,
+          version: updated.version,
+        },
+      };
+      await this.storeIdempotent(
+        tx,
+        context,
+        REQUEST_COMMAND,
+        key,
+        { roomSessionId, ...dto },
+        created,
+        request.id,
+      );
+      return created;
+    });
+
+    await this.opsNotify.notifyCashiers({
+      type: OpsEventType.BILL_REQUEST_CREATED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'URGENT',
+      title: `Bill request · Room ${session.hotelRoom.roomNumber}`,
+      body: 'Waiter requested a room-service bill at cashier.',
+      relatedEntityType: 'BillRequest',
+      relatedEntityId: payload.billRequestId,
+      payload: {
+        billRequestId: payload.billRequestId,
+        roomSessionId: session.id,
+        hotelRoomId: session.hotelRoomId,
+      },
+    });
+
+    return payload;
+  }
+
   async cancelBillRequest(
     userId: string,
     billRequestId: string,
@@ -202,10 +339,12 @@ export class BillingService {
     const context = await this.requireWaiterOnShift(userId);
     const request = await this.prisma.billRequest.findFirst({
       where: { id: billRequestId, branchId: context.branchId! },
-      include: { tableSession: true },
+      include: { tableSession: true, roomSession: true },
     });
     if (!request) throw new NotFoundException('Bill request not found.');
-    this.assertPrimaryWaiter(context, request.tableSession);
+    const seating = request.tableSession ?? request.roomSession;
+    if (!seating) throw new NotFoundException('Bill request seating missing.');
+    this.assertPrimaryWaiter(context, seating);
     if (request.status !== 'PENDING') {
       throw new UnprocessableEntityException({
         status: 422,
@@ -220,11 +359,33 @@ export class BillingService {
         where: { id: request.id },
         data: { status: 'CANCELLED', cancelledAt: now },
       });
+      if (request.tableSessionId) {
+        const hasOrders = await tx.order.count({
+          where: { tableSessionId: request.tableSessionId },
+        });
+        const updated = await tx.tableSession.update({
+          where: { id: request.tableSessionId },
+          data: {
+            status: hasOrders > 0 ? 'ACTIVE_ORDER' : 'OPEN',
+            billRequestedAt: null,
+            version: { increment: 1 },
+          },
+        });
+        return {
+          billRequestId: cancelled.id,
+          status: cancelled.status,
+          requestedAt: cancelled.requestedAt,
+          tableSession: {
+            status: updated.status,
+            version: updated.version,
+          },
+        };
+      }
       const hasOrders = await tx.order.count({
-        where: { tableSessionId: request.tableSessionId },
+        where: { roomSessionId: request.roomSessionId! },
       });
-      const updated = await tx.tableSession.update({
-        where: { id: request.tableSessionId },
+      const updated = await tx.roomSession.update({
+        where: { id: request.roomSessionId! },
         data: {
           status: hasOrders > 0 ? 'ACTIVE_ORDER' : 'OPEN',
           billRequestedAt: null,
@@ -235,7 +396,7 @@ export class BillingService {
         billRequestId: cancelled.id,
         status: cancelled.status,
         requestedAt: cancelled.requestedAt,
-        tableSession: {
+        roomSession: {
           status: updated.status,
           version: updated.version,
         },
@@ -272,13 +433,25 @@ export class BillingService {
             },
           },
         },
+        roomSession: {
+          include: {
+            hotelRoom: true,
+            orders: {
+              include: {
+                items: { include: { modifiers: true } },
+              },
+            },
+          },
+        },
       },
       orderBy: { requestedAt: 'asc' },
     });
 
     const now = Date.now();
     const data: CashierBillRequestDto[] = requests.map((request) => {
-      const items = request.tableSession.orders.flatMap((order) =>
+      const seating = request.tableSession ?? request.roomSession;
+      const orders = seating?.orders ?? [];
+      const items = orders.flatMap((order) =>
         order.items.filter((item) =>
           CHARGEABLE_ITEM(item.state, item.cancelledAt),
         ),
@@ -300,12 +473,17 @@ export class BillingService {
       if (items.some((item) => item.state === 'CANNOT_PREPARE')) {
         warnings.push('PRODUCTION_EXCEPTION');
       }
-      const table = request.tableSession.table;
+      const table = request.tableSession?.table;
+      const room = request.roomSession?.hotelRoom;
       return {
         billRequestId: request.id,
         tableSessionId: request.tableSessionId,
-        tableDisplayName:
-          table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''),
+        roomSessionId: request.roomSessionId,
+        tableDisplayName: table
+          ? (table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''))
+          : room
+            ? `Room ${room.roomNumber}`
+            : 'Seating',
         waiter: {
           membershipId: request.requestedByMembershipId,
           displayName: request.requestedBy.employeeDisplayName,
@@ -317,7 +495,8 @@ export class BillingService {
         ),
         estimatedAmount: money(estimated),
         currencyCode: 'ETB',
-        expectedTableSessionVersion: request.tableSession.version,
+        expectedTableSessionVersion: request.tableSession?.version,
+        expectedRoomSessionVersion: request.roomSession?.version,
         warnings,
       };
     });
@@ -521,7 +700,7 @@ export class BillingService {
   async generateBill(
     userId: string,
     billRequestId: string,
-    dto: ExpectedTableSessionVersionDto,
+    dto: ExpectedSessionVersionDto,
     idempotencyKey?: string,
   ): Promise<BillDto> {
     const context = await this.requireBranch(userId);
@@ -549,7 +728,22 @@ export class BillingService {
         tableSession: {
           include: {
             bill: true,
-            table: true,
+            table: { include: { location: true } },
+            orders: {
+              include: {
+                items: {
+                  include: { modifiers: { orderBy: { sortOrder: 'asc' } } },
+                  orderBy: { confirmedAt: 'asc' },
+                },
+              },
+              orderBy: { confirmedAt: 'asc' },
+            },
+          },
+        },
+        roomSession: {
+          include: {
+            bill: true,
+            hotelRoom: true,
             orders: {
               include: {
                 items: {
@@ -564,11 +758,16 @@ export class BillingService {
       },
     });
     if (!request) throw new NotFoundException('Bill request not found.');
+    const tableSession = request.tableSession;
+    const roomSession = request.roomSession;
+    if (!tableSession && !roomSession) {
+      throw new NotFoundException('Bill request seating missing.');
+    }
     if (context.roleCode === 'DISPATCHER') {
       if (
-        request.tableSession.sessionKind !== 'CALL_PICKUP' ||
-        request.tableSession.primaryWaiterMembershipId !==
-          context.staffMembershipId
+        !tableSession ||
+        tableSession.sessionKind !== 'CALL_PICKUP' ||
+        tableSession.primaryWaiterMembershipId !== context.staffMembershipId
       ) {
         throw new ForbiddenException(
           'Dispatchers can only generate bills for their call pickup orders.',
@@ -582,18 +781,26 @@ export class BillingService {
         errors: { status: request.status },
       });
     }
-    if (request.tableSession.bill) {
+    if (tableSession?.bill || roomSession?.bill) {
       throw new ConflictException({
         status: 409,
         code: 'BILL_ALREADY_EXISTS',
         errors: { bill: 'BILL_ALREADY_EXISTS' },
       });
     }
-    if (request.tableSession.version !== dto.expectedTableSessionVersion) {
-      this.staleVersion(request.tableSession.version);
+    if (tableSession) {
+      if (tableSession.version !== dto.expectedTableSessionVersion) {
+        this.staleVersion(tableSession.version);
+      }
+    } else if (roomSession) {
+      if (roomSession.version !== dto.expectedRoomSessionVersion) {
+        this.staleVersion(roomSession.version);
+      }
     }
 
-    const items = request.tableSession.orders.flatMap((order) =>
+    const seatingOrders = (tableSession ?? roomSession)!.orders;
+    const businessDate = (tableSession ?? roomSession)!.businessDate;
+    const items = seatingOrders.flatMap((order) =>
       order.items.filter((item) =>
         CHARGEABLE_ITEM(item.state, item.cancelledAt),
       ),
@@ -613,11 +820,11 @@ export class BillingService {
       .replace(/[^A-Za-z0-9]/g, '')
       .slice(0, 8)
       .toUpperCase();
-    const day = localYmd(request.tableSession.businessDate);
+    const day = localYmd(businessDate);
     const sequence = await this.prisma.bill.count({
       where: {
         branchId: context.branchId!,
-        businessDate: request.tableSession.businessDate,
+        businessDate,
       },
     });
     const billNumber = `${prefix}-${day}-${String(sequence + 1).padStart(4, '0')}`;
@@ -650,8 +857,9 @@ export class BillingService {
         data: {
           tenantId: context.tenantId!,
           branchId: context.branchId!,
-          businessDate: request.tableSession.businessDate,
+          businessDate,
           tableSessionId: request.tableSessionId,
+          roomSessionId: request.roomSessionId,
           billNumber,
           status: 'GENERATED',
           currencyCode: 'ETB',
@@ -670,15 +878,27 @@ export class BillingService {
         where: { id: request.id },
         data: { status: 'FULFILLED', fulfilledAt: now },
       });
-      await tx.tableSession.update({
-        where: { id: request.tableSessionId },
-        data: {
-          status: 'BILL_READY',
-          version: { increment: 1 },
-        },
-      });
+      if (request.tableSessionId) {
+        await tx.tableSession.update({
+          where: { id: request.tableSessionId },
+          data: {
+            status: 'BILL_READY',
+            version: { increment: 1 },
+          },
+        });
+      } else if (request.roomSessionId) {
+        await tx.roomSession.update({
+          where: { id: request.roomSessionId },
+          data: {
+            status: 'BILL_READY',
+            version: { increment: 1 },
+          },
+        });
+      }
 
-      const payload = toBillDto(bill);
+      const seating = tableSession?.table;
+      const seatingVip = Boolean(seating?.isVip || seating?.location?.isVip);
+      const payload = toBillDto(bill, seatingVip);
       await this.storeIdempotent(
         tx,
         context,
@@ -705,9 +925,56 @@ export class BillingService {
           orderBy: { requestedAt: 'desc' },
           take: 1,
         },
+        table: { include: { location: true } },
       },
     });
     if (!session) throw new NotFoundException('Table session not found.');
+
+    const payments = session.bill
+      ? await this.prisma.payment.findMany({
+          where: { billId: session.bill.id },
+          orderBy: { initiatedAt: 'asc' },
+        })
+      : [];
+
+    const latestRequest = session.billRequests[0] ?? null;
+    const seatingVip = Boolean(
+      session.table.isVip || session.table.location?.isVip,
+    );
+    return {
+      bill: session.bill ? toBillDto(session.bill, seatingVip) : null,
+      billRequest: latestRequest
+        ? {
+            billRequestId: latestRequest.id,
+            status: latestRequest.status,
+            requestedAt: latestRequest.requestedAt,
+          }
+        : null,
+      tableSession: {
+        tableSessionId: session.id,
+        status: session.status,
+        version: session.version,
+      },
+      payments: payments.map(toPaymentDto),
+    };
+  }
+
+  async getRoomSessionBill(
+    userId: string,
+    roomSessionId: string,
+  ): Promise<SessionBillResponseDto> {
+    const context = await this.requireBranch(userId);
+    const session = await this.prisma.roomSession.findFirst({
+      where: { id: roomSessionId, branchId: context.branchId! },
+      include: {
+        bill: { include: { lines: { orderBy: { sortOrder: 'asc' } } } },
+        billRequests: {
+          orderBy: { requestedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+    if (!session) throw new NotFoundException('Room session not found.');
 
     const payments = session.bill
       ? await this.prisma.payment.findMany({
@@ -726,8 +993,8 @@ export class BillingService {
             requestedAt: latestRequest.requestedAt,
           }
         : null,
-      tableSession: {
-        tableSessionId: session.id,
+      roomSession: {
+        roomSessionId: session.id,
         status: session.status,
         version: session.version,
       },
@@ -739,10 +1006,18 @@ export class BillingService {
     const context = await this.requireBranch(userId);
     const bill = await this.prisma.bill.findFirst({
       where: { id: billId, branchId: context.branchId! },
-      include: { lines: { orderBy: { sortOrder: 'asc' } } },
+      include: {
+        lines: { orderBy: { sortOrder: 'asc' } },
+        tableSession: {
+          include: { table: { include: { location: true } } },
+        },
+        roomSession: { include: { hotelRoom: true } },
+      },
     });
     if (!bill) throw new NotFoundException('Bill not found.');
-    return toBillDto(bill);
+    const seating = bill.tableSession?.table;
+    const seatingVip = Boolean(seating?.isVip || seating?.location?.isVip);
+    return toBillDto(bill, seatingVip);
   }
 
   /** Guest-facing receipt for QR scan — no auth, safe fields only. */
@@ -760,12 +1035,15 @@ export class BillingService {
           orderBy: { initiatedAt: 'asc' },
         },
         tableSession: {
-          include: { table: true },
+          include: { table: { include: { location: true } } },
         },
+        roomSession: { include: { hotelRoom: true } },
       },
     });
     if (!bill) throw new NotFoundException('Receipt not found.');
 
+    const seating = bill.tableSession?.table;
+    const room = bill.roomSession?.hotelRoom;
     return {
       billId: bill.id,
       billNumber: bill.billNumber,
@@ -773,7 +1051,9 @@ export class BillingService {
       currencyCode: bill.currencyCode,
       restaurantName: bill.tenant.displayName,
       branchName: bill.branch.name,
-      tableName: bill.tableSession.table.displayName ?? null,
+      tableName:
+        seating?.displayName ?? (room ? `Room ${room.roomNumber}` : null),
+      isVip: Boolean(seating?.isVip || seating?.location?.isVip),
       subtotal: money(bill.subtotalAmount),
       total: money(bill.totalAmount),
       amountPaid: money(bill.amountPaid),
@@ -809,6 +1089,12 @@ export class BillingService {
             primaryWaiter: true,
           },
         },
+        roomSession: {
+          include: {
+            hotelRoom: true,
+            primaryWaiter: true,
+          },
+        },
       },
     });
 
@@ -816,14 +1102,21 @@ export class BillingService {
       throw new NotFoundException('Bill not found.');
     }
 
-    const waiterId = bill.tableSession.primaryWaiterMembershipId;
+    const waiterId =
+      bill.tableSession?.primaryWaiterMembershipId ??
+      bill.roomSession?.primaryWaiterMembershipId ??
+      null;
     if (!waiterId) {
       throw new UnprocessableEntityException(
-        'No waiter assigned to this table session.',
+        'No waiter assigned to this seating.',
       );
     }
 
-    const tableName = bill.tableSession.table.displayName;
+    const seatingLabel =
+      bill.tableSession?.table.displayName ??
+      (bill.roomSession
+        ? `Room ${bill.roomSession.hotelRoom.roomNumber}`
+        : 'Seating');
     const created = await this.prisma.notification.create({
       data: {
         tenantId: context.tenantId!,
@@ -831,12 +1124,13 @@ export class BillingService {
         recipientStaffMembershipId: waiterId,
         type: 'BILL_READY',
         severity: 'URGENT',
-        title: `Bill Ready · ${tableName}`,
+        title: `Bill Ready · ${seatingLabel}`,
         body: `Bill #${bill.billNumber} for ${money(bill.totalAmount)} ETB is ready at the cashier. Please deliver to guest.`,
         payloadJson: {
           billId: bill.id,
           billNumber: bill.billNumber,
           tableSessionId: bill.tableSessionId,
+          roomSessionId: bill.roomSessionId,
           total: money(bill.totalAmount),
         },
       },
@@ -847,7 +1141,7 @@ export class BillingService {
       tenantId: context.tenantId!,
       branchId: context.branchId!,
       severity: 'URGENT',
-      title: `Bill Ready · ${tableName}`,
+      title: `Bill Ready · ${seatingLabel}`,
       body: `Bill #${bill.billNumber} for ${money(bill.totalAmount)} ETB is ready at the cashier.`,
       recipientMembershipId: waiterId,
       notificationId: created.id,
@@ -857,13 +1151,18 @@ export class BillingService {
         billId: bill.id,
         billNumber: bill.billNumber,
         tableSessionId: bill.tableSessionId,
+        roomSessionId: bill.roomSessionId,
         total: money(bill.totalAmount),
       },
     });
 
+    const waiterName =
+      bill.tableSession?.primaryWaiter?.employeeDisplayName ??
+      bill.roomSession?.primaryWaiter?.employeeDisplayName ??
+      'waiter';
     return {
       success: true,
-      message: `Bill notification sent to ${bill.tableSession.primaryWaiter?.employeeDisplayName || 'waiter'}.`,
+      message: `Bill notification sent to ${waiterName}.`,
     };
   }
 
@@ -888,9 +1187,9 @@ export class BillingService {
       bill.businessDate,
     );
     const due = new Prisma.Decimal(bill.totalAmount).minus(bill.amountPaid);
-    const amount = new Prisma.Decimal(dto.amount);
-    const tendered = new Prisma.Decimal(dto.cashTendered);
-    if (!amount.equals(due) || due.lte(0)) {
+    const amount = new Prisma.Decimal(dto.amount).toDecimalPlaces(2);
+    const tendered = new Prisma.Decimal(dto.cashTendered).toDecimalPlaces(2);
+    if (due.lte(0) || amount.lte(0) || amount.gt(due)) {
       throw new UnprocessableEntityException({
         status: 422,
         code: 'PAYMENT_AMOUNT_INVALID',
@@ -908,27 +1207,13 @@ export class BillingService {
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
-      const settled = await tx.bill.updateMany({
-        where: {
-          id: bill.id,
-          version: dto.expectedBillVersion,
-          status: { in: ['GENERATED', 'PAYMENT_PENDING'] },
-        },
-        data: {
-          status: 'PAID',
-          amountPaid: bill.totalAmount,
-          paidAt: now,
-          version: { increment: 1 },
-        },
-      });
-      if (settled.count !== 1) {
-        const latest = await tx.bill.findUnique({ where: { id: bill.id } });
-        throw new ConflictException({
-          status: 409,
-          errors: { version: 'stale' },
-          expectedVersion: latest?.version ?? bill.version,
-        });
-      }
+      const applied = await this.applyPartialBillPayment(
+        tx,
+        bill,
+        dto.expectedBillVersion,
+        amount,
+        now,
+      );
 
       const payment = await tx.payment.create({
         data: {
@@ -948,37 +1233,35 @@ export class BillingService {
           settledAt: now,
         },
       });
-      const updatedBill = await tx.bill.findUniqueOrThrow({
-        where: { id: bill.id },
-      });
-      const session = await tx.tableSession.update({
-        where: { id: bill.tableSessionId },
-        data:
-          bill.tableSession.sessionKind === 'COUNTER'
-            ? {
-                status: 'CLOSED',
-                closedAt: now,
-                closedByMembershipId: context.staffMembershipId,
-                version: { increment: 1 },
-              }
-            : {
-                status: 'PAID',
-                version: { increment: 1 },
-              },
-      });
+      const updatedBill = applied.updatedBill;
+      const seating = applied.fullyPaid
+        ? await this.markSeatingPaid(tx, bill, context, now, {
+            closeCounter: bill.tableSession?.sessionKind === 'COUNTER',
+          })
+        : await this.loadSeatingSnapshot(tx, bill);
       const payload: CashPaymentResponseDto = {
         payment: toPaymentDto(payment),
         change: money(change),
+        remainingAmount: money(applied.remaining),
         bill: {
           billId: updatedBill.id,
           status: updatedBill.status,
           amountPaid: money(updatedBill.amountPaid),
           version: updatedBill.version,
         },
-        tableSession: {
-          status: session.status,
-          version: session.version,
-        },
+        ...(bill.roomSessionId
+          ? {
+              roomSession: {
+                status: seating.status,
+                version: seating.version,
+              },
+            }
+          : {
+              tableSession: {
+                status: seating.status,
+                version: seating.version,
+              },
+            }),
       };
       await this.storeIdempotent(
         tx,
@@ -1025,7 +1308,8 @@ export class BillingService {
     }
 
     const due = new Prisma.Decimal(bill.totalAmount).minus(bill.amountPaid);
-    if (due.lte(0)) {
+    const claimed = new Prisma.Decimal(dto.amount).toDecimalPlaces(2);
+    if (due.lte(0) || claimed.lte(0) || claimed.gt(due)) {
       throw new UnprocessableEntityException({
         status: 422,
         code: 'PAYMENT_AMOUNT_INVALID',
@@ -1033,20 +1317,8 @@ export class BillingService {
       });
     }
 
-    // Without bank verify, client must still post the full due.
-    // With Verify.ET, the bank amount is the source of truth (tip / under-due).
-    if (!this.verifyEt.isEnabled()) {
-      const claimed = new Prisma.Decimal(dto.amount);
-      if (!claimed.equals(due)) {
-        throw new UnprocessableEntityException({
-          status: 422,
-          code: 'PAYMENT_AMOUNT_INVALID',
-          errors: { amount: money(due) },
-        });
-      }
-    }
-
-    let settleAmount = due;
+    // Waiter-entered portion is what we settle; Verify.ET must cover that portion.
+    let settleAmount = claimed;
     let tipAmount: Prisma.Decimal | null = null;
     let verifiedAmountLabel: string | undefined;
     let verifiedAt: Date | null = null;
@@ -1107,21 +1379,7 @@ export class BillingService {
         });
       }
 
-      // 2. Settlement / Recipient Account Destination Check
-      if (
-        verified.settlementAccountMatch &&
-        verified.settlementAccountMatch.matched === false
-      ) {
-        throw new UnprocessableEntityException({
-          status: 422,
-          code: 'TRANSFER_WRONG_ACCOUNT',
-          message: `The payment was transferred to an unverified or incorrect account (${verified.settlementAccountMatch.reason || 'Account mismatch'}). Please ensure payment is made to the restaurant account.`,
-          errors: { reference: 'TRANSFER_WRONG_ACCOUNT' },
-          verifyRequestId: verified.requestId,
-        });
-      }
-
-      // 3. Past Payment / Age Recency Guard (max 2 hours / 120 minutes)
+      // Past Payment / Age Recency Guard (max 2 hours / 120 minutes)
       if (verified.timestamp) {
         const transferTime = new Date(verified.timestamp).getTime();
         if (!Number.isNaN(transferTime)) {
@@ -1153,20 +1411,19 @@ export class BillingService {
             });
           }
 
-          // Check against table session openedAt if available:
-          const tableSession = await this.prisma.tableSession.findUnique({
-            where: { id: bill.tableSessionId },
-          });
-          if (tableSession?.openedAt) {
-            const sessionOpenedMs = new Date(tableSession.openedAt).getTime();
+          // Check against seating openedAt if available:
+          const openedAt =
+            bill.tableSession?.openedAt ?? bill.roomSession?.openedAt ?? null;
+          if (openedAt) {
+            const sessionOpenedMs = new Date(openedAt).getTime();
             if (transferTime < sessionOpenedMs - 30 * 60 * 1000) {
               throw new UnprocessableEntityException({
                 status: 422,
                 code: 'TRANSFER_PREDATES_SESSION',
-                message: `This transfer occurred at ${new Date(transferTime).toLocaleTimeString()}, before this table visit began at ${new Date(sessionOpenedMs).toLocaleTimeString()}. Past receipts cannot be applied to this bill.`,
+                message: `This transfer occurred at ${new Date(transferTime).toLocaleTimeString()}, before this visit began at ${new Date(sessionOpenedMs).toLocaleTimeString()}. Past receipts cannot be applied to this bill.`,
                 errors: { reference: 'TRANSFER_PREDATES_SESSION' },
                 transferTimestamp: verified.timestamp,
-                sessionOpenedAt: tableSession.openedAt.toISOString(),
+                sessionOpenedAt: openedAt.toISOString(),
               });
             }
           }
@@ -1195,29 +1452,29 @@ export class BillingService {
         resolvedRef = verified.reference.trim().toUpperCase();
       }
 
-      if (verifiedAmount.lt(due)) {
-        const remaining = due.minus(verifiedAmount);
+      if (verifiedAmount.lt(claimed)) {
+        const shortfall = claimed.minus(verifiedAmount);
         throw new UnprocessableEntityException({
           status: 422,
           code: 'TRANSFER_UNDER_DUE',
-          message: `Verified ${money(verifiedAmount)} ETB. Bill still needs ${money(remaining)} ETB — collect cash or another transfer.`,
+          message: `Verified ${money(verifiedAmount)} ETB for this scan, but waiter entered ${money(claimed)} ETB. Short by ${money(shortfall)} ETB. Bill still has ${money(due)} ETB remaining.`,
           errors: { amount: 'TRANSFER_UNDER_DUE' },
           verifiedAmount: money(verifiedAmount),
+          claimedAmount: money(claimed),
           dueAmount: money(due),
-          remainingAmount: money(remaining),
+          remainingAmount: money(shortfall),
+          billRemainingAmount: money(due),
           verifyRequestId: verified.requestId,
         });
       }
 
-      settleAmount = due;
-      if (verifiedAmount.gt(due)) {
-        tipAmount = verifiedAmount.minus(due);
+      settleAmount = claimed;
+      if (verifiedAmount.gt(claimed)) {
+        tipAmount = verifiedAmount.minus(claimed);
       }
-    } else {
-      settleAmount = due;
     }
 
-    // 4. Cross-Bill Uniqueness Check: Ensure reference was not already consumed by another bill
+    // Cross-Bill Uniqueness Check: Ensure reference was not already consumed by another bill
     if (resolvedRef) {
       const existingRef = await this.prisma.idempotencyCommand.findFirst({
         where: {
@@ -1239,42 +1496,13 @@ export class BillingService {
 
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
-      const alreadySettled = await tx.payment.findFirst({
-        where: {
-          billId: bill.id,
-          method: 'TRANSFER',
-          status: { in: ['SETTLED', 'VERIFIED'] },
-        },
-      });
-      if (alreadySettled) {
-        throw new ConflictException({
-          status: 409,
-          code: 'TRANSFER_ALREADY_RECORDED',
-          errors: { payment: 'TRANSFER_ALREADY_RECORDED' },
-        });
-      }
-
-      const settled = await tx.bill.updateMany({
-        where: {
-          id: bill.id,
-          version: dto.expectedBillVersion,
-          status: { in: ['GENERATED', 'PAYMENT_PENDING'] },
-        },
-        data: {
-          status: 'PAID',
-          amountPaid: bill.totalAmount,
-          paidAt: now,
-          version: { increment: 1 },
-        },
-      });
-      if (settled.count !== 1) {
-        const latest = await tx.bill.findUnique({ where: { id: bill.id } });
-        throw new ConflictException({
-          status: 409,
-          errors: { version: 'stale' },
-          expectedVersion: latest?.version ?? bill.version,
-        });
-      }
+      const applied = await this.applyPartialBillPayment(
+        tx,
+        bill,
+        dto.expectedBillVersion,
+        settleAmount,
+        now,
+      );
 
       const payment = await tx.payment.create({
         data: {
@@ -1302,30 +1530,34 @@ export class BillingService {
           },
         },
       });
-      const updatedBill = await tx.bill.findUniqueOrThrow({
-        where: { id: bill.id },
-      });
-      const session = await tx.tableSession.update({
-        where: { id: bill.tableSessionId },
-        data: {
-          status: 'PAID',
-          version: { increment: 1 },
-        },
-      });
+      const updatedBill = applied.updatedBill;
+      const seating = applied.fullyPaid
+        ? await this.markSeatingPaid(tx, bill, context, now)
+        : await this.loadSeatingSnapshot(tx, bill);
       const payload: TransferPaymentResponseDto = {
         payment: toPaymentDto(payment),
         tipAmount: tipAmount ? money(tipAmount) : undefined,
         verifiedAmount: verifiedAmountLabel,
+        remainingAmount: money(applied.remaining),
         bill: {
           billId: updatedBill.id,
           status: updatedBill.status,
           amountPaid: money(updatedBill.amountPaid),
           version: updatedBill.version,
         },
-        tableSession: {
-          status: session.status,
-          version: session.version,
-        },
+        ...(bill.roomSessionId
+          ? {
+              roomSession: {
+                status: seating.status,
+                version: seating.version,
+              },
+            }
+          : {
+              tableSession: {
+                status: seating.status,
+                version: seating.version,
+              },
+            }),
       };
       await this.storeIdempotent(
         tx,
@@ -1410,7 +1642,7 @@ export class BillingService {
         businessDate: string;
         billId: string;
         billNumber: string;
-        tableSessionId: string;
+        tableSessionId: string | null;
         tableDisplayName: string;
         waiterName: string;
         sessionStatus: string;
@@ -1450,6 +1682,7 @@ export class BillingService {
         bill: {
           include: {
             tableSession: { include: { table: true } },
+            roomSession: { include: { hotelRoom: true } },
           },
         },
       },
@@ -1458,8 +1691,9 @@ export class BillingService {
     });
     return {
       data: payments.map((payment) => {
-        const table = payment.bill.tableSession.table;
-        const session = payment.bill.tableSession;
+        const table = payment.bill.tableSession?.table;
+        const room = payment.bill.roomSession?.hotelRoom;
+        const session = payment.bill.tableSession ?? payment.bill.roomSession;
         const receiptPath = payment.receipt?.file?.path ?? null;
         return {
           ...toPaymentDto(payment),
@@ -1467,11 +1701,16 @@ export class BillingService {
           billId: payment.billId,
           billNumber: payment.bill.billNumber,
           tableSessionId: payment.bill.tableSessionId,
-          tableDisplayName:
-            table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''),
+          tableDisplayName: table
+            ? (table.displayNumber ??
+              table.displayName.replace(/^Table\s+/i, ''))
+            : room
+              ? `Room ${room.roomNumber}`
+              : 'Seating',
           waiterName: payment.collector.employeeDisplayName,
-          sessionStatus: session.status,
-          tableClosed: session.status === 'CLOSED' || Boolean(session.closedAt),
+          sessionStatus: session?.status ?? 'UNKNOWN',
+          tableClosed:
+            session?.status === 'CLOSED' || Boolean(session?.closedAt),
           hasTransferReceipt: Boolean(receiptPath),
           receiptImagePath: receiptPath,
         };
@@ -1501,14 +1740,16 @@ export class BillingService {
           include: {
             lines: { orderBy: { sortOrder: 'asc' } },
             tableSession: { include: { table: true } },
+            roomSession: { include: { hotelRoom: true } },
           },
         },
       },
     });
     if (!payment) throw new NotFoundException('Payment not found.');
 
-    const table = payment.bill.tableSession.table;
-    const session = payment.bill.tableSession;
+    const table = payment.bill.tableSession?.table;
+    const room = payment.bill.roomSession?.hotelRoom;
+    const session = payment.bill.tableSession ?? payment.bill.roomSession;
     const receiptPath = payment.receipt?.file?.path ?? null;
 
     return {
@@ -1517,11 +1758,14 @@ export class BillingService {
         billId: payment.billId,
         billNumber: payment.bill.billNumber,
         tableSessionId: payment.bill.tableSessionId,
-        tableDisplayName:
-          table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''),
+        tableDisplayName: table
+          ? (table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''))
+          : room
+            ? `Room ${room.roomNumber}`
+            : 'Seating',
         waiterName: payment.collector.employeeDisplayName,
-        sessionStatus: session.status,
-        tableClosed: session.status === 'CLOSED' || Boolean(session.closedAt),
+        sessionStatus: session?.status ?? 'UNKNOWN',
+        tableClosed: session?.status === 'CLOSED' || Boolean(session?.closedAt),
         hasTransferReceipt: Boolean(receiptPath),
         receiptImagePath: receiptPath,
         receiptCapturedAt: payment.receipt?.capturedAt ?? null,
@@ -1533,7 +1777,7 @@ export class BillingService {
   private async loadPayableBill(context: AuthContextDto, billId: string) {
     const bill = await this.prisma.bill.findFirst({
       where: { id: billId, branchId: context.branchId! },
-      include: { tableSession: true },
+      include: { tableSession: true, roomSession: true },
     });
     if (!bill) throw new NotFoundException('Bill not found.');
     if (!['GENERATED', 'PAYMENT_PENDING'].includes(bill.status)) {
@@ -1546,24 +1790,162 @@ export class BillingService {
     return bill;
   }
 
+  private async applyPartialBillPayment(
+    tx: Prisma.TransactionClient,
+    bill: {
+      id: string;
+      totalAmount: Prisma.Decimal;
+      amountPaid: Prisma.Decimal;
+      version: number;
+    },
+    expectedVersion: number,
+    settleAmount: Prisma.Decimal,
+    now: Date,
+  ): Promise<{
+    updatedBill: {
+      id: string;
+      status: string;
+      amountPaid: Prisma.Decimal;
+      version: number;
+    };
+    fullyPaid: boolean;
+    remaining: Prisma.Decimal;
+  }> {
+    const nextPaid = new Prisma.Decimal(bill.amountPaid)
+      .plus(settleAmount)
+      .toDecimalPlaces(2);
+    const fullyPaid = nextPaid.gte(bill.totalAmount);
+    const remaining = fullyPaid
+      ? new Prisma.Decimal(0)
+      : new Prisma.Decimal(bill.totalAmount).minus(nextPaid).toDecimalPlaces(2);
+
+    const updated = await tx.bill.updateMany({
+      where: {
+        id: bill.id,
+        version: expectedVersion,
+        status: { in: ['GENERATED', 'PAYMENT_PENDING'] },
+      },
+      data: fullyPaid
+        ? {
+            status: 'PAID',
+            amountPaid: bill.totalAmount,
+            paidAt: now,
+            version: { increment: 1 },
+          }
+        : {
+            status: 'PAYMENT_PENDING',
+            amountPaid: nextPaid,
+            version: { increment: 1 },
+          },
+    });
+    if (updated.count !== 1) {
+      const latest = await tx.bill.findUnique({ where: { id: bill.id } });
+      throw new ConflictException({
+        status: 409,
+        errors: { version: 'stale' },
+        expectedVersion: latest?.version ?? bill.version,
+      });
+    }
+
+    const updatedBill = await tx.bill.findUniqueOrThrow({
+      where: { id: bill.id },
+    });
+    return { updatedBill, fullyPaid, remaining };
+  }
+
+  private async loadSeatingSnapshot(
+    tx: Prisma.TransactionClient,
+    bill: {
+      tableSessionId: string | null;
+      roomSessionId: string | null;
+    },
+  ): Promise<{ status: string; version: number }> {
+    if (bill.tableSessionId) {
+      const session = await tx.tableSession.findUniqueOrThrow({
+        where: { id: bill.tableSessionId },
+        select: { status: true, version: true },
+      });
+      return session;
+    }
+    if (bill.roomSessionId) {
+      const session = await tx.roomSession.findUniqueOrThrow({
+        where: { id: bill.roomSessionId },
+        select: { status: true, version: true },
+      });
+      return session;
+    }
+    throw new UnprocessableEntityException({
+      status: 422,
+      code: 'BILL_SESSION_MISSING',
+      errors: { session: 'BILL_SESSION_MISSING' },
+    });
+  }
+
+  private async markSeatingPaid(
+    tx: Prisma.TransactionClient,
+    bill: {
+      tableSessionId: string | null;
+      roomSessionId: string | null;
+      tableSession?: { sessionKind: string } | null;
+    },
+    context: AuthContextDto,
+    now: Date,
+    opts?: { closeCounter?: boolean },
+  ) {
+    if (bill.tableSessionId) {
+      return tx.tableSession.update({
+        where: { id: bill.tableSessionId },
+        data: opts?.closeCounter
+          ? {
+              status: 'CLOSED',
+              closedAt: now,
+              closedByMembershipId: context.staffMembershipId,
+              version: { increment: 1 },
+            }
+          : {
+              status: 'PAID',
+              version: { increment: 1 },
+            },
+      });
+    }
+    if (bill.roomSessionId) {
+      return tx.roomSession.update({
+        where: { id: bill.roomSessionId },
+        data: {
+          status: 'PAID',
+          version: { increment: 1 },
+        },
+      });
+    }
+    throw new UnprocessableEntityException({
+      status: 422,
+      code: 'BILL_SESSION_MISSING',
+      errors: { session: 'BILL_SESSION_MISSING' },
+    });
+  }
+
   private assertCollectorForBill(
     context: AuthContextDto,
     bill: {
       tableSession: {
         primaryWaiterMembershipId: string;
         sessionKind: string;
-      };
+      } | null;
+      roomSession: {
+        primaryWaiterMembershipId: string;
+      } | null;
     },
   ) {
     if (context.roleCode === 'CASHIER') {
       return;
     }
     if (SHIFT_OWNER_ROLES.includes(context.roleCode)) {
-      if (
-        bill.tableSession.primaryWaiterMembershipId !==
-        context.staffMembershipId
-      ) {
-        throw new ForbiddenException('This is not your table.');
+      const ownerId =
+        bill.tableSession?.primaryWaiterMembershipId ??
+        bill.roomSession?.primaryWaiterMembershipId ??
+        null;
+      if (ownerId !== context.staffMembershipId) {
+        throw new ForbiddenException('This is not your seating.');
       }
     }
   }
@@ -1804,32 +2186,38 @@ function localYmd(date: Date): string {
   return `${y}${m}${d}`;
 }
 
-function toBillDto(bill: {
-  id: string;
-  tableSessionId: string;
-  billNumber: string;
-  status: string;
-  currencyCode: string;
-  subtotalAmount: Prisma.Decimal;
-  totalAmount: Prisma.Decimal;
-  amountPaid: Prisma.Decimal;
-  generatedAt: Date;
-  paidAt: Date | null;
-  version: number;
-  lines: Array<{
+function toBillDto(
+  bill: {
     id: string;
-    orderItemId: string | null;
-    itemNameSnapshot: string;
-    quantity: number;
-    unitPriceSnapshot: Prisma.Decimal;
-    lineTotal: Prisma.Decimal;
-    chargeStatus: string;
-  }>;
-}): BillDto {
+    tableSessionId: string | null;
+    roomSessionId?: string | null;
+    billNumber: string;
+    status: string;
+    currencyCode: string;
+    subtotalAmount: Prisma.Decimal;
+    totalAmount: Prisma.Decimal;
+    amountPaid: Prisma.Decimal;
+    generatedAt: Date;
+    paidAt: Date | null;
+    version: number;
+    lines: Array<{
+      id: string;
+      orderItemId: string | null;
+      itemNameSnapshot: string;
+      quantity: number;
+      unitPriceSnapshot: Prisma.Decimal;
+      lineTotal: Prisma.Decimal;
+      chargeStatus: string;
+    }>;
+  },
+  isVip = false,
+): BillDto {
   return {
     billId: bill.id,
     tableSessionId: bill.tableSessionId,
+    roomSessionId: bill.roomSessionId ?? null,
     billNumber: bill.billNumber,
+    isVip,
     status: bill.status,
     currencyCode: bill.currencyCode,
     subtotal: money(bill.subtotalAmount),

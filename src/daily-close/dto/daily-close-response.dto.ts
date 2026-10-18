@@ -9,6 +9,10 @@ export class DailyCloseBlockerDto {
 
   @ApiPropertyOptional()
   entityId?: string | null;
+
+  /** Optimistic-lock version for force-close / force-cancel actions. */
+  @ApiPropertyOptional()
+  expectedVersion?: number | null;
 }
 
 export class DailyCloseSummaryDto {

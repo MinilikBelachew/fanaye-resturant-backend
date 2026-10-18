@@ -163,6 +163,26 @@ export class UpdateBranchSettingsDto {
   @Min(1)
   @Max(30)
   unacknowledgedAlertMinutes?: number;
+
+  @ApiPropertyOptional({
+    example: 240,
+    description: 'Idle session warn (minutes), default 4h',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(30)
+  @Max(1440)
+  sessionIdleWarnMinutes?: number;
+
+  @ApiPropertyOptional({
+    example: 180,
+    description: 'QUEUED ticket stale warn (minutes), default 3h',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(30)
+  @Max(1440)
+  ticketStaleWarnMinutes?: number;
 }
 
 export class ToggleRushModeDto {
