@@ -1441,13 +1441,8 @@ export class StationsService {
   }
 }
 
-function normalizeWorkflowMode(
-  value?: string | null,
-): StationWorkflowMode {
-  if (
-    value &&
-    (STATION_WORKFLOW_MODES as readonly string[]).includes(value)
-  ) {
+function normalizeWorkflowMode(value?: string | null): StationWorkflowMode {
+  if (value && (STATION_WORKFLOW_MODES as readonly string[]).includes(value)) {
     return value as StationWorkflowMode;
   }
   return 'FULL_PREP';

@@ -22,15 +22,7 @@ import {
 
 const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 /** JS Date#getDay() index → dayCode used by StaffDayShift */
-const DAY_CODES_JS = [
-  'Sun',
-  'Mon',
-  'Tue',
-  'Wed',
-  'Thu',
-  'Fri',
-  'Sat',
-] as const;
+const DAY_CODES_JS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 type ClockInWindow = {
   assignment: {
@@ -100,10 +92,7 @@ export class ShiftsService {
     const [upcoming, weeklyPlan, upcomingAssignments] = await Promise.all([
       this.nextAssignment(context.staffMembershipId, context.branchId),
       this.getWeeklyPlan(context.staffMembershipId),
-      this.listUpcomingAssignments(
-        context.staffMembershipId,
-        context.branchId,
-      ),
+      this.listUpcomingAssignments(context.staffMembershipId, context.branchId),
     ]);
 
     return {
@@ -646,7 +635,9 @@ export class ShiftsService {
       .map((row) => ({
         dayCode: row.dayCode,
         definitionName: row.shiftDefinition?.name ?? 'Shift',
-        startLocalTime: formatShiftLocalTime(row.shiftDefinition.startLocalTime),
+        startLocalTime: formatShiftLocalTime(
+          row.shiftDefinition.startLocalTime,
+        ),
         endLocalTime: formatShiftLocalTime(row.shiftDefinition.endLocalTime),
         shiftDefinitionId: row.shiftDefinitionId,
       }))

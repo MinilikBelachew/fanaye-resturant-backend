@@ -449,7 +449,6 @@ export class DailyCloseService {
     const { start: dayStart, end: dayEnd } = localDayRange(dayYmd);
     const duringDay = { gte: dayStart, lte: dayEnd };
     const [
-
       bills,
       payments,
       openSessions,
