@@ -56,6 +56,11 @@ export class AuthContextDto {
   @Expose()
   serviceMode: string | null;
 
+  /** Branch has hotel rooms configured — drives Rooms nav for floor staff. */
+  @ApiProperty()
+  @Expose()
+  roomsEnabled: boolean;
+
   @ApiPropertyOptional()
   @Expose()
   staffMembershipId: string | null;

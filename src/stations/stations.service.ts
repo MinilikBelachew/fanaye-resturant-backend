@@ -20,7 +20,11 @@ import {
   StationQueueItemDto,
   StationQueueResponseDto,
 } from './dto/station-queue-response.dto';
-import { CreateStationDto } from './dto/create-station.dto';
+import {
+  CreateStationDto,
+  STATION_WORKFLOW_MODES,
+  type StationWorkflowMode,
+} from './dto/create-station.dto';
 import { UpdateStationDto } from './dto/update-station.dto';
 import { StationManagementResponseDto } from './dto/station-response.dto';
 import {
@@ -42,6 +46,8 @@ const DEFAULT_STATES = [
 ];
 
 const ACTIVE_COOKING = ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'];
+/** Hard stale threshold — ticket belongs under Exceptions, not a live rush. */
+const STALE_EXCEPTION_SECONDS = 4 * 60 * 60;
 const HISTORY_STATES = [
   'QUEUED',
   'ACKNOWLEDGED',
@@ -144,6 +150,7 @@ export class StationsService {
       code: s.code,
       status: s.status,
       enabled: s.status === 'ACTIVE',
+      workflowMode: normalizeWorkflowMode(s.workflowMode),
       defaultDelayThresholdMinutes: s.defaultDelayThresholdMinutes,
       avgPrepMin: s.defaultDelayThresholdMinutes ?? 10,
       sortOrder: s.sortOrder,
@@ -178,6 +185,8 @@ export class StationsService {
         ? 'INACTIVE'
         : 'ACTIVE';
 
+    const workflowMode = normalizeWorkflowMode(dto.workflowMode);
+
     const station = await this.prisma.preparationStation.create({
       data: {
         tenantId: context.tenantId!,
@@ -185,6 +194,7 @@ export class StationsService {
         name: dto.name.trim(),
         code,
         status,
+        workflowMode,
         defaultDelayThresholdMinutes: dto.defaultDelayThresholdMinutes ?? 10,
         sortOrder: dto.sortOrder ?? 0,
       },
@@ -196,6 +206,7 @@ export class StationsService {
       code: station.code,
       status: station.status,
       enabled: station.status === 'ACTIVE',
+      workflowMode: normalizeWorkflowMode(station.workflowMode),
       defaultDelayThresholdMinutes: station.defaultDelayThresholdMinutes,
       avgPrepMin: station.defaultDelayThresholdMinutes ?? 10,
       sortOrder: station.sortOrder,
@@ -244,12 +255,18 @@ export class StationsService {
           : 'ACTIVE';
     }
 
+    const workflowMode =
+      dto.workflowMode !== undefined
+        ? normalizeWorkflowMode(dto.workflowMode)
+        : normalizeWorkflowMode(existing.workflowMode);
+
     const updated = await this.prisma.preparationStation.update({
       where: { id: stationId },
       data: {
         name: dto.name?.trim() ?? existing.name,
         code,
         status,
+        workflowMode,
         defaultDelayThresholdMinutes:
           dto.defaultDelayThresholdMinutes !== undefined
             ? dto.defaultDelayThresholdMinutes
@@ -305,6 +322,7 @@ export class StationsService {
       code: updated.code,
       status: updated.status,
       enabled: updated.status === 'ACTIVE',
+      workflowMode: normalizeWorkflowMode(updated.workflowMode),
       defaultDelayThresholdMinutes: updated.defaultDelayThresholdMinutes,
       avgPrepMin: updated.defaultDelayThresholdMinutes ?? 10,
       sortOrder: updated.sortOrder,
@@ -624,11 +642,14 @@ export class StationsService {
     }
     this.assertStationQueueAccess(context, station.id);
 
+    const workflowMode = normalizeWorkflowMode(station.workflowMode);
+
     if (station.status !== 'ACTIVE') {
       return {
         stationId: station.id,
         stationName: station.name,
         stationCode: station.code,
+        workflowMode,
         stationOffline: true,
         data: [],
       };
@@ -651,6 +672,7 @@ export class StationsService {
       stationId: station.id,
       stationName: station.name,
       stationCode: station.code,
+      workflowMode,
       stationOffline: false,
       data: items.map(toTicketDto),
     };
@@ -708,12 +730,32 @@ export class StationsService {
     orderItemId: string,
     dto: ExpectedVersionDto,
   ): Promise<StationQueueItemDto> {
+    const context = await this.requireBranch(userId);
+    const item = await this.prisma.orderItem.findFirst({
+      where: { id: orderItemId, branchId: context.branchId! },
+      select: { currentPreparationStationId: true },
+    });
+    if (!item) {
+      throw new NotFoundException('Order item not found.');
+    }
+    const station = await this.prisma.preparationStation.findFirst({
+      where: {
+        id: item.currentPreparationStationId,
+        branchId: context.branchId!,
+      },
+      select: { workflowMode: true },
+    });
+    const quickServe =
+      normalizeWorkflowMode(station?.workflowMode) === 'QUICK_SERVE';
+
     const result = await this.transition(
       userId,
       orderItemId,
       dto.expectedVersion,
       {
-        from: ['IN_PREPARATION'],
+        from: quickServe
+          ? ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION']
+          : ['IN_PREPARATION'],
         to: 'READY',
         extra: { readyAt: new Date() },
       },
@@ -1399,6 +1441,18 @@ export class StationsService {
   }
 }
 
+function normalizeWorkflowMode(
+  value?: string | null,
+): StationWorkflowMode {
+  if (
+    value &&
+    (STATION_WORKFLOW_MODES as readonly string[]).includes(value)
+  ) {
+    return value as StationWorkflowMode;
+  }
+  return 'FULL_PREP';
+}
+
 function slugify(text: string): string {
   return text
     .toString()
@@ -1578,10 +1632,14 @@ function toTicketDto(item: TicketRecord): StationQueueItemDto {
     Math.floor((Date.now() - queuedAt.getTime()) / 1000),
   );
   const expectedPrepMinutes = item.expectedPrepMinutesSnapshot ?? 0;
-  const delayed =
+  const pastPrep =
     ACTIVE_COOKING.includes(item.state) &&
     expectedPrepMinutes > 0 &&
     elapsedSeconds > expectedPrepMinutes * 60;
+  const staleOpen =
+    [...ACTIVE_COOKING, 'READY', 'CANNOT_PREPARE'].includes(item.state) &&
+    elapsedSeconds >= STALE_EXCEPTION_SECONDS;
+  const delayed = pastPrep || staleOpen;
   const exception = item.productionExceptions[0];
   const waiterMembershipId =
     item.tableSession?.primaryWaiterMembershipId ??

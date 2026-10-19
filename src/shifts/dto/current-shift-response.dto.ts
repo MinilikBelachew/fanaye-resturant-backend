@@ -69,6 +69,28 @@ export class ShiftSessionDto {
   assignmentId: string | null;
 }
 
+export class WeeklyShiftPlanItemDto {
+  @ApiProperty({ description: 'Mon | Tue | Wed | Thu | Fri | Sat | Sun' })
+  @Expose()
+  dayCode: string;
+
+  @ApiProperty()
+  @Expose()
+  definitionName: string;
+
+  @ApiProperty({ example: '10:00' })
+  @Expose()
+  startLocalTime: string;
+
+  @ApiProperty({ example: '18:00' })
+  @Expose()
+  endLocalTime: string;
+
+  @ApiProperty()
+  @Expose()
+  shiftDefinitionId: string;
+}
+
 export class CurrentShiftResponseDto {
   @ApiProperty()
   @Expose()
@@ -81,4 +103,12 @@ export class CurrentShiftResponseDto {
   @ApiPropertyOptional({ type: () => ShiftAssignmentSummaryDto })
   @Expose()
   upcomingAssignment: ShiftAssignmentSummaryDto | null;
+
+  @ApiProperty({ type: [WeeklyShiftPlanItemDto] })
+  @Expose()
+  weeklyPlan: WeeklyShiftPlanItemDto[];
+
+  @ApiProperty({ type: [ShiftAssignmentSummaryDto] })
+  @Expose()
+  upcomingAssignments: ShiftAssignmentSummaryDto[];
 }

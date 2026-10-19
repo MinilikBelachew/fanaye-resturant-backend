@@ -110,6 +110,13 @@ export class StationQueueResponseDto {
   @Expose()
   stationCode: string | null;
 
+  @ApiProperty({
+    example: 'FULL_PREP',
+    enum: ['FULL_PREP', 'QUICK_SERVE'],
+  })
+  @Expose()
+  workflowMode: string;
+
   @ApiPropertyOptional({ example: false })
   @Expose()
   stationOffline?: boolean;

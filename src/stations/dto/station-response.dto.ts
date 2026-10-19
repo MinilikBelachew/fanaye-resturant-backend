@@ -16,6 +16,12 @@ export class StationManagementResponseDto {
   @ApiProperty({ example: true })
   enabled: boolean;
 
+  @ApiProperty({
+    example: 'FULL_PREP',
+    enum: ['FULL_PREP', 'QUICK_SERVE'],
+  })
+  workflowMode: string;
+
   @ApiPropertyOptional({ example: 10 })
   defaultDelayThresholdMinutes?: number | null;
 

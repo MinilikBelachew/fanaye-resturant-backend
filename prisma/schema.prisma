@@ -863,6 +863,8 @@ model PreparationStation {
   name                          String   @db.VarChar(120)
   code                          String?  @db.VarChar(60)
   status                        String   @default("ACTIVE") @db.VarChar(32)
+  /// FULL_PREP | QUICK_SERVE — bar/soft drinks can mark Ready without cooking steps
+  workflowMode                  String   @default("FULL_PREP") @map("workflow_mode") @db.VarChar(20)
   defaultDelayThresholdMinutes  Int?     @map("default_delay_threshold_minutes")
   sortOrder                     Int      @default(0) @map("sort_order")
   createdAt                     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)

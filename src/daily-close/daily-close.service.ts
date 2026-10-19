@@ -11,6 +11,7 @@ import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
+import { InventoryService } from '../inventory/inventory.service';
 import { localDayRange } from '../common/business-date';
 import {
   CreateDailyCloseDto,
@@ -30,6 +31,23 @@ import {
 
 const CREATE_COMMAND = 'daily_close.create';
 const LOCK_COMMAND = 'daily_close.lock';
+const OPEN_KITCHEN_STATES = [
+  'CONFIRMED',
+  'QUEUED',
+  'ACKNOWLEDGED',
+  'IN_PREPARATION',
+  'READY',
+  'DELAYED',
+  'CANNOT_PREPARE',
+] as const;
+const DAY_CLOSE_ABANDON_REASON = 'Day closed – abandoned kitchen ticket';
+
+/** Kitchen tickets are auto-cancelled on lock; they must not block readiness. */
+function hardBlockers(
+  blockers: DailyCloseBlockerDto[],
+): DailyCloseBlockerDto[] {
+  return blockers.filter((blocker) => blocker.code !== 'OPEN_KITCHEN_TICKET');
+}
 
 type Snapshot = {
   summary: DailyCloseSummaryDto;
@@ -62,6 +80,7 @@ export class DailyCloseService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly casl: CaslService,
+    private readonly inventory: InventoryService,
   ) {}
 
   async preview(
@@ -82,12 +101,13 @@ export class DailyCloseService {
       },
     });
 
+    const blocking = hardBlockers(snapshot.blockers);
     return {
       data: {
         businessDate: ymd(businessDate),
         currencyCode: 'ETB',
         readiness: {
-          ready: snapshot.blockers.length === 0,
+          ready: blocking.length === 0,
           blockers: snapshot.blockers,
         },
         summary: snapshot.summary,
@@ -143,7 +163,9 @@ export class DailyCloseService {
 
     const snapshot = await this.buildSnapshot(context.branchId!, businessDate);
     const status =
-      snapshot.blockers.length === 0 ? 'READY_FOR_REVIEW' : 'DRAFT';
+      hardBlockers(snapshot.blockers).length === 0
+        ? 'READY_FOR_REVIEW'
+        : 'DRAFT';
 
     const payload = await this.prisma.$transaction(async (tx) => {
       const close = await tx.operationalDailyClose.create({
@@ -209,7 +231,7 @@ export class DailyCloseService {
     const status =
       close.status === 'APPROVED'
         ? 'APPROVED'
-        : snapshot.blockers.length === 0
+        : hardBlockers(snapshot.blockers).length === 0
           ? 'READY_FOR_REVIEW'
           : 'DRAFT';
 
@@ -310,15 +332,19 @@ export class DailyCloseService {
       });
     }
 
+    // Drop stale station tickets so they never reappear as New tomorrow.
+    await this.abandonOpenKitchenTickets(context);
+
     const snapshot = await this.buildSnapshot(
       context.branchId!,
       close.businessDate,
     );
-    if (snapshot.blockers.length > 0) {
+    const blocking = hardBlockers(snapshot.blockers);
+    if (blocking.length > 0) {
       throw new ConflictException({
         status: 409,
         code: 'DAILY_CLOSE_BLOCKED',
-        errors: { blockers: snapshot.blockers },
+        errors: { blockers: blocking },
       });
     }
 
@@ -422,16 +448,8 @@ export class DailyCloseService {
     const dayYmd = ymd(businessDate);
     const { start: dayStart, end: dayEnd } = localDayRange(dayYmd);
     const duringDay = { gte: dayStart, lte: dayEnd };
-    const openKitchenStates = [
-      'CONFIRMED',
-      'QUEUED',
-      'ACKNOWLEDGED',
-      'IN_PREPARATION',
-      'READY',
-      'DELAYED',
-      'CANNOT_PREPARE',
-    ];
     const [
+
       bills,
       payments,
       openSessions,
@@ -510,7 +528,7 @@ export class DailyCloseService {
         where: {
           branchId,
           cancelledAt: null,
-          state: { in: openKitchenStates },
+          state: { in: [...OPEN_KITCHEN_STATES] },
         },
         include: {
           tableSession: { include: { table: true } },
@@ -1159,13 +1177,90 @@ export class DailyCloseService {
         cannotPrepareCount: line.cannotPrepareCount,
       })),
       readiness: {
-        ready: blockers.length === 0,
+        ready: hardBlockers(blockers).length === 0,
         blockers,
       },
       approvedAt: row.approvedAt,
       lockedAt: row.lockedAt,
       version: row.version,
     };
+  }
+
+  /**
+   * Cancels leftover station tickets on day lock so they leave the live queue.
+   * History is kept (CANCELLED + reason); inventory decrements are reversed.
+   */
+  private async abandonOpenKitchenTickets(
+    context: AuthContextDto,
+  ): Promise<number> {
+    if (!context.branchId || !context.staffMembershipId) return 0;
+
+    const openItems = await this.prisma.orderItem.findMany({
+      where: {
+        branchId: context.branchId,
+        cancelledAt: null,
+        state: { in: [...OPEN_KITCHEN_STATES] },
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        branchId: true,
+        tableSessionId: true,
+      },
+      take: 2000,
+    });
+    if (openItems.length === 0) return 0;
+
+    const now = new Date();
+    const touchedSessions = new Set<string>();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of openItems) {
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: {
+            state: 'CANCELLED',
+            cancelledAt: now,
+            cancelledByMembershipId: context.staffMembershipId!,
+            cancellationReason: DAY_CLOSE_ABANDON_REASON,
+            version: { increment: 1 },
+          },
+        });
+        await this.inventory.reverseForOrderItem(
+          tx,
+          {
+            id: item.id,
+            tenantId: item.tenantId,
+            branchId: item.branchId,
+          },
+          context.staffMembershipId,
+        );
+        if (item.tableSessionId) {
+          touchedSessions.add(item.tableSessionId);
+        }
+      }
+
+      for (const tableSessionId of touchedSessions) {
+        const remaining = await tx.orderItem.count({
+          where: {
+            tableSessionId,
+            cancelledAt: null,
+            state: { not: 'CANCELLED' },
+          },
+        });
+        if (remaining === 0) {
+          await tx.tableSession.updateMany({
+            where: {
+              id: tableSessionId,
+              status: 'ACTIVE_ORDER',
+            },
+            data: { status: 'OPEN', version: { increment: 1 } },
+          });
+        }
+      }
+    });
+
+    return openItems.length;
   }
 
   /**

@@ -148,6 +148,17 @@ export class IdentityContextService {
       roleAssignment?.role.permissions.map((item) => item.permission.code) ??
       [];
 
+    let roomsEnabled = false;
+    if (branchId) {
+      const roomCount = await this.prisma.hotelRoom.count({
+        where: {
+          branchId,
+          archivedAt: null,
+        },
+      });
+      roomsEnabled = roomCount > 0;
+    }
+
     return {
       userId: user.id,
       displayName: user.displayName,
@@ -157,6 +168,7 @@ export class IdentityContextService {
       branchId,
       branchName,
       serviceMode,
+      roomsEnabled,
       staffMembershipId: membership?.id ?? null,
       roleCode,
       stationId: stationAssignment?.stationId ?? null,

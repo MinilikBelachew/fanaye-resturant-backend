@@ -17,7 +17,45 @@ import {
   CurrentShiftResponseDto,
   ShiftAssignmentSummaryDto,
   ShiftSessionDto,
+  WeeklyShiftPlanItemDto,
 } from './dto/current-shift-response.dto';
+
+const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+/** JS Date#getDay() index → dayCode used by StaffDayShift */
+const DAY_CODES_JS = [
+  'Sun',
+  'Mon',
+  'Tue',
+  'Wed',
+  'Thu',
+  'Fri',
+  'Sat',
+] as const;
+
+type ClockInWindow = {
+  assignment: {
+    id: string;
+    roleId: number | null;
+    graceMinutes: number;
+    scheduledStartAt: Date;
+    scheduledEndAt: Date;
+    definition: { name: string } | null;
+  } | null;
+  startAt: Date | null;
+  endAt: Date | null;
+  graceMinutes: number;
+  definitionName: string;
+};
+
+function emptyClockInWindow(): ClockInWindow {
+  return {
+    assignment: null,
+    startAt: null,
+    endAt: null,
+    graceMinutes: 15,
+    definitionName: 'Shift',
+  };
+}
 import {
   HandoverCandidateDto,
   ShiftHandoverDto,
@@ -36,7 +74,13 @@ export class ShiftsService {
   async getCurrent(userId: string): Promise<CurrentShiftResponseDto> {
     const context = await this.identityContext.getByUserId(userId);
     if (!context.staffMembershipId || !context.branchId) {
-      return { clockedIn: false, shiftSession: null, upcomingAssignment: null };
+      return {
+        clockedIn: false,
+        shiftSession: null,
+        upcomingAssignment: null,
+        weeklyPlan: [],
+        upcomingAssignments: [],
+      };
     }
 
     const open = await this.prisma.shiftSession.findFirst({
@@ -53,15 +97,21 @@ export class ShiftsService {
       orderBy: { clockInAt: 'desc' },
     });
 
-    const upcoming = await this.nextAssignment(
-      context.staffMembershipId,
-      context.branchId,
-    );
+    const [upcoming, weeklyPlan, upcomingAssignments] = await Promise.all([
+      this.nextAssignment(context.staffMembershipId, context.branchId),
+      this.getWeeklyPlan(context.staffMembershipId),
+      this.listUpcomingAssignments(
+        context.staffMembershipId,
+        context.branchId,
+      ),
+    ]);
 
     return {
       clockedIn: Boolean(open),
       shiftSession: open ? this.toSessionDto(open) : null,
       upcomingAssignment: upcoming,
+      weeklyPlan,
+      upcomingAssignments,
     };
   }
 
@@ -81,15 +131,22 @@ export class ShiftsService {
       return current;
     }
 
-    const assignment = await this.resolveAssignment(
+    const now = new Date();
+    const window = await this.resolveClockInWindow(
       context.staffMembershipId,
       context.branchId,
+      now,
       dto.shiftAssignmentId,
     );
 
-    if (dto.shiftAssignmentId && !assignment) {
+    if (dto.shiftAssignmentId && !window.assignment) {
       throw new NotFoundException('Shift assignment not found.');
     }
+
+    this.assertWithinClockInWindow(window, now);
+    // Guaranteed non-null after assertWithinClockInWindow
+    const scheduledStartAt = window.startAt!;
+    const scheduledEndAt = window.endAt!;
 
     const role = await this.prisma.staffRoleAssignment.findFirst({
       where: {
@@ -99,31 +156,26 @@ export class ShiftsService {
       },
     });
 
-    const roleId = dto.roleId ?? assignment?.roleId ?? role?.roleId ?? null;
-    const now = new Date();
+    const roleId =
+      dto.roleId ?? window.assignment?.roleId ?? role?.roleId ?? null;
     const businessDate = businessDateUtc(now);
 
-    let lateByMinutes = 0;
-    if (assignment?.scheduledStartAt) {
-      lateByMinutes = Math.max(
-        0,
-        Math.round(
-          (now.getTime() - assignment.scheduledStartAt.getTime()) / 60000,
-        ),
-      );
-    }
+    const lateByMinutes = Math.max(
+      0,
+      Math.round((now.getTime() - scheduledStartAt.getTime()) / 60000),
+    );
 
     try {
       await this.prisma.shiftSession.create({
         data: {
           tenantId: context.tenantId,
           branchId: context.branchId,
-          shiftAssignmentId: assignment?.id ?? null,
+          shiftAssignmentId: window.assignment?.id ?? null,
           staffMembershipId: context.staffMembershipId,
           roleId,
-          scheduledStartAtSnapshot: assignment?.scheduledStartAt ?? null,
-          scheduledEndAtSnapshot: assignment?.scheduledEndAt ?? null,
-          graceMinutesSnapshot: assignment?.graceMinutes ?? 15,
+          scheduledStartAtSnapshot: scheduledStartAt,
+          scheduledEndAtSnapshot: scheduledEndAt,
+          graceMinutesSnapshot: window.graceMinutes,
           clockInAt: now,
           lateByMinutes,
           state: 'OPEN',
@@ -462,6 +514,177 @@ export class ShiftsService {
       scheduledEndAt: assignment.scheduledEndAt,
       roleCode: assignment.role?.code ?? null,
     };
+  }
+
+  /**
+   * Clock-in is only allowed during today's assigned window (± grace).
+   * Weekly StaffDayShift is preferred; ShiftAssignment is the fallback.
+   */
+  private async resolveClockInWindow(
+    membershipId: string,
+    branchId: string,
+    now: Date,
+    shiftAssignmentId?: string,
+  ): Promise<ClockInWindow> {
+    const include = { definition: true, role: true } as const;
+
+    if (shiftAssignmentId) {
+      const assigned = await this.prisma.shiftAssignment.findFirst({
+        where: {
+          id: shiftAssignmentId,
+          staffMembershipId: membershipId,
+          branchId,
+        },
+        include,
+      });
+      if (!assigned) {
+        return emptyClockInWindow();
+      }
+      return {
+        assignment: assigned,
+        startAt: assigned.scheduledStartAt,
+        endAt: assigned.scheduledEndAt,
+        graceMinutes: assigned.graceMinutes ?? 15,
+        definitionName: assigned.definition?.name ?? 'Shift',
+      };
+    }
+
+    const dayCode = DAY_CODES_JS[now.getDay()];
+    const dayPlan = await this.prisma.staffDayShift.findFirst({
+      where: { staffMembershipId: membershipId, dayCode },
+      include: { shiftDefinition: true },
+    });
+
+    if (dayPlan?.shiftDefinition) {
+      const { startAt, endAt } = computeShiftWindowForDay(
+        dayPlan.shiftDefinition.startLocalTime,
+        dayPlan.shiftDefinition.endLocalTime,
+        now,
+      );
+      const graceMinutes = dayPlan.shiftDefinition.graceMinutes ?? 15;
+      const assignment = await this.prisma.shiftAssignment.findFirst({
+        where: {
+          staffMembershipId: membershipId,
+          branchId,
+          status: 'SCHEDULED',
+          shiftDefinitionId: dayPlan.shiftDefinitionId,
+          scheduledStartAt: {
+            gte: new Date(startAt.getTime() - 12 * 60 * 60 * 1000),
+            lte: new Date(endAt.getTime() + 12 * 60 * 60 * 1000),
+          },
+        },
+        include,
+        orderBy: { scheduledStartAt: 'asc' },
+      });
+      return {
+        assignment,
+        startAt,
+        endAt,
+        graceMinutes,
+        definitionName: dayPlan.shiftDefinition.name,
+      };
+    }
+
+    const gracePadMs = 4 * 60 * 60 * 1000;
+    const covering = await this.prisma.shiftAssignment.findFirst({
+      where: {
+        staffMembershipId: membershipId,
+        branchId,
+        status: 'SCHEDULED',
+        scheduledStartAt: { lte: new Date(now.getTime() + gracePadMs) },
+        scheduledEndAt: { gte: new Date(now.getTime() - gracePadMs) },
+      },
+      include,
+      orderBy: { scheduledStartAt: 'asc' },
+    });
+    if (!covering) {
+      return emptyClockInWindow();
+    }
+    return {
+      assignment: covering,
+      startAt: covering.scheduledStartAt,
+      endAt: covering.scheduledEndAt,
+      graceMinutes: covering.graceMinutes ?? 15,
+      definitionName: covering.definition?.name ?? 'Shift',
+    };
+  }
+
+  private assertWithinClockInWindow(window: ClockInWindow, now: Date): void {
+    if (!window.startAt || !window.endAt) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'NO_SHIFT_TODAY',
+        errors: { shift: 'noAssignmentToday' },
+        message: 'You have no shift assigned for today.',
+      });
+    }
+
+    const graceMs = Math.max(0, window.graceMinutes) * 60_000;
+    const earliest = window.startAt.getTime() - graceMs;
+    const latest = window.endAt.getTime() + graceMs;
+    if (now.getTime() < earliest || now.getTime() > latest) {
+      const startLabel = formatClockLabel(window.startAt);
+      const endLabel = formatClockLabel(window.endAt);
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'SHIFT_OUTSIDE_WINDOW',
+        errors: { shift: 'outsideWindow' },
+        message: `Clock-in is only allowed during ${window.definitionName} (${startLabel}–${endLabel}, ±${window.graceMinutes} min grace).`,
+      });
+    }
+  }
+
+  private async getWeeklyPlan(
+    membershipId: string,
+  ): Promise<WeeklyShiftPlanItemDto[]> {
+    const rows = await this.prisma.staffDayShift.findMany({
+      where: { staffMembershipId: membershipId },
+      include: { shiftDefinition: true },
+    });
+
+    return rows
+      .map((row) => ({
+        dayCode: row.dayCode,
+        definitionName: row.shiftDefinition?.name ?? 'Shift',
+        startLocalTime: formatShiftLocalTime(row.shiftDefinition.startLocalTime),
+        endLocalTime: formatShiftLocalTime(row.shiftDefinition.endLocalTime),
+        shiftDefinitionId: row.shiftDefinitionId,
+      }))
+      .sort(
+        (a, b) =>
+          DAY_ORDER.indexOf(a.dayCode as (typeof DAY_ORDER)[number]) -
+          DAY_ORDER.indexOf(b.dayCode as (typeof DAY_ORDER)[number]),
+      );
+  }
+
+  private async listUpcomingAssignments(
+    membershipId: string,
+    branchId: string,
+  ): Promise<ShiftAssignmentSummaryDto[]> {
+    const now = new Date();
+    const horizon = new Date(now);
+    horizon.setDate(horizon.getDate() + 14);
+
+    const rows = await this.prisma.shiftAssignment.findMany({
+      where: {
+        staffMembershipId: membershipId,
+        branchId,
+        status: 'SCHEDULED',
+        scheduledEndAt: { gte: now },
+        scheduledStartAt: { lte: horizon },
+      },
+      include: { definition: true, role: true },
+      orderBy: { scheduledStartAt: 'asc' },
+      take: 21,
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      definitionName: row.definition?.name ?? 'Shift',
+      scheduledStartAt: row.scheduledStartAt,
+      scheduledEndAt: row.scheduledEndAt,
+      roleCode: row.role?.code ?? null,
+    }));
   }
 
   private toSessionDto(session: {
@@ -1204,4 +1427,39 @@ export class ShiftsService {
       };
     });
   }
+}
+
+function formatShiftLocalTime(value: Date): string {
+  const hours = value.getUTCHours().toString().padStart(2, '0');
+  const minutes = value.getUTCMinutes().toString().padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function formatClockLabel(value: Date): string {
+  const hours = value.getHours().toString().padStart(2, '0');
+  const minutes = value.getMinutes().toString().padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+/** Build today's start/end from a ShiftDefinition Time field (stored as UTC clock). */
+function computeShiftWindowForDay(
+  startLocalTime: Date,
+  endLocalTime: Date,
+  day: Date,
+): { startAt: Date; endAt: Date } {
+  const startH = startLocalTime.getUTCHours();
+  const startM = startLocalTime.getUTCMinutes();
+  const endH = endLocalTime.getUTCHours();
+  const endM = endLocalTime.getUTCMinutes();
+
+  const startAt = new Date(day);
+  startAt.setHours(startH, startM, 0, 0);
+
+  const endAt = new Date(day);
+  endAt.setHours(endH, endM, 0, 0);
+
+  if (endAt <= startAt) {
+    endAt.setDate(endAt.getDate() + 1);
+  }
+  return { startAt, endAt };
 }

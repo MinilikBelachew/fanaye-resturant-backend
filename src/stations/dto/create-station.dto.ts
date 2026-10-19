@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -7,6 +8,9 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+export const STATION_WORKFLOW_MODES = ['FULL_PREP', 'QUICK_SERVE'] as const;
+export type StationWorkflowMode = (typeof STATION_WORKFLOW_MODES)[number];
 
 export class CreateStationDto {
   @ApiProperty({ example: 'Chips & Fryer' })
@@ -25,6 +29,16 @@ export class CreateStationDto {
   @IsString()
   @MaxLength(32)
   status?: string;
+
+  @ApiPropertyOptional({
+    example: 'FULL_PREP',
+    enum: STATION_WORKFLOW_MODES,
+    description:
+      'FULL_PREP = kitchen flow; QUICK_SERVE = bar/soft drinks ready in one step',
+  })
+  @IsOptional()
+  @IsIn(STATION_WORKFLOW_MODES)
+  workflowMode?: StationWorkflowMode;
 
   @ApiPropertyOptional({ example: 10 })
   @IsOptional()
