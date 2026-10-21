@@ -527,7 +527,9 @@ export class ManagerReportsService {
       from.setUTCDate(from.getUTCDate() - 6);
       return { from, to };
     }
-    const from = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 1));
+    // Rolling last 30 days (aligned with manager dashboard "Last month").
+    const from = new Date(to);
+    from.setUTCDate(from.getUTCDate() - 29);
     return { from, to };
   }
 

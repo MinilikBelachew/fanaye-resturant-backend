@@ -435,6 +435,29 @@ export class UnpaidBillItemDetailDto {
   billedAt: string;
 }
 
+export class StationBacklogTicketDetailDto {
+  @ApiProperty({ example: 'item-123' })
+  orderItemId: string;
+
+  @ApiProperty({ example: 'Shiro' })
+  itemName: string;
+
+  @ApiProperty({ example: 2 })
+  quantity: number;
+
+  @ApiProperty({ example: 'Table 4' })
+  tableDisplayName: string;
+
+  @ApiProperty({ example: 'Abebe' })
+  waiterName: string;
+
+  @ApiProperty({ example: 'QUEUED' })
+  state: string;
+
+  @ApiProperty({ example: 18 })
+  waitMinutes: number;
+}
+
 export class StationBacklogItemDetailDto {
   @ApiProperty({ example: 'Kitchen' })
   stationName: string;
@@ -447,6 +470,9 @@ export class StationBacklogItemDetailDto {
 
   @ApiProperty({ example: 14 })
   oldestWaitMinutes: number;
+
+  @ApiPropertyOptional({ type: () => [StationBacklogTicketDetailDto] })
+  tickets?: StationBacklogTicketDetailDto[];
 }
 
 export class ActNowInsightDto {

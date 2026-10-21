@@ -189,51 +189,40 @@ function resolveDashboardRange(
   }
 
   if (period === 'month') {
-    // Previous calendar month
-    const firstThisMonth = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
-    const rangeEnd = addLocalDays(firstThisMonth, -1);
-    const rangeStart = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
-    rangeStart.setHours(0, 0, 0, 0);
+    // Rolling last 30 days ending today (includes current week).
+    const rangeEnd = anchor;
+    const rangeStart = addLocalDays(rangeEnd, -29);
     return {
       period: 'month',
       rangeStart,
       rangeEnd,
-      periodLabel: rangeEnd.toLocaleString('en', {
-        month: 'long',
-        year: 'numeric',
-      }),
+      periodLabel: 'Last 30 days',
       isSingleDay: false,
     };
   }
 
   if (period === 'quarter') {
-    const q = Math.floor(anchor.getMonth() / 3); // 0-3 current
-    const prevQ = q === 0 ? 3 : q - 1;
-    const year = q === 0 ? anchor.getFullYear() - 1 : anchor.getFullYear();
-    const rangeStart = new Date(year, prevQ * 3, 1);
-    rangeStart.setHours(0, 0, 0, 0);
-    const rangeEnd = new Date(year, prevQ * 3 + 3, 0);
-    rangeEnd.setHours(0, 0, 0, 0);
+    // Rolling last 90 days ending today.
+    const rangeEnd = anchor;
+    const rangeStart = addLocalDays(rangeEnd, -89);
     return {
       period: 'quarter',
       rangeStart,
       rangeEnd,
-      periodLabel: `Q${prevQ + 1} ${year}`,
+      periodLabel: 'Last 90 days',
       isSingleDay: false,
     };
   }
 
   if (period === 'year') {
-    const year = anchor.getFullYear() - 1;
-    const rangeStart = new Date(year, 0, 1);
-    rangeStart.setHours(0, 0, 0, 0);
-    const rangeEnd = new Date(year, 11, 31);
-    rangeEnd.setHours(0, 0, 0, 0);
+    // Rolling last 12 months ending today (not prior calendar year).
+    const rangeEnd = anchor;
+    const rangeStart = addLocalDays(rangeEnd, -364);
     return {
       period: 'year',
       rangeStart,
       rangeEnd,
-      periodLabel: String(year),
+      periodLabel: 'Last 12 months',
       isSingleDay: false,
     };
   }
@@ -992,7 +981,20 @@ export class ManagerDashboardService {
 
     const stationItemsMap = new Map<
       string,
-      { queued: number; inPrep: number; oldestMs: number }
+      {
+        queued: number;
+        inPrep: number;
+        oldestMs: number;
+        tickets: Array<{
+          orderItemId: string;
+          itemName: string;
+          quantity: number;
+          tableDisplayName: string;
+          waiterName: string;
+          state: string;
+          waitMinutes: number;
+        }>;
+      }
     >();
     for (const item of liveOrderItems) {
       if (!['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'].includes(item.state))
@@ -1003,6 +1005,7 @@ export class ManagerDashboardService {
         queued: 0,
         inPrep: 0,
         oldestMs: 0,
+        tickets: [],
       };
       if (item.state === 'IN_PREPARATION') {
         entry.inPrep += item.quantity;
@@ -1012,6 +1015,28 @@ export class ManagerDashboardService {
       const start = item.preparationStartedAt ?? item.queuedAt ?? now;
       const wait = now.getTime() - start.getTime();
       if (wait > entry.oldestMs) entry.oldestMs = wait;
+
+      let tableDisplayName = 'Counter';
+      if (item.tableSession?.sessionKind === 'CALL_PICKUP') {
+        const name = item.tableSession.customerName?.trim();
+        tableDisplayName = name ? `Call · ${name}` : 'Call pickup';
+      } else if (item.tableSession?.table) {
+        const num =
+          item.tableSession.table.displayNumber ??
+          item.tableSession.table.displayName.replace(/^Table\s+/i, '');
+        tableDisplayName = `Table ${num}`;
+      }
+
+      entry.tickets.push({
+        orderItemId: item.id,
+        itemName: item.itemNameSnapshot,
+        quantity: item.quantity,
+        tableDisplayName,
+        waiterName:
+          item.tableSession?.primaryWaiter?.employeeDisplayName ?? 'Staff',
+        state: item.state,
+        waitMinutes: Math.max(0, Math.floor(wait / 60_000)),
+      });
       stationItemsMap.set(stName, entry);
     }
     const stationBacklogItems: StationBacklogItemDetailDto[] = Array.from(
@@ -1022,6 +1047,9 @@ export class ManagerDashboardService {
         queuedCount: val.queued,
         inPrepCount: val.inPrep,
         oldestWaitMinutes: Math.floor(val.oldestMs / 60_000),
+        tickets: val.tickets
+          .sort((a, b) => b.waitMinutes - a.waitMinutes)
+          .slice(0, 12),
       }))
       .sort(
         (a, b) =>
@@ -1154,13 +1182,13 @@ export class ManagerDashboardService {
     const cancelledItemsCount = periodOrderItems.filter(
       (item) => item.state === 'CANCELLED' || item.cancelledAt,
     ).length;
+    // Do not fold latePrep into pending actions — Late prep is its own Act Now card.
     const pendingActionsCount =
       pendingBillRequests +
       pendingCashDrops +
       pendingCancellations +
       pendingOrderChanges +
-      openProductionExceptions +
-      latePrepCount;
+      openProductionExceptions;
 
     const coversCount = periodSessions.reduce(
       (sum, s) => sum + (s.guestCount ?? 0),
@@ -1228,7 +1256,6 @@ export class ManagerDashboardService {
               openProductionExceptions > 0
                 ? `${openProductionExceptions} kitchen`
                 : null,
-              latePrepCount > 0 ? `${latePrepCount} overdue` : null,
             ]
               .filter(Boolean)
               .join(' · ') || 'actions waiting',
