@@ -3,7 +3,7 @@ services:
     image: postgres:17.9-alpine
     container_name: boilerplate-backend-postgres
     ports:
-      - "${DATABASE_PORT:-5436}:5432"
+      - "127.0.0.1:${DATABASE_PORT:-5436}:5432"
     volumes:
       - postgres_backend_data_dev:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -18,7 +18,7 @@ services:
     image: redis:7-alpine
     container_name: boilerplate-backend-redis
     ports:
-      - "${REDIS_PORT:-6376}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6376}:6379"
     volumes:
       - redis_backend_data_dev:/data
     networks:
@@ -28,8 +28,8 @@ services:
     image: maildev/maildev:latest
     container_name: boilerplate-backend-maildev
     ports:
-      - "${MAIL_CLIENT_PORT:-1080}:1080"
-      - "${MAIL_PORT:-1025}:1025"
+      - "127.0.0.1:${MAIL_CLIENT_PORT:-1080}:1080"
+      - "127.0.0.1:${MAIL_PORT:-1025}:1025"
     networks:
       - backend-network
 
@@ -37,7 +37,7 @@ services:
     image: adminer:latest
     container_name: boilerplate-backend-adminer
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     networks:
       - backend-network
 
@@ -47,7 +47,7 @@ services:
       dockerfile: Dockerfile.dev
     container_name: boilerplate-backend-api
     ports:
-      - "${APP_PORT:-3001}:${APP_PORT:-3001}"
+      - "127.0.0.1:${APP_PORT:-3001}:${APP_PORT:-3001}"
     volumes:
       - .:/usr/src/app
       - /usr/src/app/node_modules
