@@ -21,6 +21,7 @@ import {
   managerRoom,
   staffRoom,
   stationRoom,
+  tenantRoom,
 } from './ops-rooms';
 
 type OpsSocketData = {
@@ -82,6 +83,9 @@ export class OpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
       client.data = data;
 
+      if (context.tenantId) {
+        await client.join(tenantRoom(context.tenantId));
+      }
       if (context.branchId) {
         // Managers/cashiers/waiters + station tablets all need live board events.
         await client.join(branchRoom(context.branchId));

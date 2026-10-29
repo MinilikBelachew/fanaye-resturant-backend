@@ -317,18 +317,21 @@ export class OrdersService {
 
     const hasTable = Boolean(dto.tableSessionId);
     const hasRoom = Boolean(dto.roomSessionId);
-    if (hasTable === hasRoom) {
+    const hasOutside = Boolean(dto.outsideOrderId);
+    const activeCount = Number(hasTable) + Number(hasRoom) + Number(hasOutside);
+    if (activeCount !== 1) {
       throw new UnprocessableEntityException({
         status: 422,
         code: 'SESSION_XOR_REQUIRED',
         errors: {
-          session: 'Provide exactly one of tableSessionId or roomSessionId.',
+          session:
+            'Provide exactly one of tableSessionId, roomSessionId, or outsideOrderId.',
         },
       });
     }
 
     type ConfirmSession = {
-      kind: 'table' | 'room';
+      kind: 'table' | 'room' | 'outside';
       id: string;
       businessDate: Date;
       version: number;
@@ -338,7 +341,51 @@ export class OrdersService {
 
     let confirmSession: ConfirmSession;
 
-    if (hasTable) {
+    if (hasOutside) {
+      const outside = await this.prisma.outsideOrder.findFirst({
+        where: {
+          id: dto.outsideOrderId!,
+          branchId: context.branchId!,
+        },
+      });
+      if (!outside) {
+        throw new NotFoundException('Outside order not found.');
+      }
+      if (outside.createdByMembershipId !== context.staffMembershipId) {
+        throw new ForbiddenException(
+          'This outside order belongs to another waiter.',
+        );
+      }
+      if (outside.closedAt || outside.status === 'CLOSED') {
+        throw new UnprocessableEntityException({
+          status: 422,
+          code: 'ORDER_CLOSED',
+          errors: { order: 'This outside order is already closed.' },
+        });
+      }
+      await this.dailyClose.assertBusinessDayNotLocked(
+        context.branchId!,
+        outside.businessDate,
+      );
+      if (
+        dto.expectedOutsideOrderVersion != null &&
+        outside.version !== dto.expectedOutsideOrderVersion
+      ) {
+        throw new ConflictException({
+          status: 409,
+          errors: { version: 'stale' },
+          expectedVersion: outside.version,
+        });
+      }
+      confirmSession = {
+        kind: 'outside',
+        id: outside.id,
+        businessDate: outside.businessDate,
+        version: outside.version,
+        seatingVip: false,
+        label: `Outside · ${outside.destinationName}`,
+      };
+    } else if (hasTable) {
       const session = await this.prisma.tableSession.findFirst({
         where: {
           id: dto.tableSessionId!,
@@ -571,14 +618,17 @@ export class OrdersService {
 
     const now = new Date();
     const isRoom = confirmSession.kind === 'room';
+    const isOutside = confirmSession.kind === 'outside';
+    const isTable = confirmSession.kind === 'table';
     const created = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
         data: {
           tenantId: context.tenantId!,
           branchId: context.branchId!,
           businessDate: confirmSession.businessDate,
-          tableSessionId: isRoom ? null : confirmSession.id,
+          tableSessionId: isTable ? confirmSession.id : null,
           roomSessionId: isRoom ? confirmSession.id : null,
+          outsideOrderId: isOutside ? confirmSession.id : null,
           createdByWaiterMembershipId: context.staffMembershipId!,
           waiterShiftSessionId: context.shiftSessionId!,
           status: 'CONFIRMED',
@@ -588,8 +638,9 @@ export class OrdersService {
               tenantId: context.tenantId!,
               branchId: context.branchId!,
               businessDate: confirmSession.businessDate,
-              tableSessionId: isRoom ? null : confirmSession.id,
+              tableSessionId: isTable ? confirmSession.id : null,
               roomSessionId: isRoom ? confirmSession.id : null,
+              outsideOrderId: isOutside ? confirmSession.id : null,
               menuItemId: item.id,
               itemNameSnapshot: item.name,
               unitPriceSnapshot: resolveVipUnitPrice(
@@ -698,7 +749,17 @@ export class OrdersService {
 
       let sessionStatus = 'ACTIVE_ORDER';
       let sessionVersion = confirmSession.version + 1;
-      if (isRoom) {
+
+      if (isOutside) {
+        // Outside orders don't have table/room sessions
+        const updatedOutside = await tx.outsideOrder.update({
+          where: { id: confirmSession.id },
+          data: {
+            version: { increment: 1 },
+          },
+        });
+        sessionVersion = updatedOutside.version;
+      } else if (isRoom) {
         const updatedRoom = await tx.roomSession.update({
           where: { id: confirmSession.id },
           data: {

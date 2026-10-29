@@ -71,12 +71,38 @@ export class AdminTableLocationDto {
   tables: AdminDiningTableDto[];
 }
 
+export class AdminFloorLayoutShiftDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty()
+  startLocalTime: string;
+
+  @ApiProperty()
+  endLocalTime: string;
+}
+
 export class AdminFloorLayoutResponseDto {
   @ApiProperty({ type: [AdminTableLocationDto] })
   data: AdminTableLocationDto[];
 
   @ApiProperty({ type: [AdminWaiterOptionDto] })
   waiters: AdminWaiterOptionDto[];
+
+  @ApiPropertyOptional({ type: [AdminFloorLayoutShiftDto] })
+  shifts?: AdminFloorLayoutShiftDto[];
+
+  @ApiPropertyOptional()
+  activeShiftId?: string | null;
+
+  @ApiPropertyOptional()
+  selectedShiftId?: string | null;
+
+  @ApiPropertyOptional()
+  selectedDayCode?: string | null;
 }
 
 export class AdminTableLocationResponseDto {

@@ -5,6 +5,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { HeaderResolver, I18nModule } from 'nestjs-i18n';
+import fs from 'fs';
 import path from 'path';
 
 import { PrismaModule } from './database/prisma.module';
@@ -46,12 +47,16 @@ import { AuditModule } from './audit/audit.module';
 import { AuditLogsInterceptor } from './audit/audit-logs.interceptor';
 import { SiteModule } from './site/site.module';
 import { QrMenuModule } from './qr-menu/qr-menu.module';
+import { FeedbackModule } from './feedback/feedback.module';
+import { MenuEngineeringModule } from './menu-engineering/menu-engineering.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { BranchesModule } from './branches/branches.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { HrModule } from './hr/hr.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { CaslModule } from './casl/casl.module';
+import { OutsideOrdersModule } from './outside-orders/outside-orders.module';
+import { FinanceModule } from './finance/finance.module';
 
 @Module({
   imports: [
@@ -88,6 +93,12 @@ import { CaslModule } from './casl/casl.module';
           host: configService.get('REDIS_HOST', { infer: true }) || 'localhost',
           port:
             Number(configService.get('REDIS_PORT', { infer: true })) || 6379,
+          maxRetriesPerRequest: null,
+          enableReadyCheck: false,
+          retryStrategy(times) {
+            // Backoff reconnection attempts to avoid terminal flooding if Redis is offline
+            return Math.min(times * 2000, 30000);
+          },
         },
       }),
     }),
@@ -96,7 +107,12 @@ import { CaslModule } from './casl/casl.module';
         fallbackLanguage: configService.getOrThrow('app.fallbackLanguage', {
           infer: true,
         }),
-        loaderOptions: { path: path.join(__dirname, '/i18n/'), watch: true },
+        loaderOptions: {
+          path: fs.existsSync(path.join(__dirname, '/i18n/'))
+            ? path.join(__dirname, '/i18n/')
+            : path.join(process.cwd(), 'src/i18n/'),
+          watch: true,
+        },
       }),
       resolvers: [
         {
@@ -140,11 +156,15 @@ import { CaslModule } from './casl/casl.module';
     AuditModule,
     SiteModule,
     QrMenuModule,
+    FeedbackModule,
+    MenuEngineeringModule,
     RealtimeModule,
     BranchesModule,
     InventoryModule,
     HrModule,
     RoomsModule,
+    OutsideOrdersModule,
+    FinanceModule,
   ],
   providers: [
     {

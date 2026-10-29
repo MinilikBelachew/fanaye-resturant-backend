@@ -43,14 +43,14 @@ export class ConfirmOrderDto {
     description:
       'Dine-in / call pickup. Mutually exclusive with roomSessionId.',
   })
-  @ValidateIf((o: ConfirmOrderDto) => !o.roomSessionId)
+  @ValidateIf((o: ConfirmOrderDto) => !o.roomSessionId && !o.outsideOrderId)
   @IsUUID()
   tableSessionId?: string;
 
   @ApiPropertyOptional({
     description: 'Room service. Mutually exclusive with tableSessionId.',
   })
-  @ValidateIf((o: ConfirmOrderDto) => !o.tableSessionId)
+  @ValidateIf((o: ConfirmOrderDto) => !o.tableSessionId && !o.outsideOrderId)
   @IsUUID()
   roomSessionId?: string;
 
@@ -67,6 +67,21 @@ export class ConfirmOrderDto {
   @IsInt()
   @Min(1)
   expectedRoomSessionVersion?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Outside order container. Mutually exclusive with tableSessionId and roomSessionId.',
+  })
+  @ValidateIf((o: ConfirmOrderDto) => !o.tableSessionId && !o.roomSessionId)
+  @IsUUID()
+  outsideOrderId?: string;
+
+  @ApiPropertyOptional({ example: 1 })
+  @ValidateIf((o: ConfirmOrderDto) => Boolean(o.outsideOrderId))
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  expectedOutsideOrderVersion?: number;
 
   @ApiProperty({ type: () => [ConfirmOrderItemDto] })
   @IsArray()

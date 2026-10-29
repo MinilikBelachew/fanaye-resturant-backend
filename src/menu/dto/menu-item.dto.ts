@@ -57,6 +57,16 @@ export class RecipeLineInputDto {
   @IsNumber()
   @Min(0.0001)
   quantityPerServing: number;
+
+  @ApiPropertyOptional({
+    example: 'g',
+    description:
+      'Unit of quantityPerServing (e.g. g while the ingredient is stocked in kg); defaults to the ingredient stock unit',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  unit?: string;
 }
 
 export class CreateMenuItemDto {

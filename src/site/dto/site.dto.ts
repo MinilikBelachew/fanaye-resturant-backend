@@ -245,6 +245,14 @@ export class UpdateSiteDto {
   @IsOptional()
   @IsString()
   calendarPreference?: string;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  autoApproveSupplyRequests?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  requireDriverForDispatch?: boolean;
 }
 
 export class SiteResponseDto {
@@ -286,6 +294,12 @@ export class SiteResponseDto {
     enum: ['ETHIOPIAN', 'GREGORIAN'],
   })
   calendarPreference?: string;
+
+  @ApiPropertyOptional({ example: false })
+  autoApproveSupplyRequests?: boolean;
+
+  @ApiPropertyOptional({ example: false })
+  requireDriverForDispatch?: boolean;
 }
 
 export class SiteSingleResponseDto {

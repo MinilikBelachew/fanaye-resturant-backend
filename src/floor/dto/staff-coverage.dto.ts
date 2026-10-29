@@ -92,6 +92,19 @@ export class SetWaiterTableCoverageDto {
   @IsUUID()
   shiftDefinitionId: string;
 
+  @ApiPropertyOptional({ example: 'Mon', enum: WORKING_DAY_CODES })
+  @IsOptional()
+  @IsIn(WORKING_DAY_CODES)
+  dayCode?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'If true or dayCode omitted, applies this table selection across all days this waiter is scheduled for this shift',
+  })
+  @IsOptional()
+  @IsBoolean()
+  applyToAllDays?: boolean;
+
   @ApiProperty({
     type: [String],
     description: 'Dining table ids for this shift',
@@ -115,6 +128,16 @@ export class StaffShiftTableCoverageInputDto {
   @ApiProperty()
   @IsUUID()
   shiftDefinitionId: string;
+
+  @ApiPropertyOptional({ example: 'Mon', enum: WORKING_DAY_CODES })
+  @IsOptional()
+  @IsIn(WORKING_DAY_CODES)
+  dayCode?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  applyToAllDays?: boolean;
 
   @ApiProperty({ type: [String] })
   @IsArray()
@@ -251,6 +274,18 @@ export class CreateAdminStaffDto {
   @IsOptional()
   @IsUUID()
   photoId?: string;
+
+  @ApiPropertyOptional({ example: '3-12345 AA' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  licencePlate?: string;
+
+  @ApiPropertyOptional({ example: 'White Toyota Hiace' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(180)
+  vehicleDesc?: string;
 }
 
 export class UpdateAdminStaffDto {
@@ -418,6 +453,18 @@ export class UpdateAdminStaffDto {
   @IsNumber()
   @Min(0)
   annualLeaveBalanceDays?: number;
+
+  @ApiPropertyOptional({ example: '3-12345 AA' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  licencePlate?: string;
+
+  @ApiPropertyOptional({ example: 'White Toyota Hiace' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(180)
+  vehicleDesc?: string;
 
   @ApiPropertyOptional({
     description: 'Uploaded file id from /files/upload (staff photo)',

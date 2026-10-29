@@ -17,3 +17,7 @@ export function managerRoom(branchId: string): string {
 export function stationRoom(stationId: string): string {
   return `station:${stationId}`;
 }
+
+export function tenantRoom(tenantId: string): string {
+  return `tenant:${tenantId}`;
+}

@@ -443,7 +443,11 @@ export class BranchesService {
     branchId: string,
   ): Promise<boolean> {
     if (context.roleCode === PLATFORM_ROLE_CODE) return true;
-    if (context.roleCode === 'OWNER_ADMIN') return true;
+    if (
+      context.roleCode === 'OWNER_ADMIN' ||
+      context.roleCode === 'STORE_MANAGER'
+    )
+      return true;
 
     if (!context.staffMembershipId) return false;
     const assignment = await this.prisma.branchStaffAssignment.findFirst({

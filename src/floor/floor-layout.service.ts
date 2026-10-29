@@ -42,9 +42,13 @@ export class FloorLayoutService {
     private readonly sites: SiteService,
   ) {}
 
-  async layout(userId: string): Promise<AdminFloorLayoutResponseDto> {
+  async layout(
+    userId: string,
+    requestedShiftId?: string,
+    requestedDayCode?: string,
+  ): Promise<AdminFloorLayoutResponseDto> {
     const context = await this.requireAdmin(userId);
-    const [locations, waiters] = await Promise.all([
+    const [locations, waiters, shifts] = await Promise.all([
       this.prisma.tableLocation.findMany({
         where: {
           branchId: context.branchId!,
@@ -61,11 +65,83 @@ export class FloorLayoutService {
         orderBy: { sortOrder: 'asc' },
       }),
       this.listWaiters(context),
+      this.prisma.shiftDefinition.findMany({
+        where: { branchId: context.branchId!, status: 'ACTIVE' },
+        orderBy: { startLocalTime: 'asc' },
+      }),
     ]);
 
+    let activeShiftId: string | null = null;
+    if (shifts.length > 0) {
+      const now = new Date();
+      const minutes = now.getHours() * 60 + now.getMinutes();
+      for (const shift of shifts) {
+        const start =
+          shift.startLocalTime.getUTCHours() * 60 +
+          shift.startLocalTime.getUTCMinutes();
+        const end =
+          shift.endLocalTime.getUTCHours() * 60 +
+          shift.endLocalTime.getUTCMinutes();
+        const inWindow =
+          start <= end
+            ? minutes >= start && minutes < end
+            : minutes >= start || minutes < end;
+        if (inWindow) {
+          activeShiftId = shift.id;
+          break;
+        }
+      }
+      if (!activeShiftId) {
+        activeShiftId = shifts[0].id;
+      }
+    }
+
+    const selectedShiftId =
+      requestedShiftId !== undefined
+        ? requestedShiftId === 'all'
+          ? null
+          : requestedShiftId
+        : activeShiftId;
+
+    const dayCodes = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const now = new Date();
+    const effectiveDayCode = requestedDayCode || dayCodes[now.getDay()];
+
+    let coverageMap: Map<string, { id: string; name: string }> | undefined;
+    if (selectedShiftId) {
+      const coverages = await this.prisma.diningTableShiftCoverage.findMany({
+        where: {
+          branchId: context.branchId!,
+          shiftDefinitionId: selectedShiftId,
+          ...(effectiveDayCode ? { dayCode: effectiveDayCode } : {}),
+        },
+        include: {
+          waiter: true,
+        },
+      });
+      coverageMap = new Map();
+      for (const row of coverages) {
+        coverageMap.set(row.diningTableId, {
+          id: row.waiterMembershipId,
+          name: row.waiter.employeeDisplayName,
+        });
+      }
+    }
+
     return {
-      data: locations.map((location) => this.toLocationDto(location)),
+      data: locations.map((location) =>
+        this.toLocationDto(location, coverageMap),
+      ),
       waiters,
+      shifts: shifts.map((s) => ({
+        id: s.id,
+        name: s.name,
+        startLocalTime: formatTime(s.startLocalTime),
+        endLocalTime: formatTime(s.endLocalTime),
+      })),
+      activeShiftId,
+      selectedShiftId,
+      selectedDayCode: effectiveDayCode,
     };
   }
 
@@ -842,14 +918,51 @@ export class FloorLayoutService {
     return waiter;
   }
 
-  private toLocationDto(location: {
-    id: string;
-    name: string;
-    code: string;
-    sortOrder: number;
-    status: string;
-    isVip: boolean;
-    tables: Array<{
+  private toLocationDto(
+    location: {
+      id: string;
+      name: string;
+      code: string;
+      sortOrder: number;
+      status: string;
+      isVip: boolean;
+      tables: Array<{
+        id: string;
+        locationId: string;
+        displayName: string;
+        displayNumber: string | null;
+        status: string;
+        sortOrder: number;
+        isVip: boolean;
+        assignedWaiterMembershipId: string | null;
+        version: number;
+        assignedWaiter: { employeeDisplayName: string } | null;
+        location?: { name: string; isVip?: boolean };
+      }>;
+    },
+    coverageMap?: Map<string, { id: string; name: string }>,
+  ): AdminTableLocationDto {
+    return {
+      id: location.id,
+      name: location.name,
+      code: location.code,
+      sortOrder: location.sortOrder,
+      status: location.status,
+      isVip: location.isVip,
+      tables: location.tables.map((table) =>
+        this.toTableDto(
+          {
+            ...table,
+            location: { name: location.name, isVip: location.isVip },
+          },
+          coverageMap,
+        ),
+      ),
+    };
+  }
+
+  private toTableDto(
+    table: {
       id: string;
       locationId: string;
       displayName: string;
@@ -860,39 +973,25 @@ export class FloorLayoutService {
       assignedWaiterMembershipId: string | null;
       version: number;
       assignedWaiter: { employeeDisplayName: string } | null;
-      location?: { name: string; isVip?: boolean };
-    }>;
-  }): AdminTableLocationDto {
-    return {
-      id: location.id,
-      name: location.name,
-      code: location.code,
-      sortOrder: location.sortOrder,
-      status: location.status,
-      isVip: location.isVip,
-      tables: location.tables.map((table) =>
-        this.toTableDto({
-          ...table,
-          location: { name: location.name, isVip: location.isVip },
-        }),
-      ),
-    };
-  }
-
-  private toTableDto(table: {
-    id: string;
-    locationId: string;
-    displayName: string;
-    displayNumber: string | null;
-    status: string;
-    sortOrder: number;
-    isVip: boolean;
-    assignedWaiterMembershipId: string | null;
-    version: number;
-    assignedWaiter: { employeeDisplayName: string } | null;
-    location: { name: string; isVip?: boolean };
-  }): AdminDiningTableDto {
+      location: { name: string; isVip?: boolean };
+    },
+    coverageMap?: Map<string, { id: string; name: string }>,
+  ): AdminDiningTableDto {
     const placeVip = Boolean(table.location.isVip);
+    let assignedWaiterMembershipId = table.assignedWaiterMembershipId;
+    let assignedWaiterName = table.assignedWaiter?.employeeDisplayName ?? null;
+
+    if (coverageMap) {
+      const shiftCovered = coverageMap.get(table.id);
+      if (shiftCovered) {
+        assignedWaiterMembershipId = shiftCovered.id;
+        assignedWaiterName = shiftCovered.name;
+      } else {
+        assignedWaiterMembershipId = null;
+        assignedWaiterName = null;
+      }
+    }
+
     return {
       id: table.id,
       locationId: table.locationId,
@@ -901,8 +1000,8 @@ export class FloorLayoutService {
       displayNumber: table.displayNumber,
       status: table.status,
       sortOrder: table.sortOrder,
-      assignedWaiterMembershipId: table.assignedWaiterMembershipId,
-      assignedWaiterName: table.assignedWaiter?.employeeDisplayName ?? null,
+      assignedWaiterMembershipId,
+      assignedWaiterName,
       isVip: table.isVip,
       effectiveVip: table.isVip || placeVip,
       version: table.version,
@@ -1007,4 +1106,10 @@ function resolveTableRange(
     rangeEnd: today,
     periodLabel: 'Today',
   };
+}
+
+function formatTime(value: Date): string {
+  const hours = value.getUTCHours().toString().padStart(2, '0');
+  const minutes = value.getUTCMinutes().toString().padStart(2, '0');
+  return `${hours}:${minutes}`;
 }

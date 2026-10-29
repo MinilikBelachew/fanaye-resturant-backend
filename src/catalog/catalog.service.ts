@@ -479,4 +479,19 @@ export class CatalogService {
       sortOrder: created.sortOrder,
     };
   }
+
+  async deleteCategory(
+    userId: string,
+    id: string,
+  ): Promise<{ success: boolean }> {
+    const { menu } = await this.getContextAndMenu(userId, {
+      mutate: true,
+    });
+
+    await this.prisma.menuCategory.delete({
+      where: { id, menuId: menu.id },
+    });
+
+    return { success: true };
+  }
 }

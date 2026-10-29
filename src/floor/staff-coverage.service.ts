@@ -54,6 +54,8 @@ const UI_ROLE_TO_CODE: Record<string, string> = {
   dispatcher: 'DISPATCHER',
   store_manager: 'STORE_MANAGER',
   storeManager: 'STORE_MANAGER',
+  driver: 'DRIVER',
+  DRIVER: 'DRIVER',
   WAITER: 'WAITER',
   MANAGER: 'MANAGER',
   CASHIER: 'CASHIER',
@@ -161,7 +163,7 @@ export class StaffCoverageService {
               roleAssignments: {
                 some: {
                   status: 'ACTIVE',
-                  role: { code: 'OWNER_ADMIN' },
+                  role: { code: { in: ['OWNER_ADMIN', 'STORE_MANAGER'] } },
                 },
               },
             },
@@ -400,25 +402,70 @@ export class StaffCoverageService {
         },
       });
 
-      await tx.branchStaffAssignment.create({
-        data: {
-          tenantId: context.tenantId!,
-          branchId: targetBranchId,
-          staffMembershipId: membership.id,
-          status: 'ACTIVE',
-        },
-      });
+      if (roleCode === 'STORE_MANAGER' || roleCode === 'DRIVER') {
+        const allBranches = await tx.branch.findMany({
+          where: { tenantId: context.tenantId!, status: 'ACTIVE' },
+          select: { id: true },
+        });
+        if (allBranches.length > 0) {
+          await tx.branchStaffAssignment.createMany({
+            data: allBranches.map((b) => ({
+              tenantId: context.tenantId!,
+              branchId: b.id,
+              staffMembershipId: membership.id,
+              status: 'ACTIVE',
+            })),
+          });
+        } else {
+          await tx.branchStaffAssignment.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: targetBranchId,
+              staffMembershipId: membership.id,
+              status: 'ACTIVE',
+            },
+          });
+        }
+      } else {
+        await tx.branchStaffAssignment.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: targetBranchId,
+            staffMembershipId: membership.id,
+            status: 'ACTIVE',
+          },
+        });
+      }
 
       await tx.staffRoleAssignment.create({
         data: {
           tenantId: context.tenantId!,
           staffMembershipId: membership.id,
           roleId: role.id,
-          branchId: roleCode === 'OWNER_ADMIN' ? null : targetBranchId,
+          branchId:
+            roleCode === 'OWNER_ADMIN' ||
+            roleCode === 'STORE_MANAGER' ||
+            roleCode === 'DRIVER'
+              ? null
+              : targetBranchId,
           status: 'ACTIVE',
           grantedByMembershipId: context.staffMembershipId,
         },
       });
+
+      if (roleCode === 'DRIVER') {
+        await tx.driver.create({
+          data: {
+            tenantId: context.tenantId!,
+            displayName: name,
+            phone: phone,
+            licencePlate: (dto as any).licencePlate?.trim() || null,
+            vehicleDesc: (dto as any).vehicleDesc?.trim() || null,
+            registeredByMembershipId: membership.id,
+            status: dto.active === false ? 'INACTIVE' : 'ACTIVE',
+          },
+        });
+      }
 
       if (stationId) {
         await tx.stationStaffAssignment.create({
@@ -472,6 +519,8 @@ export class StaffCoverageService {
           await this.setWaiterCoverage(userId, membershipId, {
             shiftDefinitionId: coverage.shiftDefinitionId,
             tableIds: coverage.tableIds,
+            dayCode: coverage.dayCode,
+            applyToAllDays: coverage.applyToAllDays,
           });
         }
       } else if (
@@ -482,6 +531,7 @@ export class StaffCoverageService {
         await this.setWaiterCoverage(userId, membershipId, {
           shiftDefinitionId: dto.shiftDefinitionId,
           tableIds: dto.tableIds,
+          applyToAllDays: true,
         });
       }
     }
@@ -584,9 +634,26 @@ export class StaffCoverageService {
         await tx.appUser.update({
           where: { id: existing.userId },
           data: {
-            accountStatus: dto.active ? 'ACTIVE' : 'INACTIVE',
+            accountStatus: dto.active ? 'ACTIVE' : 'DISABLED',
           },
         });
+        if (!dto.active) {
+          await tx.diningTableShiftCoverage.deleteMany({
+            where: { waiterMembershipId: membershipId },
+          });
+          await tx.diningTable.updateMany({
+            where: { assignedWaiterMembershipId: membershipId },
+            data: { assignedWaiterMembershipId: null },
+          });
+          await tx.stationStaffAssignment.updateMany({
+            where: { staffMembershipId: membershipId, status: 'ACTIVE' },
+            data: { status: 'INACTIVE', releasedAt: new Date() },
+          });
+          await tx.branchStaffAssignment.updateMany({
+            where: { staffMembershipId: membershipId, status: 'ACTIVE' },
+            data: { status: 'INACTIVE', releasedAt: new Date() },
+          });
+        }
       }
 
       if (dto.dayShifts !== undefined) {
@@ -798,6 +865,8 @@ export class StaffCoverageService {
         await this.setWaiterCoverage(userId, membershipId, {
           shiftDefinitionId: coverage.shiftDefinitionId,
           tableIds: coverage.tableIds,
+          dayCode: coverage.dayCode,
+          applyToAllDays: coverage.applyToAllDays,
         });
       }
     }
@@ -808,6 +877,114 @@ export class StaffCoverageService {
       workingBranchId,
     );
     return { data: this.toStaffDto(member) };
+  }
+
+  async deleteStaff(
+    userId: string,
+    membershipId: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const context = await this.requireAdmin(userId);
+    await this.requireTenantStaffAccess(context, membershipId);
+
+    const membership = await this.prisma.tenantStaffMembership.findFirst({
+      where: {
+        id: membershipId,
+        tenantId: context.tenantId!,
+      },
+      include: {
+        user: true,
+        createdOrders: { take: 1 },
+        collectedPayments: { take: 1 },
+        cashierSessions: { take: 1 },
+        shiftSessions: { take: 1 },
+        primaryTableSessions: { take: 1 },
+        generatedBills: { take: 1 },
+      },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Staff member not found.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // Release table coverages and direct table assignments
+      await tx.diningTableShiftCoverage.deleteMany({
+        where: { waiterMembershipId: membershipId },
+      });
+      await tx.diningTable.updateMany({
+        where: { assignedWaiterMembershipId: membershipId },
+        data: { assignedWaiterMembershipId: null },
+      });
+      await tx.stationStaffAssignment.updateMany({
+        where: { staffMembershipId: membershipId },
+        data: { status: 'INACTIVE', releasedAt: new Date() },
+      });
+      await tx.branchStaffAssignment.updateMany({
+        where: { staffMembershipId: membershipId },
+        data: { status: 'INACTIVE', releasedAt: new Date() },
+      });
+      await tx.staffRoleAssignment.updateMany({
+        where: { staffMembershipId: membershipId },
+        data: { status: 'INACTIVE', revokedAt: new Date() },
+      });
+      await tx.staffDayShift.deleteMany({
+        where: { staffMembershipId: membershipId },
+      });
+
+      const hasHistory =
+        membership.createdOrders.length > 0 ||
+        membership.collectedPayments.length > 0 ||
+        membership.cashierSessions.length > 0 ||
+        membership.shiftSessions.length > 0 ||
+        membership.primaryTableSessions.length > 0 ||
+        membership.generatedBills.length > 0;
+
+      if (!hasHistory) {
+        await tx.stationStaffAssignment.deleteMany({
+          where: { staffMembershipId: membershipId },
+        });
+        await tx.branchStaffAssignment.deleteMany({
+          where: { staffMembershipId: membershipId },
+        });
+        await tx.staffRoleAssignment.deleteMany({
+          where: { staffMembershipId: membershipId },
+        });
+        await tx.tenantStaffMembership.delete({
+          where: { id: membershipId },
+        });
+
+        const otherMemberships = await tx.tenantStaffMembership.count({
+          where: { userId: membership.userId },
+        });
+        if (otherMemberships === 0) {
+          await tx.userCredential.deleteMany({
+            where: { userId: membership.userId },
+          });
+          await tx.appUser.delete({
+            where: { id: membership.userId },
+          });
+        }
+      } else {
+        await tx.tenantStaffMembership.update({
+          where: { id: membershipId },
+          data: {
+            status: 'INACTIVE',
+            deactivatedAt: new Date(),
+          },
+        });
+        await tx.appUser.update({
+          where: { id: membership.userId },
+          data: {
+            accountStatus: 'DISABLED',
+          },
+        });
+      }
+    });
+
+    return {
+      success: true,
+      message: 'Staff member removed successfully.',
+    };
   }
 
   async listShifts(
@@ -824,6 +1001,7 @@ export class StaffCoverageService {
   async shiftFloor(
     userId: string,
     shiftDefinitionId: string,
+    dayCode?: string,
   ): Promise<AdminShiftFloorResponseDto> {
     const context = await this.requireAdmin(userId);
     const shift = await this.prisma.shiftDefinition.findFirst({
@@ -836,6 +1014,14 @@ export class StaffCoverageService {
     if (!shift) {
       throw new NotFoundException('Shift not found.');
     }
+
+    const validDayCodes = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const todayIndex = new Date().getDay();
+    const todayCode = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][
+      todayIndex
+    ];
+    const effectiveDayCode =
+      dayCode && validDayCodes.includes(dayCode) ? dayCode : todayCode;
 
     const [locations, coverages] = await Promise.all([
       this.prisma.tableLocation.findMany({
@@ -856,6 +1042,7 @@ export class StaffCoverageService {
         where: {
           branchId: context.branchId!,
           shiftDefinitionId: shift.id,
+          dayCode: effectiveDayCode,
         },
         include: { waiter: true },
       }),
@@ -874,6 +1061,7 @@ export class StaffCoverageService {
     return {
       shiftDefinitionId: shift.id,
       shiftName: shift.name,
+      dayCode: effectiveDayCode,
       startLocalTime: formatTime(shift.startLocalTime),
       endLocalTime: formatTime(shift.endLocalTime),
       locations: locations.map((location) => ({
@@ -1009,33 +1197,62 @@ export class StaffCoverageService {
       }
     }
 
+    // Resolve which day(s) this coverage applies to
+    let targetDays: string[] = [];
+    if (dto.applyToAllDays || !dto.dayCode) {
+      // Find waiter's scheduled days for this shift if any, otherwise all working days
+      const scheduledDays = await this.prisma.staffDayShift.findMany({
+        where: {
+          staffMembershipId: waiterMembershipId,
+          shiftDefinitionId: shift.id,
+        },
+        select: { dayCode: true },
+      });
+      if (scheduledDays.length > 0) {
+        targetDays = scheduledDays.map((d) => d.dayCode);
+      } else {
+        targetDays = [...WEEKDAY_ORDER];
+      }
+    } else {
+      targetDays = [dto.dayCode];
+    }
+
     await this.prisma.$transaction(async (tx) => {
-      // Clear this waiter's previous rows for the shift, then replace.
+      // Clear this waiter's previous rows for the shift on the target days
       await tx.diningTableShiftCoverage.deleteMany({
         where: {
           branchId: workingBranchId,
           shiftDefinitionId: shift.id,
           waiterMembershipId,
+          dayCode: { in: targetDays },
         },
       });
 
-      // Also clear other waiters from these tables for this shift (one waiter per table/shift).
+      // Clear other waiters from these tables for this shift on these days
       if (uniqueTableIds.length > 0) {
         await tx.diningTableShiftCoverage.deleteMany({
           where: {
             branchId: workingBranchId,
             shiftDefinitionId: shift.id,
             diningTableId: { in: uniqueTableIds },
+            dayCode: { in: targetDays },
           },
         });
+        const records: Prisma.DiningTableShiftCoverageCreateManyInput[] = [];
+        for (const dayCode of targetDays) {
+          for (const diningTableId of uniqueTableIds) {
+            records.push({
+              tenantId: context.tenantId!,
+              branchId: workingBranchId,
+              diningTableId,
+              shiftDefinitionId: shift.id,
+              waiterMembershipId,
+              dayCode,
+            });
+          }
+        }
         await tx.diningTableShiftCoverage.createMany({
-          data: uniqueTableIds.map((diningTableId) => ({
-            tenantId: context.tenantId!,
-            branchId: workingBranchId,
-            diningTableId,
-            shiftDefinitionId: shift.id,
-            waiterMembershipId,
-          })),
+          data: records,
         });
       }
     });
@@ -1043,6 +1260,7 @@ export class StaffCoverageService {
     return {
       waiterMembershipId,
       shiftDefinitionId: shift.id,
+      dayCode: dto.dayCode,
       tableIds: uniqueTableIds,
     };
   }
@@ -1069,6 +1287,7 @@ export class StaffCoverageService {
     }>;
     shiftTableCoverages: Array<{
       shiftDefinitionId: string;
+      dayCode?: string;
       shiftDefinition: {
         id: string;
         name: string;
@@ -1100,19 +1319,22 @@ export class StaffCoverageService {
     const branchId =
       primaryBranch?.branchId ?? primaryBranch?.branch?.id ?? null;
     const branchName =
-      primaryBranch?.branch?.name ??
-      (roleCode === 'OWNER_ADMIN' ? 'All branches' : null);
+      roleCode === 'OWNER_ADMIN' || roleCode === 'STORE_MANAGER'
+        ? 'All branches'
+        : (primaryBranch?.branch?.name ?? null);
     const byShift = new Map<
       string,
       AdminStaffMemberDto['shiftCoverages'][number]
     >();
 
     for (const row of member.shiftTableCoverages) {
-      const key = row.shiftDefinitionId;
+      const rowDayCode = row.dayCode || 'Mon';
+      const key = `${row.shiftDefinitionId}:${rowDayCode}`;
       if (!byShift.has(key)) {
         byShift.set(key, {
           shiftDefinitionId: row.shiftDefinition.id,
           shiftName: row.shiftDefinition.name,
+          dayCode: rowDayCode,
           startLocalTime: formatTime(row.shiftDefinition.startLocalTime),
           endLocalTime: formatTime(row.shiftDefinition.endLocalTime),
           tables: [],
@@ -1135,10 +1357,14 @@ export class StaffCoverageService {
       } | null;
     }>;
     for (const assignment of assignments) {
-      if (assignment?.definition && !byShift.has(assignment.definition.id)) {
+      const alreadyInCoverage = Array.from(byShift.values()).some(
+        (v) => v.shiftDefinitionId === assignment.definition?.id,
+      );
+      if (assignment?.definition && !alreadyInCoverage) {
         byShift.set(assignment.definition.id, {
           shiftDefinitionId: assignment.definition.id,
           shiftName: assignment.definition.name,
+          dayCode: undefined,
           startLocalTime: formatTime(assignment.definition.startLocalTime),
           endLocalTime: formatTime(assignment.definition.endLocalTime),
           tables: [],

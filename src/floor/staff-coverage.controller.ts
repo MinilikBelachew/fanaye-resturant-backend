@@ -101,6 +101,23 @@ export class StaffCoverageController {
     return this.staff.updateStaff(String(request.user.id), membershipId, dto);
   }
 
+  @Delete('staff/:membershipId')
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        message: { type: 'string' },
+      },
+    },
+  })
+  deleteStaff(
+    @Request() request,
+    @Param('membershipId', ParseUUIDPipe) membershipId: string,
+  ): Promise<{ success: boolean; message: string }> {
+    return this.staff.deleteStaff(String(request.user.id), membershipId);
+  }
+
   @Post('staff/:membershipId/reset-pin')
   @ApiOkResponse({ type: AdminStaffMemberResponseDto })
   @HttpCode(HttpStatus.OK)
@@ -134,12 +151,14 @@ export class StaffCoverageController {
   }
 
   @Get('shift-definitions/:id/floor')
+  @ApiQuery({ name: 'dayCode', required: false, type: String })
   @ApiOkResponse({ type: AdminShiftFloorResponseDto })
   shiftFloor(
     @Request() request,
     @Param('id', ParseUUIDPipe) id: string,
+    @Query('dayCode') dayCode?: string,
   ): Promise<AdminShiftFloorResponseDto> {
-    return this.staff.shiftFloor(String(request.user.id), id);
+    return this.staff.shiftFloor(String(request.user.id), id, dayCode);
   }
 
   @Post('shift-definitions')

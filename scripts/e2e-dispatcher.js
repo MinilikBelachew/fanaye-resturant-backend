@@ -1,4 +1,4 @@
-const BASE = process.env.API_BASE || "http://localhost:3001/backend/v1";
+const BASE = process.env.API_BASE || "http://localhost:6001/backend/v1";
 
 async function json(res) {
   const text = await res.text();

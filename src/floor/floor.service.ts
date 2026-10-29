@@ -64,14 +64,18 @@ export class FloorService {
     const shiftDefinitionId =
       await this.resolveActiveShiftDefinitionId(context);
 
-    // Per-table coverage for the active shift (any waiter). Matches canWaiterOpenTable:
-    // if a coverage row exists for the table → only that waiter; else permanent assignment.
+    // Per-table coverage for the active shift and current day of week.
     const coverageByTable = new Map<string, string>();
     if (shiftDefinitionId && context.branchId) {
+      const dayCodes = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const now = new Date();
+      const todayCode = dayCodes[now.getDay()];
+
       const rows = await this.prisma.diningTableShiftCoverage.findMany({
         where: {
           branchId: context.branchId,
           shiftDefinitionId,
+          dayCode: todayCode,
         },
         select: { diningTableId: true, waiterMembershipId: true },
       });
@@ -710,10 +714,39 @@ export class FloorService {
       orderBy: [{ location: { sortOrder: 'asc' } }, { sortOrder: 'asc' }],
     });
 
+    const shiftDefinitionId =
+      await this.resolveActiveShiftDefinitionId(context);
+    const coverageByTable = new Map<string, { id: string; name: string }>();
+    if (shiftDefinitionId && context.branchId) {
+      const dayCodes = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const now = new Date();
+      const todayCode = dayCodes[now.getDay()];
+
+      const rows = await this.prisma.diningTableShiftCoverage.findMany({
+        where: {
+          branchId: context.branchId,
+          shiftDefinitionId,
+          dayCode: todayCode,
+        },
+        include: { waiter: true },
+      });
+      for (const row of rows) {
+        coverageByTable.set(row.diningTableId, {
+          id: row.waiterMembershipId,
+          name: row.waiter.employeeDisplayName,
+        });
+      }
+    }
+
     const data: FloorTableDto[] = tables.map((table) => {
       const session = table.sessions[0] ?? null;
       const items = session?.orderItems ?? [];
       const effectiveVip = Boolean(table.isVip || table.location.isVip);
+      const covered = coverageByTable.get(table.id);
+      const assignedWaiterMembershipId =
+        covered?.id ?? table.assignedWaiterMembershipId ?? null;
+      const assignedWaiterName =
+        covered?.name ?? table.assignedWaiter?.employeeDisplayName ?? null;
       return {
         tableId: table.id,
         displayName: table.displayName,
@@ -728,8 +761,8 @@ export class FloorService {
         guestCount: session?.guestCount ?? null,
         primaryWaiterMembershipId: session?.primaryWaiterMembershipId ?? null,
         waiterName: session?.primaryWaiter.employeeDisplayName ?? null,
-        assignedWaiterMembershipId: table.assignedWaiterMembershipId ?? null,
-        assignedWaiterName: table.assignedWaiter?.employeeDisplayName ?? null,
+        assignedWaiterMembershipId,
+        assignedWaiterName,
         mine: session?.primaryWaiterMembershipId === context.staffMembershipId,
         readyItemCount: items.filter((item) => item.state === READY_STATE)
           .length,
@@ -763,11 +796,16 @@ export class FloorService {
     const shiftDefinitionId =
       await this.resolveActiveShiftDefinitionId(context);
     if (shiftDefinitionId) {
+      const dayCodes = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const now = new Date();
+      const todayCode = dayCodes[now.getDay()];
+
       const coverage = await this.prisma.diningTableShiftCoverage.findUnique({
         where: {
-          diningTableId_shiftDefinitionId: {
+          diningTableId_shiftDefinitionId_dayCode: {
             diningTableId: tableId,
             shiftDefinitionId,
+            dayCode: todayCode,
           },
         },
       });

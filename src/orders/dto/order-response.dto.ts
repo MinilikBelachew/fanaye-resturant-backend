@@ -79,6 +79,10 @@ export class ConfirmOrderResponseDto {
   @Expose()
   roomSessionId: string | null;
 
+  @ApiPropertyOptional({ nullable: true })
+  @Expose()
+  outsideOrderId?: string | null;
+
   @ApiProperty()
   @Expose()
   status: string;
@@ -110,6 +114,13 @@ export class ConfirmOrderResponseDto {
   @ApiPropertyOptional()
   @Expose()
   roomSession?: {
+    status: string;
+    version: number;
+  };
+
+  @ApiPropertyOptional()
+  @Expose()
+  outsideOrder?: {
     status: string;
     version: number;
   };

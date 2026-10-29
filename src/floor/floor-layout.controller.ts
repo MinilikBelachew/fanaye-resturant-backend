@@ -48,9 +48,15 @@ export class FloorLayoutController {
   constructor(private readonly layout: FloorLayoutService) {}
 
   @Get('floor-layout')
+  @ApiQuery({ name: 'shiftId', required: false, type: String })
+  @ApiQuery({ name: 'dayCode', required: false, type: String })
   @ApiOkResponse({ type: AdminFloorLayoutResponseDto })
-  getLayout(@Request() request): Promise<AdminFloorLayoutResponseDto> {
-    return this.layout.layout(String(request.user.id));
+  getLayout(
+    @Request() request,
+    @Query('shiftId') shiftId?: string,
+    @Query('dayCode') dayCode?: string,
+  ): Promise<AdminFloorLayoutResponseDto> {
+    return this.layout.layout(String(request.user.id), shiftId, dayCode);
   }
 
   @Post('table-locations')

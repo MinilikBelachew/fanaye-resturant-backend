@@ -84,4 +84,13 @@ export class CatalogController {
   ): Promise<MenuCategoryDto> {
     return this.catalogService.createCategory(String(request.user.id), dto);
   }
+
+  @Delete('categories/:id')
+  @HttpCode(HttpStatus.OK)
+  deleteCategory(
+    @Request() request,
+    @Param('id') id: string,
+  ): Promise<{ success: boolean }> {
+    return this.catalogService.deleteCategory(String(request.user.id), id);
+  }
 }

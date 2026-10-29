@@ -17,6 +17,7 @@ import {
   CurrentShiftResponseDto,
   ShiftAssignmentSummaryDto,
   ShiftSessionDto,
+  ShiftTableSummaryDto,
   WeeklyShiftPlanItemDto,
 } from './dto/current-shift-response.dto';
 
@@ -95,12 +96,35 @@ export class ShiftsService {
       this.listUpcomingAssignments(context.staffMembershipId, context.branchId),
     ]);
 
+    const todayDayIndex = (new Date().getDay() + 6) % 7;
+    const todayDayCode = DAY_ORDER[todayDayIndex];
+    const todayPlan = weeklyPlan.find((item) => item.dayCode === todayDayCode);
+    let assignedTables: ShiftTableSummaryDto[] = todayPlan?.tables ?? [];
+
+    if (open) {
+      const openShiftDefinitionId = open.assignment?.definition?.id;
+      if (
+        openShiftDefinitionId &&
+        openShiftDefinitionId !== todayPlan?.shiftDefinitionId
+      ) {
+        const matchingPlan = weeklyPlan.find(
+          (item) =>
+            item.shiftDefinitionId === openShiftDefinitionId &&
+            item.dayCode === todayDayCode,
+        );
+        if (matchingPlan?.tables && matchingPlan.tables.length > 0) {
+          assignedTables = matchingPlan.tables;
+        }
+      }
+    }
+
     return {
       clockedIn: Boolean(open),
       shiftSession: open ? this.toSessionDto(open) : null,
       upcomingAssignment: upcoming,
       weeklyPlan,
       upcomingAssignments,
+      assignedTables,
     };
   }
 
@@ -626,21 +650,71 @@ export class ShiftsService {
   private async getWeeklyPlan(
     membershipId: string,
   ): Promise<WeeklyShiftPlanItemDto[]> {
-    const rows = await this.prisma.staffDayShift.findMany({
-      where: { staffMembershipId: membershipId },
-      include: { shiftDefinition: true },
-    });
+    const [rows, coverages] = await Promise.all([
+      this.prisma.staffDayShift.findMany({
+        where: { staffMembershipId: membershipId },
+        include: { shiftDefinition: true },
+      }),
+      this.prisma.diningTableShiftCoverage.findMany({
+        where: {
+          waiterMembershipId: membershipId,
+          table: { archivedAt: null },
+        },
+        include: {
+          table: {
+            include: { location: true },
+          },
+        },
+      }),
+    ]);
+
+    const tablesByShiftDay = new Map<string, ShiftTableSummaryDto[]>();
+    for (const cov of coverages) {
+      if (!cov.table) continue;
+      const tableDto: ShiftTableSummaryDto = {
+        tableId: cov.table.id,
+        displayName: cov.table.displayName,
+        displayNumber: cov.table.displayNumber,
+        locationName: cov.table.location?.name ?? 'Main Floor',
+      };
+      if (cov.dayCode) {
+        const key = `${cov.shiftDefinitionId}:${cov.dayCode}`;
+        if (!tablesByShiftDay.has(key)) tablesByShiftDay.set(key, []);
+        tablesByShiftDay.get(key)!.push(tableDto);
+      } else {
+        for (const day of DAY_ORDER) {
+          const key = `${cov.shiftDefinitionId}:${day}`;
+          if (!tablesByShiftDay.has(key)) tablesByShiftDay.set(key, []);
+          tablesByShiftDay.get(key)!.push(tableDto);
+        }
+      }
+    }
+
+    for (const list of tablesByShiftDay.values()) {
+      list.sort((a, b) =>
+        (a.displayNumber || a.displayName).localeCompare(
+          b.displayNumber || b.displayName,
+          undefined,
+          { numeric: true },
+        ),
+      );
+    }
 
     return rows
-      .map((row) => ({
-        dayCode: row.dayCode,
-        definitionName: row.shiftDefinition?.name ?? 'Shift',
-        startLocalTime: formatShiftLocalTime(
-          row.shiftDefinition.startLocalTime,
-        ),
-        endLocalTime: formatShiftLocalTime(row.shiftDefinition.endLocalTime),
-        shiftDefinitionId: row.shiftDefinitionId,
-      }))
+      .map((row) => {
+        const key = `${row.shiftDefinitionId}:${row.dayCode}`;
+        const shiftTables = tablesByShiftDay.get(key) ?? [];
+        return {
+          dayCode: row.dayCode,
+          definitionName: row.shiftDefinition?.name ?? 'Shift',
+          startLocalTime: formatShiftLocalTime(
+            row.shiftDefinition.startLocalTime,
+          ),
+          endLocalTime: formatShiftLocalTime(row.shiftDefinition.endLocalTime),
+          shiftDefinitionId: row.shiftDefinitionId,
+          tables: shiftTables,
+        };
+      })
       .sort(
         (a, b) =>
           DAY_ORDER.indexOf(a.dayCode as (typeof DAY_ORDER)[number]) -

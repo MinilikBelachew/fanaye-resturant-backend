@@ -223,6 +223,10 @@ export class SiteService {
     },
     calendarPreference?: string,
     profile?: ProfileJson,
+    settings?: {
+      autoApproveSupplyRequests?: boolean;
+      requireDriverForDispatch?: boolean;
+    } | null,
   ): SiteResponseDto {
     return {
       id: site.id,
@@ -253,6 +257,8 @@ export class SiteService {
       publishedAt: site.publishedAt?.toISOString() ?? null,
       publicPath: `/r/${site.slug}`,
       calendarPreference: calendarPreference ?? 'ETHIOPIAN',
+      autoApproveSupplyRequests: settings?.autoApproveSupplyRequests ?? false,
+      requireDriverForDispatch: settings?.requireDriverForDispatch ?? false,
     };
   }
 
@@ -353,6 +359,7 @@ export class SiteService {
         site,
         settings?.calendarPreference ?? 'ETHIOPIAN',
         profile,
+        settings,
       ),
     };
   }
@@ -381,26 +388,35 @@ export class SiteService {
       });
     }
 
-    let activeCalendarPref = 'ETHIOPIAN';
+    const existingSettings = await this.prisma.tenantSettings.findUnique({
+      where: { tenantId: context.tenantId },
+    });
+
+    let activeCalendarPref =
+      existingSettings?.calendarPreference ?? 'ETHIOPIAN';
     if (dto.calendarPreference) {
       activeCalendarPref =
         dto.calendarPreference === 'GREGORIAN' ? 'GREGORIAN' : 'ETHIOPIAN';
-      await this.prisma.tenantSettings.upsert({
-        where: { tenantId: context.tenantId },
-        create: {
-          tenantId: context.tenantId,
-          calendarPreference: activeCalendarPref,
-        },
-        update: {
-          calendarPreference: activeCalendarPref,
-        },
-      });
-    } else {
-      const existingSettings = await this.prisma.tenantSettings.findUnique({
-        where: { tenantId: context.tenantId },
-      });
-      activeCalendarPref = existingSettings?.calendarPreference ?? 'ETHIOPIAN';
     }
+
+    const updatedSettings = await this.prisma.tenantSettings.upsert({
+      where: { tenantId: context.tenantId },
+      create: {
+        tenantId: context.tenantId,
+        calendarPreference: activeCalendarPref,
+        autoApproveSupplyRequests: dto.autoApproveSupplyRequests ?? false,
+        requireDriverForDispatch: dto.requireDriverForDispatch ?? false,
+      },
+      update: {
+        calendarPreference: activeCalendarPref,
+        ...(dto.autoApproveSupplyRequests !== undefined
+          ? { autoApproveSupplyRequests: dto.autoApproveSupplyRequests }
+          : {}),
+        ...(dto.requireDriverForDispatch !== undefined
+          ? { requireDriverForDispatch: dto.requireDriverForDispatch }
+          : {}),
+      },
+    });
 
     if (dto.profile) {
       const existing = await this.readProfile(context.tenantId);
@@ -502,7 +518,12 @@ export class SiteService {
 
     const currentProfile = await this.readProfile(context.tenantId);
     return {
-      data: this.toResponse(updated, activeCalendarPref, currentProfile),
+      data: this.toResponse(
+        updated,
+        activeCalendarPref,
+        currentProfile,
+        updatedSettings,
+      ),
     };
   }
 

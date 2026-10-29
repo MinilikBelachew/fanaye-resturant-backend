@@ -15,21 +15,40 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import {
   AcceptTransferDto,
+  BranchAnalyticsQueryDto,
+  CreateCategoryDto,
+  CreateCustomUnitDto,
+  CreateDriverDto,
   CreateIngredientDto,
   CreateMainLocationDto,
+  CreateMaterialDto,
   CreateProductionBatchDto,
+  CreatePushDropDto,
   CreateSupplyRequestDto,
+  CreateSupplyRequestV2Dto,
   CreateTransferDto,
+  CreateUnitConversionDto,
+  CreateVendorDto,
   DecideSupplyRequestDto,
+  DispatchTransferDto,
   InventoryListQueryDto,
+  MaterialListQueryDto,
   PostYieldTestDto,
+  ReceiveStockBatchDto,
   ReceiveStockDto,
   RejectTransferDto,
   StartCountDto,
+  UpdateCategoryDto,
   UpdateCountLinesDto,
+  UpdateCustomUnitDto,
+  UpdateDriverDto,
   UpdateIngredientDto,
   UpdateLocationDto,
+  UpdateMaterialDto,
+  UpdateUnitConversionDto,
+  UpdateVendorDto,
   UpdateYieldTestDto,
+  UpsertMaterialBalanceDto,
   WasteStockDto,
 } from './dto/inventory.dto';
 import { InventoryService } from './inventory.service';
@@ -44,9 +63,122 @@ import { InventoryService } from './inventory.service';
 export class InventoryController {
   constructor(private readonly inventory: InventoryService) {}
 
+  @Get('analytics/branch')
+  getBranchAnalytics(@Request() req, @Query() query: BranchAnalyticsQueryDto) {
+    return this.inventory.getBranchAnalytics(String(req.user.id), query);
+  }
+
+  @Get('analytics/central')
+  getCentralAnalytics(@Request() req, @Query() query: BranchAnalyticsQueryDto) {
+    return this.inventory.getCentralAnalytics(String(req.user.id), query);
+  }
+
   @Get('units')
-  listUnits() {
-    return this.inventory.listUnits();
+  listUnits(@Request() req) {
+    return this.inventory.listUnits(String(req.user.id));
+  }
+
+  @Get('units/compatible')
+  listCompatibleUnits(@Request() req, @Query('baseUnit') baseUnit: string) {
+    return this.inventory.listCompatibleUnits(String(req.user.id), baseUnit);
+  }
+
+  @Post('units')
+  createCustomUnit(@Request() req, @Body() dto: CreateCustomUnitDto) {
+    return this.inventory.createCustomUnit(String(req.user.id), dto);
+  }
+
+  @Patch('units/:id')
+  updateCustomUnit(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateCustomUnitDto,
+  ) {
+    return this.inventory.updateCustomUnit(String(req.user.id), id, dto);
+  }
+
+  @Delete('units/:id')
+  deleteCustomUnit(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.deleteCustomUnit(String(req.user.id), id);
+  }
+
+  @Get('unit-conversions')
+  listUnitConversions(@Request() req) {
+    return this.inventory.listUnitConversions(String(req.user.id));
+  }
+
+  @Post('unit-conversions')
+  createUnitConversion(@Request() req, @Body() dto: CreateUnitConversionDto) {
+    return this.inventory.createUnitConversion(String(req.user.id), dto);
+  }
+
+  @Patch('unit-conversions/:id')
+  updateUnitConversion(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateUnitConversionDto,
+  ) {
+    return this.inventory.updateUnitConversion(String(req.user.id), id, dto);
+  }
+
+  @Delete('unit-conversions/:id')
+  deleteUnitConversion(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.deleteUnitConversion(String(req.user.id), id);
+  }
+
+  @Get('categories')
+  listCategories(@Request() req) {
+    return this.inventory.listCategories(String(req.user.id));
+  }
+
+  @Post('categories')
+  createCategory(@Request() req, @Body() dto: CreateCategoryDto) {
+    return this.inventory.createCategory(String(req.user.id), dto);
+  }
+
+  @Patch('categories/:id')
+  updateCategory(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateCategoryDto,
+  ) {
+    return this.inventory.updateCategory(String(req.user.id), id, dto);
+  }
+
+  @Delete('categories/:id')
+  deleteCategory(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.deleteCategory(String(req.user.id), id);
+  }
+
+  // ─── Materials ────────────────────────────────────────────────────────────
+
+  @Get('materials')
+  listMaterials(@Request() req, @Query() query: MaterialListQueryDto) {
+    return this.inventory.listMaterials(String(req.user.id), query);
+  }
+
+  @Post('materials')
+  createMaterial(@Request() req, @Body() dto: CreateMaterialDto) {
+    return this.inventory.createMaterial(String(req.user.id), dto);
+  }
+
+  @Patch('materials/:id')
+  updateMaterial(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateMaterialDto,
+  ) {
+    return this.inventory.updateMaterial(String(req.user.id), id, dto);
+  }
+
+  @Delete('materials/:id')
+  deleteMaterial(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.deleteMaterial(String(req.user.id), id);
+  }
+
+  @Post('materials/balances')
+  upsertMaterialBalance(@Request() req, @Body() dto: UpsertMaterialBalanceDto) {
+    return this.inventory.upsertMaterialBalance(String(req.user.id), dto);
   }
 
   @Get('network-status')
@@ -142,6 +274,27 @@ export class InventoryController {
     );
   }
 
+  @Post('supply-requests/:id/prepare')
+  startPreparingSupplyRequest(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.inventory.startPreparingSupplyRequest(String(req.user.id), id);
+  }
+
+  @Post('supply-requests/:id/dispatch')
+  dispatchSupplyRequest(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DecideSupplyRequestDto,
+  ) {
+    return this.inventory.dispatchSupplyRequest(
+      String(req.user.id),
+      id,
+      dto ?? {},
+    );
+  }
+
   @Get('production-batches')
   listProductionBatches(@Request() req, @Query() query: InventoryListQueryDto) {
     return this.inventory.listProductionBatches(String(req.user.id), query);
@@ -184,6 +337,11 @@ export class InventoryController {
   @Post('receive')
   receive(@Request() req, @Body() dto: ReceiveStockDto) {
     return this.inventory.receive(String(req.user.id), dto);
+  }
+
+  @Post('receive-batch')
+  receiveBatch(@Request() req, @Body() dto: ReceiveStockBatchDto) {
+    return this.inventory.receiveBatch(String(req.user.id), dto);
   }
 
   @Post('waste')
@@ -258,5 +416,104 @@ export class InventoryController {
   @ApiOkResponse()
   postCount(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.inventory.postCount(String(req.user.id), id);
+  }
+
+  // ─── Drivers ──────────────────────────────────────────────────────────────
+
+  @Get('drivers')
+  listDrivers(@Request() req, @Query() query: InventoryListQueryDto) {
+    return this.inventory.listDrivers(String(req.user.id), query);
+  }
+
+  @Post('drivers')
+  createDriver(@Request() req, @Body() dto: CreateDriverDto) {
+    return this.inventory.createDriver(String(req.user.id), dto);
+  }
+
+  @Patch('drivers/:id')
+  updateDriver(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateDriverDto,
+  ) {
+    return this.inventory.updateDriver(String(req.user.id), id, dto);
+  }
+
+  @Delete('drivers/:id')
+  deleteDriver(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.deleteDriver(String(req.user.id), id);
+  }
+
+  // ─── Vendors (suppliers) ──────────────────────────────────────────────────
+
+  @Get('vendors')
+  listVendors(@Request() req, @Query() query: InventoryListQueryDto) {
+    return this.inventory.listVendors(String(req.user.id), query);
+  }
+
+  @Post('vendors')
+  createVendor(@Request() req, @Body() dto: CreateVendorDto) {
+    return this.inventory.createVendor(String(req.user.id), dto);
+  }
+
+  @Patch('vendors/:id')
+  updateVendor(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateVendorDto,
+  ) {
+    return this.inventory.updateVendor(String(req.user.id), id, dto);
+  }
+
+  @Delete('vendors/:id')
+  deleteVendor(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.deleteVendor(String(req.user.id), id);
+  }
+
+  // ─── Transfer dispatch (assign driver → IN_TRANSIT) ───────────────────────
+
+  @Post('transfers/:id/dispatch')
+  dispatchTransfer(
+    @Request() req,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DispatchTransferDto,
+  ) {
+    return this.inventory.dispatchTransfer(String(req.user.id), id, dto);
+  }
+
+  // ─── Push drops ───────────────────────────────────────────────────────────
+
+  @Get('push-drops')
+  listPushDrops(@Request() req, @Query() query: InventoryListQueryDto) {
+    return this.inventory.listPushDrops(String(req.user.id), query);
+  }
+
+  @Post('push-drops')
+  createPushDrop(@Request() req, @Body() dto: CreatePushDropDto) {
+    return this.inventory.createPushDrop(String(req.user.id), dto);
+  }
+
+  // ─── Supply request v2 (with optional autoApprove) ────────────────────────
+
+  @Post('supply-requests/v2')
+  createSupplyRequestV2(@Request() req, @Body() dto: CreateSupplyRequestV2Dto) {
+    return this.inventory.createSupplyRequestV2(String(req.user.id), dto);
+  }
+
+  // ─── Driver Portal ────────────────────────────────────────────────────────
+
+  @Get('driver/my-transfers')
+  getMyDriverTransfers(@Request() req) {
+    return this.inventory.getMyDriverTransfers(String(req.user.id));
+  }
+
+  @Post('transfers/:id/start-trip')
+  startDriverTrip(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.startDriverTrip(String(req.user.id), id);
+  }
+
+  @Post('transfers/:id/arrived')
+  markDriverArrived(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.inventory.markDriverArrived(String(req.user.id), id);
   }
 }

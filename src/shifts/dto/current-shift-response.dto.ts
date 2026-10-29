@@ -69,6 +69,24 @@ export class ShiftSessionDto {
   assignmentId: string | null;
 }
 
+export class ShiftTableSummaryDto {
+  @ApiProperty()
+  @Expose()
+  tableId: string;
+
+  @ApiProperty()
+  @Expose()
+  displayName: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  displayNumber: string | null;
+
+  @ApiProperty()
+  @Expose()
+  locationName: string;
+}
+
 export class WeeklyShiftPlanItemDto {
   @ApiProperty({ description: 'Mon | Tue | Wed | Thu | Fri | Sat | Sun' })
   @Expose()
@@ -89,6 +107,10 @@ export class WeeklyShiftPlanItemDto {
   @ApiProperty()
   @Expose()
   shiftDefinitionId: string;
+
+  @ApiPropertyOptional({ type: [ShiftTableSummaryDto] })
+  @Expose()
+  tables?: ShiftTableSummaryDto[];
 }
 
 export class CurrentShiftResponseDto {
@@ -111,4 +133,8 @@ export class CurrentShiftResponseDto {
   @ApiProperty({ type: [ShiftAssignmentSummaryDto] })
   @Expose()
   upcomingAssignments: ShiftAssignmentSummaryDto[];
+
+  @ApiPropertyOptional({ type: [ShiftTableSummaryDto] })
+  @Expose()
+  assignedTables?: ShiftTableSummaryDto[];
 }

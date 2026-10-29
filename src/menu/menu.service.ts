@@ -287,6 +287,7 @@ export class MenuService {
           dto.recipeLines.map((l) => ({
             ingredientId: l.ingredientId,
             quantityPerServing: l.quantityPerServing,
+            unit: l.unit,
           })),
         );
       }
@@ -427,6 +428,7 @@ export class MenuService {
           dto.recipeLines.map((l) => ({
             ingredientId: l.ingredientId,
             quantityPerServing: l.quantityPerServing,
+            unit: l.unit,
           })),
         );
       }
@@ -455,6 +457,24 @@ export class MenuService {
       include: this.itemInclude(),
     });
     return { data: this.toDto(updated) };
+  }
+
+  async delete(
+    userId: string,
+    menuItemId: string,
+  ): Promise<{ success: boolean }> {
+    const context = await this.requireAdmin(userId);
+    await this.findItem(context, menuItemId);
+
+    await this.prisma.menuItem.update({
+      where: { id: menuItemId },
+      data: {
+        status: 'INACTIVE',
+        version: { increment: 1 },
+      },
+    });
+
+    return { success: true };
   }
 
   async getVipPricing(userId: string): Promise<VipPricingResponseDto> {
@@ -821,13 +841,14 @@ export class MenuService {
     recipeLines?: Array<{
       ingredientId: string;
       quantityPerServing: Prisma.Decimal;
+      unit: string | null;
       ingredient?: { name: string; unit: string };
     }>;
   }): AdminMenuItemDto {
     const recipeLines = (item.recipeLines ?? []).map((line) => ({
       ingredientId: line.ingredientId,
       ingredientName: line.ingredient?.name,
-      unit: line.ingredient?.unit,
+      unit: line.unit ?? line.ingredient?.unit,
       quantityPerServing: Number(line.quantityPerServing),
     }));
     return {

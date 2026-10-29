@@ -19,6 +19,7 @@ import {
   seedTwoYearHistory,
   type BranchRuntime,
 } from './seed/history';
+import { seedFinanceCategories } from './seed/finance';
 import { atTime, businessDateOnly, id, startOfDay } from './seed/ids';
 
 const prisma = new PrismaClient();
@@ -150,7 +151,7 @@ async function seedInventoryUnits() {
 
   for (const unit of units) {
     await prisma.inventoryUnit.upsert({
-      where: { code: unit.code },
+      where: { id: id(`inventory-unit:${unit.code}`) },
       update: {
         name: unit.name,
         category: unit.category,
@@ -313,6 +314,8 @@ async function main() {
     },
   });
   console.log("Mama's Kitchen tenant + site seeded (slug: mamas-kitchen).");
+
+  await seedFinanceCategories(prisma, TENANT_ID);
 
   // Branches first (needed for staff branch assignments)
   const branchMap = new Map<string, string>();
@@ -1010,35 +1013,102 @@ async function main() {
       index,
       waiterMembershipId,
     ] of runtime.waiterMembershipIds.entries()) {
+      // Close any other open shifts for this staff member in this branch to satisfy uq_shift_sessions__one_open_per_staff_branch
       const shiftId = id(`today-shift:${runtime.key}:${waiterMembershipId}`);
-      let dbShift = await prisma.shiftSession.findFirst({
+      let openShift = await prisma.shiftSession.findFirst({
         where: {
-          OR: [
-            { id: shiftId },
-            {
-              tenantId: TENANT_ID,
-              branchId: runtime.branchId,
-              staffMembershipId: waiterMembershipId,
-              state: 'OPEN',
-            },
-          ],
+          tenantId: TENANT_ID,
+          branchId: runtime.branchId,
+          staffMembershipId: waiterMembershipId,
+          state: 'OPEN',
+          clockOutAt: null,
         },
       });
 
-      if (dbShift) {
+      if (openShift) {
         await prisma.shiftSession.update({
-          where: { id: dbShift.id },
-          data: { state: 'OPEN', clockOutAt: null },
+          where: { id: openShift.id },
+          data: {
+            businessDate: biz,
+            clockInAt: atTime(today, index === 0 ? 7 : 15, 0),
+          },
+        });
+      } else {
+        const existingById = await prisma.shiftSession.findUnique({
+          where: { id: shiftId },
+        });
+        if (existingById) {
+          await prisma.shiftSession.update({
+            where: { id: shiftId },
+            data: {
+              state: 'OPEN',
+              clockOutAt: null,
+              businessDate: biz,
+              clockInAt: atTime(today, index === 0 ? 7 : 15, 0),
+            },
+          });
+        } else {
+          await prisma.shiftSession.create({
+            data: {
+              id: shiftId,
+              tenantId: TENANT_ID,
+              branchId: runtime.branchId,
+              staffMembershipId: waiterMembershipId,
+              roleId: 3,
+              clockInAt: atTime(today, index === 0 ? 7 : 15, 0),
+              state: 'OPEN',
+              businessDate: biz,
+              lateByMinutes: 0,
+              graceMinutesSnapshot: 15,
+            },
+          });
+        }
+      }
+    }
+    const cashierShiftId = id(
+      `today-shift:${runtime.key}:${runtime.cashierMembershipId}`,
+    );
+    let openCashierShift = await prisma.shiftSession.findFirst({
+      where: {
+        tenantId: TENANT_ID,
+        branchId: runtime.branchId,
+        staffMembershipId: runtime.cashierMembershipId,
+        state: 'OPEN',
+        clockOutAt: null,
+      },
+    });
+
+    if (openCashierShift) {
+      await prisma.shiftSession.update({
+        where: { id: openCashierShift.id },
+        data: {
+          businessDate: biz,
+          clockInAt: atTime(today, 8, 0),
+        },
+      });
+    } else {
+      const existingById = await prisma.shiftSession.findUnique({
+        where: { id: cashierShiftId },
+      });
+      if (existingById) {
+        await prisma.shiftSession.update({
+          where: { id: cashierShiftId },
+          data: {
+            state: 'OPEN',
+            clockOutAt: null,
+            businessDate: biz,
+            clockInAt: atTime(today, 8, 0),
+          },
         });
       } else {
         await prisma.shiftSession.create({
           data: {
-            id: shiftId,
+            id: cashierShiftId,
             tenantId: TENANT_ID,
             branchId: runtime.branchId,
-            staffMembershipId: waiterMembershipId,
-            roleId: 3,
-            clockInAt: atTime(today, index === 0 ? 7 : 15, 0),
+            staffMembershipId: runtime.cashierMembershipId,
+            roleId: 4,
+            clockInAt: atTime(today, 8, 0),
             state: 'OPEN',
             businessDate: biz,
             lateByMinutes: 0,
@@ -1046,44 +1116,6 @@ async function main() {
           },
         });
       }
-    }
-    const cashierShiftId = id(
-      `today-shift:${runtime.key}:${runtime.cashierMembershipId}`,
-    );
-    let dbCashierShift = await prisma.shiftSession.findFirst({
-      where: {
-        OR: [
-          { id: cashierShiftId },
-          {
-            tenantId: TENANT_ID,
-            branchId: runtime.branchId,
-            staffMembershipId: runtime.cashierMembershipId,
-            state: 'OPEN',
-          },
-        ],
-      },
-    });
-
-    if (dbCashierShift) {
-      await prisma.shiftSession.update({
-        where: { id: dbCashierShift.id },
-        data: { state: 'OPEN', clockOutAt: null },
-      });
-    } else {
-      await prisma.shiftSession.create({
-        data: {
-          id: cashierShiftId,
-          tenantId: TENANT_ID,
-          branchId: runtime.branchId,
-          staffMembershipId: runtime.cashierMembershipId,
-          roleId: 4,
-          clockInAt: atTime(today, 8, 0),
-          state: 'OPEN',
-          businessDate: biz,
-          lateByMinutes: 0,
-          graceMinutesSnapshot: 15,
-        },
-      });
     }
   }
   console.log('Today open shift sessions seeded.');

@@ -1570,6 +1570,11 @@ const ticketInclude = {
       primaryWaiter: true,
     },
   },
+  outsideOrder: {
+    include: {
+      createdBy: true,
+    },
+  },
   modifiers: { orderBy: { sortOrder: 'asc' as const } },
   productionExceptions: {
     where: { status: 'OPEN' },
@@ -1604,7 +1609,14 @@ function callPickupLabel(
   roomSession?: {
     hotelRoom?: { roomNumber: string } | null;
   } | null,
+  outsideOrder?: {
+    destinationName?: string;
+    customerName?: string | null;
+  } | null,
 ): string {
+  if (outsideOrder?.destinationName) {
+    return `Outside · ${outsideOrder.destinationName}`;
+  }
   if (roomSession?.hotelRoom) {
     return `Room ${roomSession.hotelRoom.roomNumber}`;
   }
@@ -1639,17 +1651,24 @@ function toTicketDto(item: TicketRecord): StationQueueItemDto {
   const waiterMembershipId =
     item.tableSession?.primaryWaiterMembershipId ??
     item.roomSession?.primaryWaiterMembershipId ??
+    item.outsideOrder?.createdByMembershipId ??
     '';
   const waiterName =
     item.tableSession?.primaryWaiter.employeeDisplayName ??
     item.roomSession?.primaryWaiter.employeeDisplayName ??
+    item.outsideOrder?.createdBy.employeeDisplayName ??
     'Waiter';
 
   return {
     orderItemId: item.id,
     tableSessionId: item.tableSessionId,
     roomSessionId: item.roomSessionId,
-    tableDisplayName: callPickupLabel(item.tableSession, item.roomSession),
+    outsideOrderId: item.outsideOrderId,
+    tableDisplayName: callPickupLabel(
+      item.tableSession,
+      item.roomSession,
+      item.outsideOrder,
+    ),
     itemName: item.itemNameSnapshot,
     quantity: item.quantity,
     unitPrice: money(item.unitPriceSnapshot),

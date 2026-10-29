@@ -29,7 +29,9 @@ export type AppAction =
   | 'serve'
   | 'send_kitchen'
   | 'override'
-  | 'assign';
+  | 'assign'
+  | 'issue'
+  | 'return';
 
 /**
  * Domain subjects. Prefer coarse subjects so migration stays readable.
@@ -63,6 +65,9 @@ export type AppSubject =
   | 'Audit'
   | 'WaiterPerformance'
   | 'Approval'
-  | 'QrMenuAdmin';
+  | 'QrMenuAdmin'
+  | 'InventoryMaterial'
+  | 'OutsideOrder'
+  | 'Finance';
 
 export type AppAbility = MongoAbility<[AppAction, AppSubject]>;

@@ -1,3 +1,4 @@
+import { provisionDefaultMaterials } from '../outside-orders/materials-catalog.constant';
 import {
   BadRequestException,
   ConflictException,
@@ -1544,6 +1545,9 @@ export class SuperAdminService {
           reason: `Provisioned tenant ${displayName} with ${tableCount} tables and 4 stations.`,
         },
       });
+
+      // 9. Auto-provision 107 default returnable materials
+      await provisionDefaultMaterials(tx, tenant.id, branch.id);
 
       return tenant;
     });

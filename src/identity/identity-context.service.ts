@@ -88,7 +88,7 @@ export class IdentityContextService {
     const preferredId = user.preferredBranchId;
     if (preferredId && membership?.tenantId) {
       const preferredOk =
-        roleCode === 'OWNER_ADMIN'
+        roleCode === 'OWNER_ADMIN' || roleCode === 'STORE_MANAGER'
           ? user.preferredBranch?.tenantId === membership.tenantId &&
             user.preferredBranch?.status === 'ACTIVE'
           : membership.branchAssignments.some(
@@ -99,6 +99,8 @@ export class IdentityContextService {
         branchName = user.preferredBranch.name;
         serviceMode = user.preferredBranch.serviceMode;
       }
+    } else if (roleCode === 'STORE_MANAGER') {
+      branchName = 'Central Warehouse';
     }
 
     if (!branchId && membership?.tenantId) {

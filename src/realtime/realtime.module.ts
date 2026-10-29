@@ -30,6 +30,6 @@ import { OpsNotifyService } from './ops-notify.service';
     OpsEventsListener,
     NotificationsService,
   ],
-  exports: [OpsNotifyService],
+  exports: [OpsNotifyService, OpsGateway],
 })
 export class RealtimeModule {}

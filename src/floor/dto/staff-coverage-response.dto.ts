@@ -41,6 +41,9 @@ export class AdminStaffShiftCoverageDto {
   @ApiProperty()
   shiftName: string;
 
+  @ApiPropertyOptional({ example: 'Mon' })
+  dayCode?: string;
+
   @ApiProperty()
   startLocalTime: string;
 
@@ -210,6 +213,9 @@ export class AdminWaiterCoverageResponseDto {
   @ApiProperty()
   shiftDefinitionId: string;
 
+  @ApiPropertyOptional({ example: 'Mon' })
+  dayCode?: string;
+
   @ApiProperty({ type: [String] })
   tableIds: string[];
 }
@@ -257,6 +263,9 @@ export class AdminShiftFloorResponseDto {
 
   @ApiProperty()
   shiftName: string;
+
+  @ApiPropertyOptional({ example: 'Mon' })
+  dayCode?: string;
 
   @ApiProperty()
   startLocalTime: string;
