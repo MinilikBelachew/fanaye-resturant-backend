@@ -4,8 +4,8 @@ services:
       context: .
       dockerfile: maildev.Dockerfile
     ports:
-      - ${MAIL_CLIENT_PORT}:1080
-      - ${MAIL_PORT}:1025
+      - "127.0.0.1:${MAIL_CLIENT_PORT}:1080"
+      - "127.0.0.1:${MAIL_PORT}:1025"
 
   mongo:
     image: mongo:8.2.6
@@ -16,13 +16,13 @@ services:
     volumes:
       - boilerplate-mongo-db:/data/db
     ports:
-      - ${DATABASE_PORT}:27017
+      - "127.0.0.1:${DATABASE_PORT}:27017"
 
   mongo-express:
     image: mongo-express
     restart: always
     ports:
-      - 8081:8081
+      - "127.0.0.1:8081:8081"
     environment:
       ME_CONFIG_BASICAUTH_USERNAME: ${DATABASE_USERNAME}
       ME_CONFIG_BASICAUTH_PASSWORD: ${DATABASE_PASSWORD}
@@ -39,7 +39,7 @@ services:
       context: .
       dockerfile: document.Dockerfile
     ports:
-      - ${APP_PORT}:${APP_PORT}
+      - "127.0.0.1:${APP_PORT}:${APP_PORT}"
 
 volumes:
   boilerplate-mongo-db:

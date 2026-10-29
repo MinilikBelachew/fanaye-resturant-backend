@@ -4,7 +4,7 @@ services:
     container_name: ${CONTAINER_PREFIX:-restaurant}-postgres
     restart: always
     ports:
-      - "${DATABASE_PORT:-5439}:5432"
+      - "127.0.0.1:${DATABASE_PORT:-5439}:5432"
     volumes:
       - restaurant_postgres_backend_data_prod:/var/lib/postgresql/data
       - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
@@ -29,7 +29,7 @@ services:
     container_name: ${CONTAINER_PREFIX:-restaurant}-redis
     restart: always
     ports:
-      - "${REDIS_PORT:-6382}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6382}:6379"
     volumes:
       - restaurant_redis_backend_data_prod:/data
     healthcheck:
@@ -48,7 +48,7 @@ services:
     container_name: ${CONTAINER_PREFIX:-restaurant}-api
     restart: always
     ports:
-      - "${BACKEND_PORT:-6060}:3001"
+      - "127.0.0.1:${BACKEND_PORT:-6060}:3001"
     env_file:
       - .env
     environment:

@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:17.9-alpine
     ports:
-      - ${DATABASE_PORT}:5432
+      - "127.0.0.1:${DATABASE_PORT}:5432"
     volumes:
       - boilerplate-db:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -16,14 +16,14 @@ services:
       context: .
       dockerfile: maildev.Dockerfile
     ports:
-      - ${MAIL_CLIENT_PORT}:1080
-      - ${MAIL_PORT}:1025
+      - "127.0.0.1:${MAIL_CLIENT_PORT}:1080"
+      - "127.0.0.1:${MAIL_PORT}:1025"
 
   adminer:
     image: adminer
     restart: always
     ports:
-      - 8080:8080
+      - "127.0.0.1:8080:8080"
 
   # Uncomment to use redis
   # redis:
@@ -36,7 +36,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - ${APP_PORT}:${APP_PORT}
+      - "127.0.0.1:${APP_PORT}:${APP_PORT}"
 
 volumes:
   boilerplate-db:
