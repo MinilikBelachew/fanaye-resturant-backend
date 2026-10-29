@@ -1,4 +1,9 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  OnModuleDestroy,
+  Logger,
+} from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 @Injectable()
@@ -38,11 +43,14 @@ export class PrismaService
         ALTER TABLE "inventory_ingredients"
             ADD COLUMN IF NOT EXISTS "category_id" UUID;
 
+        ALTER TABLE "inventory_ingredients"
+            ADD COLUMN IF NOT EXISTS "image_url" VARCHAR(512);
+
         CREATE INDEX IF NOT EXISTS "ix_inventory_ingredients__tenant_category"
             ON "inventory_ingredients"("tenant_id", "category_id");
       `);
       this.logger.log(
-        'Database schema compatibility verified (inventory_categories & category_id).',
+        'Database schema compatibility verified (inventory_categories, category_id, image_url).',
       );
     } catch (err: any) {
       this.logger.warn(
