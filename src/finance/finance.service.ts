@@ -1,4 +1,4 @@
-import {
+ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -42,6 +42,9 @@ import {
   FinanceSummaryDto,
   FinanceSummaryResponseDto,
 } from './dto/finance-response.dto';
+import {
+  IngredientOrdersResponseDto,
+} from './dto/ingredient-orders.dto';
 
 /** Ledger entry types that count as cost of goods sold / waste. */
 const COGS_ENTRY_TYPE = 'SALE_DEPLETE';
@@ -141,7 +144,7 @@ export class FinanceService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly casl: CaslService,
-  ) {}
+  ) { }
 
   // ---------------------------------------------------------------------------
   // Public API
@@ -278,6 +281,121 @@ export class FinanceService {
     };
   }
 
+  /** Per-order breakdown: every individual order-item that consumed this ingredient. */
+  async getInventoryItemOrders(
+    userId: string,
+    ingredientId: string,
+    query: FinanceSummaryQueryDto,
+  ): Promise<IngredientOrdersResponseDto> {
+    const context = await this.requireRead(userId);
+    const scope = await this.resolveScope(context, query.branchId);
+    const { from, to } = this.resolveRange(query);
+    const { tenantId, branchIds, includeWarehouseLedger } = scope;
+
+    const fromYmd = ymd(from);
+    const toYmd = ymd(to);
+    const ledgerFrom = localDayRange(fromYmd, ADDIS_OFFSET).start;
+    const ledgerTo = localDayRange(toYmd, ADDIS_OFFSET).end;
+    const ledgerBranchFilter = includeWarehouseLedger
+      ? { OR: [{ branchId: { in: branchIds } }, { branchId: null }] }
+      : { branchId: { in: branchIds } };
+
+    const ingredient = await this.prisma.inventoryIngredient.findFirst({
+      where: { id: ingredientId, tenantId },
+      select: { id: true, name: true, unit: true, unitCost: true },
+    });
+    if (!ingredient) {
+      throw new NotFoundException('Ingredient not found for this restaurant.');
+    }
+
+    const entries = await this.prisma.inventoryLedgerEntry.findMany({
+      where: {
+        tenantId,
+        ...ledgerBranchFilter,
+        ingredientId,
+        createdAt: { gte: ledgerFrom, lte: ledgerTo },
+        entryType: 'SALE_DEPLETE',
+      },
+      select: {
+        id: true,
+        createdAt: true,
+        quantityDelta: true,
+        unitCostSnapshot: true,
+        orderItemId: true,
+        orderItem: {
+          select: {
+            id: true,
+            menuItemId: true,
+            itemNameSnapshot: true,
+            quantity: true,
+            menuItem: { select: { name: true } },
+            tableSession: {
+              select: {
+                table: { select: { id: true, displayName: true } },
+              },
+            },
+            order: {
+              select: {
+                id: true,
+                createdBy: {
+                  select: {
+                    employeeDisplayName: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const unitCost = Number(ingredient.unitCost ?? 0);
+    const lines = entries
+      .filter((e) => e.orderItem != null)
+      .map((e) => {
+        const oi = e.orderItem!;
+        const order = oi.order;
+        const delta = Number(e.quantityDelta);
+        const ingredientQtyUsed = Math.abs(delta);
+        const costEach = e.unitCostSnapshot
+          ? Number(e.unitCostSnapshot)
+          : unitCost;
+        const dt = e.createdAt;
+        const dateStr = ymd(dt);
+        const hours = String(dt.getUTCHours()).padStart(2, '0');
+        const mins = String(dt.getUTCMinutes()).padStart(2, '0');
+        const waiterName = order?.createdBy?.employeeDisplayName ?? null;
+        const tableId = oi.tableSession?.table?.id ?? null;
+        const tableDisplayName = oi.tableSession?.table?.displayName ?? null;
+        return {
+          ledgerId: e.id,
+          date: dateStr,
+          time: `${hours}:${mins}`,
+          menuItemId: oi.menuItemId ?? null,
+          menuItemName:
+            oi.menuItem?.name ?? oi.itemNameSnapshot ?? 'Unknown item',
+          orderedQty: oi.quantity ?? 1,
+          ingredientQtyUsed: roundQty4(ingredientQtyUsed),
+          ingredientUnit: ingredient.unit,
+          costAtTime: money(ingredientQtyUsed * costEach),
+          tableId,
+          tableDisplayName,
+          waiterName,
+          orderId: order?.id ?? null,
+        };
+      });
+
+    return {
+      ingredientId: ingredient.id,
+      ingredientName: ingredient.name,
+      unit: ingredient.unit,
+      from: fromYmd,
+      to: toYmd,
+      data: lines,
+    };
+  }
+
   async listCategories(
     userId: string,
     directionRaw?: string,
@@ -371,10 +489,10 @@ export class FinanceService {
     if (dto.categoryId !== undefined) {
       categoryId = dto.categoryId
         ? await this.resolveCategoryId(
-            context.tenantId!,
-            entry.direction as FinanceDirection,
-            dto.categoryId,
-          )
+          context.tenantId!,
+          entry.direction as FinanceDirection,
+          dto.categoryId,
+        )
         : null;
     }
 
@@ -1486,11 +1604,11 @@ export class FinanceService {
           ...(query.categoryId ? { categoryId: query.categoryId } : {}),
           ...(search
             ? {
-                OR: [
-                  { label: { contains: search, mode: 'insensitive' } },
-                  { counterparty: { contains: search, mode: 'insensitive' } },
-                ],
-              }
+              OR: [
+                { label: { contains: search, mode: 'insensitive' } },
+                { counterparty: { contains: search, mode: 'insensitive' } },
+              ],
+            }
             : {}),
         },
         select: {
@@ -1629,8 +1747,8 @@ export class FinanceService {
           },
           ...(search
             ? {
-                ingredient: { name: { contains: search, mode: 'insensitive' } },
-              }
+              ingredient: { name: { contains: search, mode: 'insensitive' } },
+            }
             : {}),
         },
         select: {

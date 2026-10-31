@@ -71,6 +71,20 @@ export class FinanceController {
     );
   }
 
+  @Get('inventory/items/:ingredientId/orders')
+  @ApiOperation({ summary: 'Per-order breakdown of ingredient consumption' })
+  getInventoryItemOrders(
+    @Request() req,
+    @Param('ingredientId', ParseUUIDPipe) ingredientId: string,
+    @Query() query: FinanceSummaryQueryDto,
+  ) {
+    return this.finance.getInventoryItemOrders(
+      String(req.user.id),
+      ingredientId,
+      query,
+    );
+  }
+
   @Get('categories')
   @ApiOperation({ summary: 'List finance categories' })
   listCategories(@Request() req, @Query('direction') direction?: string) {

@@ -38,17 +38,24 @@ export class PrismaService
             "created_at"    TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "updated_at"    TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT "inventory_categories_pkey" PRIMARY KEY ("id")
-        );
-
-        ALTER TABLE "inventory_ingredients"
-            ADD COLUMN IF NOT EXISTS "category_id" UUID;
-
-        ALTER TABLE "inventory_ingredients"
-            ADD COLUMN IF NOT EXISTS "image_url" VARCHAR(512);
-
-        CREATE INDEX IF NOT EXISTS "ix_inventory_ingredients__tenant_category"
-            ON "inventory_ingredients"("tenant_id", "category_id");
+        )
       `);
+
+      await this.$executeRawUnsafe(`
+        ALTER TABLE "inventory_ingredients"
+            ADD COLUMN IF NOT EXISTS "category_id" UUID
+      `);
+
+      await this.$executeRawUnsafe(`
+        ALTER TABLE "inventory_ingredients"
+            ADD COLUMN IF NOT EXISTS "image_url" VARCHAR(512)
+      `);
+
+      await this.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "ix_inventory_ingredients__tenant_category"
+            ON "inventory_ingredients"("tenant_id", "category_id")
+      `);
+
       this.logger.log(
         'Database schema compatibility verified (inventory_categories, category_id, image_url).',
       );

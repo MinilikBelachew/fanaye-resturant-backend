@@ -85,6 +85,25 @@ export class MenuAdminController {
     return this.menu.createModifierGroup(String(request.user.id), dto);
   }
 
+  @Patch('modifier-groups/:id')
+  @ApiOkResponse({ type: AdminModifierGroupResponseDto })
+  updateModifierGroup(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateModifierGroupDto,
+  ): Promise<AdminModifierGroupResponseDto> {
+    return this.menu.updateModifierGroup(String(request.user.id), id, dto);
+  }
+
+  @Delete('modifier-groups/:id')
+  @HttpCode(HttpStatus.OK)
+  deleteModifierGroup(
+    @Request() request,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<{ success: boolean }> {
+    return this.menu.deleteModifierGroup(String(request.user.id), id);
+  }
+
   @Get('menu-items')
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'stationId', required: false })

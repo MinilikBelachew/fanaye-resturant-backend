@@ -189,6 +189,120 @@ export class MenuService {
     };
   }
 
+  async updateModifierGroup(
+    userId: string,
+    id: string,
+    dto: CreateModifierGroupDto,
+  ): Promise<AdminModifierGroupResponseDto> {
+    const context = await this.requireAdmin(userId);
+    const menu = await this.resolveMenu(context);
+
+    const existing = await this.prisma.modifierGroup.findFirst({
+      where: { id, tenantId: context.tenantId!, menuId: menu.id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Modifier group not found.');
+    }
+
+    if (!dto.name?.trim()) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { name: 'required' },
+      });
+    }
+    if (!dto.options?.length) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { options: 'required' },
+      });
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const kind = dto.kind ?? 'extra';
+      await tx.modifierGroup.update({
+        where: { id },
+        data: {
+          name: dto.name.trim(),
+          requiredDefault: kind === 'choice',
+          minSelections: kind === 'choice' ? 1 : 0,
+          maxSelections:
+            kind === 'choice' ? 1 : Math.max(dto.options.length, 1),
+        },
+      });
+
+      // Soft delete existing options
+      await tx.modifierOption.updateMany({
+        where: { modifierGroupId: id },
+        data: { status: 'INACTIVE' },
+      });
+
+      // Create new ones
+      for (let i = 0; i < dto.options.length; i++) {
+        const option = dto.options[i];
+        await tx.modifierOption.create({
+          data: {
+            tenantId: context.tenantId!,
+            modifierGroupId: id,
+            name: option.name.trim(),
+            priceDelta: new Prisma.Decimal(option.priceDelta ?? '0'),
+            currencyCode: 'ETB',
+            status: 'ACTIVE',
+            sortOrder: i,
+          },
+        });
+      }
+
+      return tx.modifierGroup.findUniqueOrThrow({
+        where: { id },
+        include: {
+          options: {
+            where: { status: 'ACTIVE' },
+            orderBy: { sortOrder: 'asc' },
+          },
+        },
+      });
+    });
+
+    return {
+      data: toModifierGroupDto({
+        minSelectionsOverride: null,
+        maxSelectionsOverride: null,
+        requiredOverride: null,
+        group: updated,
+      }),
+    };
+  }
+
+  async deleteModifierGroup(
+    userId: string,
+    id: string,
+  ): Promise<{ success: boolean }> {
+    const context = await this.requireAdmin(userId);
+    const menu = await this.resolveMenu(context);
+
+    const existing = await this.prisma.modifierGroup.findFirst({
+      where: { id, tenantId: context.tenantId!, menuId: menu.id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Modifier group not found.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.modifierGroup.update({
+        where: { id },
+        data: { status: 'INACTIVE' },
+      });
+      await tx.modifierOption.updateMany({
+        where: { modifierGroupId: id },
+        data: { status: 'INACTIVE' },
+      });
+    });
+
+    return { success: true };
+  }
+
   async getOne(
     userId: string,
     menuItemId: string,

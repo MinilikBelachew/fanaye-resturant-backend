@@ -678,7 +678,11 @@ export class BillingService {
           generatedAt: now,
           lines: { create: lineData },
         },
-        include: { lines: { orderBy: { sortOrder: 'asc' } } },
+        include: {
+          lines: { orderBy: { sortOrder: 'asc' } },
+          tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } },
+          branch: true,
+        },
       });
 
       const payload = toBillDto(bill);
@@ -871,7 +875,11 @@ export class BillingService {
           generatedAt: now,
           lines: { create: lineData },
         },
-        include: { lines: { orderBy: { sortOrder: 'asc' } } },
+        include: {
+          lines: { orderBy: { sortOrder: 'asc' } },
+          tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } },
+          branch: true,
+        },
       });
 
       await tx.billRequest.update({
@@ -920,7 +928,7 @@ export class BillingService {
     const session = await this.prisma.tableSession.findFirst({
       where: { id: tableSessionId, branchId: context.branchId! },
       include: {
-        bill: { include: { lines: { orderBy: { sortOrder: 'asc' } } } },
+        bill: { include: { lines: { orderBy: { sortOrder: 'asc' } }, tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } }, branch: true } },
         billRequests: {
           orderBy: { requestedAt: 'desc' },
           take: 1,
@@ -1008,6 +1016,8 @@ export class BillingService {
       where: { id: billId, branchId: context.branchId! },
       include: {
         lines: { orderBy: { sortOrder: 'asc' } },
+        tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } },
+        branch: true,
         tableSession: {
           include: { table: { include: { location: true } } },
         },
@@ -1025,7 +1035,13 @@ export class BillingService {
     const bill = await this.prisma.bill.findFirst({
       where: { id: billId },
       include: {
-        tenant: true,
+        tenant: {
+          include: {
+            entitlements: {
+              where: { entitlementKey: 'TENANT_PROFILE' },
+            },
+          },
+        },
         branch: true,
         lines: {
           where: { chargeStatus: { not: 'CANCELLED_NO_CHARGE' } },
@@ -1050,6 +1066,8 @@ export class BillingService {
       status: bill.status,
       currencyCode: bill.currencyCode,
       restaurantName: bill.tenant.displayName,
+      address: ((bill.tenant as any).entitlements?.[0]?.valueJson as any)?.address ?? null,
+      phone: ((bill.tenant as any).entitlements?.[0]?.valueJson as any)?.contactPhone ?? null,
       branchName: bill.branch.name,
       tableName:
         seating?.displayName ?? (room ? `Room ${room.roomNumber}` : null),
@@ -2200,6 +2218,11 @@ function toBillDto(
     generatedAt: Date;
     paidAt: Date | null;
     version: number;
+    tenant?: {
+      displayName: string;
+      entitlements?: Array<{ entitlementKey: string; valueJson: unknown }>;
+    } | null;
+    branch?: { name: string } | null;
     lines: Array<{
       id: string;
       orderItemId: string | null;
@@ -2212,6 +2235,11 @@ function toBillDto(
   },
   isVip = false,
 ): BillDto {
+  const profileRow = bill.tenant?.entitlements?.find(
+    (e) => e.entitlementKey === 'TENANT_PROFILE',
+  );
+  const profile = (profileRow?.valueJson as any) || {};
+
   return {
     billId: bill.id,
     tableSessionId: bill.tableSessionId,
@@ -2220,6 +2248,10 @@ function toBillDto(
     isVip,
     status: bill.status,
     currencyCode: bill.currencyCode,
+    restaurantName: bill.tenant?.displayName,
+    branchName: bill.branch?.name,
+    address: profile.address ?? null,
+    phone: profile.contactPhone ?? null,
     subtotal: money(bill.subtotalAmount),
     total: money(bill.totalAmount),
     amountPaid: money(bill.amountPaid),

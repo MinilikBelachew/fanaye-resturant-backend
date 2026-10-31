@@ -48,6 +48,22 @@ export class BillDto {
   @Expose()
   billNumber: string;
 
+  @ApiPropertyOptional()
+  @Expose()
+  restaurantName?: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  branchName?: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  address?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  phone?: string | null;
+
   @ApiPropertyOptional({
     description: 'True when seating was VIP (prices already include VIP %)',
   })
@@ -415,6 +431,14 @@ export class PublicReceiptDto {
   @ApiProperty()
   @Expose()
   branchName: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  address?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  phone?: string | null;
 
   @ApiPropertyOptional()
   @Expose()

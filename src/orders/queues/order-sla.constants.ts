@@ -19,9 +19,9 @@ export interface ScheduleOrderSlaJobDto {
 }
 
 export function getUnackJobId(orderItemId: string): string {
-  return `unack:${orderItemId}`;
+  return `unack-${orderItemId}`;
 }
 
 export function getDelayJobId(orderItemId: string): string {
-  return `delay:${orderItemId}`;
+  return `delay-${orderItemId}`;
 }

@@ -14,7 +14,10 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { CatalogService } from './catalog.service';
-import { CatalogCreateMenuItemDto } from './dto/create-menu-item.dto';
+import {
+  CatalogCreateMenuItemDto,
+  CreateModifierGroupDto,
+} from './dto/create-menu-item.dto';
 import { CatalogUpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import {
@@ -92,5 +95,28 @@ export class CatalogController {
     @Param('id') id: string,
   ): Promise<{ success: boolean }> {
     return this.catalogService.deleteCategory(String(request.user.id), id);
+  }
+
+  @Patch('modifier-groups/:id')
+  @ApiOkResponse({ type: CreateModifierGroupDto })
+  updateModifierGroup(
+    @Request() request,
+    @Param('id') id: string,
+    @Body() dto: CreateModifierGroupDto,
+  ): Promise<any> {
+    return this.catalogService.updateModifierGroup(
+      String(request.user.id),
+      id,
+      dto,
+    );
+  }
+
+  @Delete('modifier-groups/:id')
+  @HttpCode(HttpStatus.OK)
+  deleteModifierGroup(
+    @Request() request,
+    @Param('id') id: string,
+  ): Promise<{ success: boolean }> {
+    return this.catalogService.deleteModifierGroup(String(request.user.id), id);
   }
 }

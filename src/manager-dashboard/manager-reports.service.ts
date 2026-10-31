@@ -8,6 +8,7 @@ import { CaslService } from '../casl/casl.service';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { WaiterPerformanceService } from '../floor/waiter-performance.service';
+import { FbReportResponseDto } from './dto/fb-report.dto';
 import { ManagerReportsResponseDto } from './dto/manager-reports-response.dto';
 
 type Period = 'day' | 'week' | 'month';
@@ -32,11 +33,13 @@ export class ManagerReportsService {
     userId: string,
     periodRaw?: string,
     sectionRaw?: string,
+    fromDate?: string,
+    toDate?: string,
   ): Promise<ManagerReportsResponseDto> {
     const context = await this.requireAdmin(userId);
     const period = this.parsePeriod(periodRaw);
     const section = this.parseSection(sectionRaw);
-    const { from, to } = this.rangeFor(period);
+    const { from, to } = this.rangeFor(period, fromDate, toDate);
     const fromTs = new Date(from);
     const toTs = new Date(to);
     toTs.setUTCHours(23, 59, 59, 999);
@@ -491,6 +494,665 @@ export class ManagerReportsService {
     };
   }
 
+  async getFbReport(
+    userId: string,
+    periodRaw?: string,
+    fromDate?: string,
+    toDate?: string,
+  ): Promise<FbReportResponseDto> {
+    const context = await this.requireAdmin(userId);
+    const period = this.parsePeriod(periodRaw);
+    const { from, to } = this.rangeFor(period, fromDate, toDate);
+    const fromTs = new Date(from);
+    const toTs = new Date(to);
+    toTs.setUTCHours(23, 59, 59, 999);
+
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: context.branchId! },
+      select: { name: true },
+    });
+
+    const orderItems = await this.prisma.orderItem.findMany({
+      where: {
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        confirmedAt: { gte: fromTs, lte: toTs },
+        state: { notIn: ['CANCELLED', 'CANNOT_PREPARE'] },
+      },
+      include: {
+        menuItem: {
+          select: {
+            id: true,
+            name: true,
+            category: { select: { id: true, name: true } },
+            station: {
+              select: { id: true, name: true, code: true, workflowMode: true },
+            },
+            recipeLines: {
+              include: {
+                ingredient: {
+                  select: { id: true, name: true, unit: true, unitCost: true },
+                },
+              },
+            },
+          },
+        },
+        order: {
+          select: {
+            id: true,
+            createdBy: {
+              select: {
+                employeeDisplayName: true,
+              },
+            },
+          },
+        },
+        tableSession: {
+          select: {
+            sessionKind: true,
+            table: {
+              select: {
+                displayName: true,
+                displayNumber: true,
+              },
+            },
+            bill: {
+              select: {
+                billNumber: true,
+                status: true,
+                totalAmount: true,
+                amountPaid: true,
+                payments: {
+                  select: {
+                    method: true,
+                    amount: true,
+                    status: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        roomSession: {
+          select: {
+            hotelRoom: {
+              select: {
+                roomNumber: true,
+              },
+            },
+            bill: {
+              select: {
+                billNumber: true,
+                status: true,
+                totalAmount: true,
+                amountPaid: true,
+                payments: {
+                  select: {
+                    method: true,
+                    amount: true,
+                    status: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        outsideOrder: {
+          select: {
+            customerName: true,
+            destinationName: true,
+            bills: {
+              select: {
+                billNumber: true,
+                status: true,
+                totalAmount: true,
+                amountPaid: true,
+                payments: {
+                  select: {
+                    method: true,
+                    amount: true,
+                    status: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        modifiers: {
+          select: {
+            optionNameSnapshot: true,
+          },
+        },
+      },
+      orderBy: { confirmedAt: 'desc' },
+    });
+
+    const wasteEntries = await this.prisma.inventoryLedgerEntry.findMany({
+      where: {
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        entryType: { in: ['WASTE', 'YIELD_TRIM'] },
+        createdAt: { gte: fromTs, lte: toTs },
+      },
+      include: {
+        ingredient: { select: { id: true, name: true, unit: true } },
+      },
+    });
+
+    let totalWasteCost = 0;
+    const wasteMap = new Map<
+      string,
+      { name: string; unit: string; qty: number; cost: number; reason: string }
+    >();
+    for (const w of wasteEntries) {
+      const qty = Math.abs(Number(w.quantityDelta));
+      const unitCost = Number(w.unitCostSnapshot ?? 0);
+      const cost = qty * unitCost;
+      totalWasteCost += cost;
+      const prev = wasteMap.get(w.ingredientId) ?? {
+        name: w.ingredient?.name ?? 'Unknown',
+        unit: w.ingredient?.unit ?? 'units',
+        qty: 0,
+        cost: 0,
+        reason: w.entryType,
+      };
+      prev.qty += qty;
+      prev.cost += cost;
+      wasteMap.set(w.ingredientId, prev);
+    }
+
+    const topWasteItems = Array.from(wasteMap.values())
+      .sort((a, b) => b.cost - a.cost)
+      .slice(0, 5)
+      .map((item) => ({
+        name: item.name,
+        unit: item.unit,
+        quantityWasted: Math.round(item.qty * 100) / 100,
+        wasteCost: item.cost.toFixed(2),
+        reason: item.reason,
+      }));
+
+    let totalRevenue = 0;
+    let totalCost = 0;
+    let foodRevenue = 0;
+    let foodCost = 0;
+    let bevRevenue = 0;
+    let bevCost = 0;
+
+    const categoryMap = new Map<
+      string,
+      { name: string; qty: number; rev: number; cost: number }
+    >();
+    const stationMap = new Map<
+      string,
+      { name: string; mode: string; count: number; rev: number; cost: number }
+    >();
+    const itemMap = new Map<
+      string,
+      { name: string; station: string; qty: number; rev: number; cost: number }
+    >();
+    const costDriverMap = new Map<
+      string,
+      {
+        name: string;
+        unit: string;
+        qty: number;
+        cost: number;
+        unitCost: number;
+      }
+    >();
+    const dailyVolumeMap = new Map<
+      string,
+      {
+        date: string;
+        displayDate: string;
+        totalItems: number;
+        foodCount: number;
+        beverageCount: number;
+        totalRevenue: number;
+      }
+    >();
+    const soldItemMap = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        categoryName: string;
+        station: string;
+        qty: number;
+        unitPrice: number;
+        rev: number;
+        cost: number;
+        orderCount: number;
+        ingredientsMap: Map<
+          string,
+          {
+            name: string;
+            unit: string;
+            qtyPerServing: number;
+            unitCost: number;
+          }
+        >;
+      }
+    >();
+    const orderInstances: Array<{
+      id: string;
+      orderId: string;
+      menuItemId?: string;
+      itemName: string;
+      categoryName: string;
+      quantity: number;
+      unitPrice: string;
+      totalPrice: string;
+      tableLabel: string;
+      waiterName: string;
+      confirmedAt: string;
+      state: string;
+      specialInstruction?: string;
+      modifiers: string[];
+      billNumber?: string;
+      paymentStatus: string;
+      billTotal?: string;
+      amountPaid?: string;
+      paymentMethods: string[];
+    }> = [];
+
+    for (const item of orderItems) {
+      const qty = item.quantity;
+      const rev = Number(item.unitPriceSnapshot) * qty;
+      totalRevenue += rev;
+
+      let plateCost = 0;
+      if (item.menuItem?.recipeLines && item.menuItem.recipeLines.length > 0) {
+        for (const line of item.menuItem.recipeLines) {
+          const ingQty = Number(line.quantityPerServing) * qty;
+          const unitCost = Number(line.ingredient?.unitCost ?? 0);
+          const lineCost = ingQty * unitCost;
+          plateCost += lineCost;
+
+          if (line.ingredient) {
+            const prevIng = costDriverMap.get(line.ingredient.id) ?? {
+              name: line.ingredient.name,
+              unit: line.ingredient.unit,
+              qty: 0,
+              cost: 0,
+              unitCost,
+            };
+            prevIng.qty += ingQty;
+            prevIng.cost += lineCost;
+            costDriverMap.set(line.ingredient.id, prevIng);
+          }
+        }
+      }
+
+      totalCost += plateCost;
+
+      const stationName =
+        item.menuItem?.station?.name ?? item.stationNameSnapshot ?? 'Kitchen';
+      const stationMode = item.menuItem?.station?.workflowMode ?? 'FULL_PREP';
+      const isBeverage =
+        /bar|drink|beverage|coffee|juice|water|tea/i.test(stationName) ||
+        (item.menuItem?.category?.name &&
+          /drink|beverage|juice|cocktail|smoothie|coffee|tea|wine|beer/i.test(
+            item.menuItem.category.name,
+          ));
+
+      if (isBeverage) {
+        bevRevenue += rev;
+        bevCost += plateCost;
+      } else {
+        foodRevenue += rev;
+        foodCost += plateCost;
+      }
+
+      const catName = item.menuItem?.category?.name ?? 'Other';
+      const prevCat = categoryMap.get(catName) ?? {
+        name: catName,
+        qty: 0,
+        rev: 0,
+        cost: 0,
+      };
+      prevCat.qty += qty;
+      prevCat.rev += rev;
+      prevCat.cost += plateCost;
+      categoryMap.set(catName, prevCat);
+
+      const prevStation = stationMap.get(stationName) ?? {
+        name: stationName,
+        mode: stationMode,
+        count: 0,
+        rev: 0,
+        cost: 0,
+      };
+      prevStation.count += qty;
+      prevStation.rev += rev;
+      prevStation.cost += plateCost;
+      stationMap.set(stationName, prevStation);
+
+      const itemName = item.itemNameSnapshot;
+      const prevItem = itemMap.get(itemName) ?? {
+        name: itemName,
+        station: stationName,
+        qty: 0,
+        rev: 0,
+        cost: 0,
+      };
+      prevItem.qty += qty;
+      prevItem.rev += rev;
+      prevItem.cost += plateCost;
+      itemMap.set(itemName, prevItem);
+
+      // Resolve table / location label
+      let tableLabel = 'Takeaway';
+      if (item.tableSession) {
+        if (item.tableSession.table?.displayName) {
+          tableLabel = item.tableSession.table.displayName;
+        } else if (item.tableSession.table?.displayNumber != null) {
+          tableLabel = `Table ${item.tableSession.table.displayNumber}`;
+        } else if (item.tableSession.sessionKind === 'CALL_PICKUP') {
+          tableLabel = 'Call Pickup';
+        } else {
+          tableLabel = 'Dine-In';
+        }
+      } else if (item.roomSession?.hotelRoom?.roomNumber) {
+        tableLabel = `Room ${item.roomSession.hotelRoom.roomNumber}`;
+      } else if (item.outsideOrder) {
+        tableLabel = item.outsideOrder.destinationName || item.outsideOrder.customerName || 'Outside Order';
+      }
+
+      const waiterName = item.order?.createdBy?.employeeDisplayName ?? 'Staff';
+
+      // Date key: YYYY-MM-DD
+      const dateKey = item.confirmedAt.toISOString().slice(0, 10);
+      const displayDate = new Date(item.confirmedAt).toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      });
+
+      const prevDaily = dailyVolumeMap.get(dateKey) ?? {
+        date: dateKey,
+        displayDate,
+        totalItems: 0,
+        foodCount: 0,
+        beverageCount: 0,
+        totalRevenue: 0,
+      };
+      prevDaily.totalItems += qty;
+      if (isBeverage) {
+        prevDaily.beverageCount += qty;
+      } else {
+        prevDaily.foodCount += qty;
+      }
+      prevDaily.totalRevenue += rev;
+      dailyVolumeMap.set(dateKey, prevDaily);
+
+      // Sold item map
+      const itemKey = item.itemNameSnapshot;
+      const prevSoldItem = soldItemMap.get(itemKey) ?? {
+        id: item.menuItemId ?? item.id,
+        name: item.itemNameSnapshot,
+        categoryName: catName,
+        station: stationName,
+        qty: 0,
+        unitPrice: Number(item.unitPriceSnapshot),
+        rev: 0,
+        cost: 0,
+        orderCount: 0,
+        ingredientsMap: new Map(),
+      };
+      prevSoldItem.qty += qty;
+      prevSoldItem.rev += rev;
+      prevSoldItem.cost += plateCost;
+      prevSoldItem.orderCount += 1;
+
+      if (item.menuItem?.recipeLines) {
+        for (const line of item.menuItem.recipeLines) {
+          if (line.ingredient) {
+            prevSoldItem.ingredientsMap.set(line.ingredient.id, {
+              name: line.ingredient.name,
+              unit: line.ingredient.unit,
+              qtyPerServing: Number(line.quantityPerServing),
+              unitCost: Number(line.ingredient.unitCost ?? 0),
+            });
+          }
+        }
+      }
+      soldItemMap.set(itemKey, prevSoldItem);
+
+      // Receipt & Payment resolution
+      const bill =
+        item.tableSession?.bill ??
+        item.roomSession?.bill ??
+        item.outsideOrder?.bills?.[0];
+
+      let paymentStatus = 'PENDING';
+      let billNumber: string | undefined = undefined;
+      let billTotal: string | undefined = undefined;
+      let amountPaid: string | undefined = undefined;
+      const paymentMethods: string[] = [];
+
+      if (bill) {
+        billNumber = bill.billNumber;
+        billTotal = Number(bill.totalAmount).toFixed(2);
+        amountPaid = Number(bill.amountPaid).toFixed(2);
+        const paidNum = Number(bill.amountPaid);
+        const totalNum = Number(bill.totalAmount);
+        if (
+          bill.status === 'PAID' ||
+          bill.status === 'CLOSED' ||
+          (totalNum > 0 && paidNum >= totalNum)
+        ) {
+          paymentStatus = 'PAID';
+        } else if (paidNum > 0) {
+          paymentStatus = 'PARTIAL';
+        } else {
+          paymentStatus = 'UNPAID';
+        }
+
+        if (bill.payments && bill.payments.length > 0) {
+          for (const p of bill.payments) {
+            if (p.method && !paymentMethods.includes(p.method)) {
+              paymentMethods.push(p.method);
+            }
+          }
+        }
+      }
+
+      // Order instance for drill-down
+      orderInstances.push({
+        id: item.id,
+        orderId: item.orderId,
+        menuItemId: item.menuItemId ?? undefined,
+        itemName: item.itemNameSnapshot,
+        categoryName: catName,
+        quantity: qty,
+        unitPrice: Number(item.unitPriceSnapshot).toFixed(2),
+        totalPrice: rev.toFixed(2),
+        tableLabel,
+        waiterName,
+        confirmedAt: item.confirmedAt.toISOString(),
+        state: item.state,
+        specialInstruction: item.specialInstruction ?? undefined,
+        modifiers: item.modifiers?.map(m => m.optionNameSnapshot) ?? [],
+        billNumber,
+        paymentStatus,
+        billTotal,
+        amountPaid,
+        paymentMethods,
+      });
+    }
+
+    const grossProfit = totalRevenue - totalCost;
+    const overallCostPct =
+      totalRevenue > 0 ? (totalCost / totalRevenue) * 100 : 0;
+    const overallMarginPct =
+      totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+
+    const foodMargin = foodRevenue - foodCost;
+    const foodCostPct = foodRevenue > 0 ? (foodCost / foodRevenue) * 100 : 0;
+    const foodMarginPct =
+      foodRevenue > 0 ? (foodMargin / foodRevenue) * 100 : 0;
+    const foodSharePct =
+      totalRevenue > 0 ? (foodRevenue / totalRevenue) * 100 : 0;
+
+    const bevMargin = bevRevenue - bevCost;
+    const bevCostPct = bevRevenue > 0 ? (bevCost / bevRevenue) * 100 : 0;
+    const bevMarginPct = bevRevenue > 0 ? (bevMargin / bevRevenue) * 100 : 0;
+    const bevSharePct =
+      totalRevenue > 0 ? (bevRevenue / totalRevenue) * 100 : 0;
+
+    const categories = Array.from(categoryMap.values())
+      .sort((a, b) => b.rev - a.rev)
+      .map((c) => {
+        const margin = c.rev - c.cost;
+        return {
+          categoryName: c.name,
+          quantitySold: c.qty,
+          revenue: c.rev.toFixed(2),
+          cost: c.cost.toFixed(2),
+          grossMargin: margin.toFixed(2),
+          marginPct: c.rev > 0 ? Math.round((margin / c.rev) * 1000) / 10 : 0,
+          costPct: c.rev > 0 ? Math.round((c.cost / c.rev) * 1000) / 10 : 0,
+        };
+      });
+
+    const stations = Array.from(stationMap.values())
+      .sort((a, b) => b.rev - a.rev)
+      .map((s) => ({
+        stationName: s.name,
+        workflowMode: s.mode,
+        itemsPrepared: s.count,
+        revenue: s.rev.toFixed(2),
+        cost: s.cost.toFixed(2),
+        costPct: s.rev > 0 ? Math.round((s.cost / s.rev) * 1000) / 10 : 0,
+      }));
+
+    const topCostDrivers = Array.from(costDriverMap.values())
+      .sort((a, b) => b.cost - a.cost)
+      .slice(0, 5)
+      .map((ing) => ({
+        name: ing.name,
+        unit: ing.unit,
+        quantityConsumed: Math.round(ing.qty * 100) / 100,
+        totalCost: ing.cost.toFixed(2),
+        unitCost: ing.unitCost.toFixed(2),
+        costSharePct:
+          totalCost > 0 ? Math.round((ing.cost / totalCost) * 1000) / 10 : 0,
+      }));
+
+    const allItems = Array.from(itemMap.values()).map((i) => {
+      const profit = i.rev - i.cost;
+      return {
+        name: i.name,
+        station: i.station,
+        quantitySold: i.qty,
+        revenue: i.rev.toFixed(2),
+        cost: i.cost.toFixed(2),
+        profit: profit.toFixed(2),
+        marginPct: i.rev > 0 ? Math.round((profit / i.rev) * 1000) / 10 : 0,
+      };
+    });
+
+    const topSellingItems = [...allItems]
+      .sort((a, b) => b.quantitySold - a.quantitySold)
+      .slice(0, 5);
+    const topProfitableItems = [...allItems]
+      .sort((a, b) => Number(b.profit) - Number(a.profit))
+      .slice(0, 5);
+
+    const dailyVolumes = Array.from(dailyVolumeMap.values())
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map((d) => ({
+        date: d.date,
+        displayDate: d.displayDate,
+        totalItems: d.totalItems,
+        foodCount: d.foodCount,
+        beverageCount: d.beverageCount,
+        totalRevenue: d.totalRevenue.toFixed(2),
+      }));
+
+    const soldItems = Array.from(soldItemMap.values())
+      .sort((a, b) => b.qty - a.qty)
+      .map((item) => {
+        const profit = item.rev - item.cost;
+        const ingredients = Array.from(item.ingredientsMap.values()).map(
+          (ing) => {
+            const costPerServing = ing.qtyPerServing * ing.unitCost;
+            const totalQtyUsed =
+              Math.round(ing.qtyPerServing * item.qty * 100) / 100;
+            const totalCostUsed = totalQtyUsed * ing.unitCost;
+            return {
+              name: ing.name,
+              unit: ing.unit,
+              quantityPerServing: ing.qtyPerServing,
+              unitCost: ing.unitCost.toFixed(2),
+              costPerServing: costPerServing.toFixed(2),
+              totalQuantityUsed: totalQtyUsed,
+              totalCostUsed: totalCostUsed.toFixed(2),
+            };
+          },
+        );
+
+        return {
+          id: item.id,
+          name: item.name,
+          categoryName: item.categoryName,
+          station: item.station,
+          quantitySold: item.qty,
+          unitPrice: item.unitPrice.toFixed(2),
+          revenue: item.rev.toFixed(2),
+          cost: item.cost.toFixed(2),
+          profit: profit.toFixed(2),
+          marginPct:
+            item.rev > 0 ? Math.round((profit / item.rev) * 1000) / 10 : 0,
+          orderCount: item.orderCount,
+          ingredients,
+        };
+      });
+
+    return {
+      data: {
+        period,
+        from: ymd(from),
+        to: ymd(to),
+        currencyCode: 'ETB',
+        branchName: branch?.name ?? 'Main Branch',
+        totalRevenue: totalRevenue.toFixed(2),
+        totalCost: totalCost.toFixed(2),
+        grossProfit: grossProfit.toFixed(2),
+        overallCostPct: Math.round(overallCostPct * 10) / 10,
+        overallMarginPct: Math.round(overallMarginPct * 10) / 10,
+        food: {
+          revenue: foodRevenue.toFixed(2),
+          cost: foodCost.toFixed(2),
+          margin: foodMargin.toFixed(2),
+          costPct: Math.round(foodCostPct * 10) / 10,
+          marginPct: Math.round(foodMarginPct * 10) / 10,
+          sharePct: Math.round(foodSharePct * 10) / 10,
+        },
+        beverage: {
+          revenue: bevRevenue.toFixed(2),
+          cost: bevCost.toFixed(2),
+          margin: bevMargin.toFixed(2),
+          costPct: Math.round(bevCostPct * 10) / 10,
+          marginPct: Math.round(bevMarginPct * 10) / 10,
+          sharePct: Math.round(bevSharePct * 10) / 10,
+        },
+        totalWasteCost: totalWasteCost.toFixed(2),
+        topWasteItems,
+        topCostDrivers,
+        categories,
+        stations,
+        topSellingItems,
+        topProfitableItems,
+        dailyVolumes,
+        soldItems,
+        orderInstances,
+      },
+    };
+  }
+
   private parsePeriod(raw?: string): Period {
     const value = (raw || 'day').toLowerCase();
     if (value === 'day' || value === 'week' || value === 'month') return value;
@@ -518,11 +1180,22 @@ export class ManagerReportsService {
     });
   }
 
-  private rangeFor(period: Period): { from: Date; to: Date } {
+  private rangeFor(
+    period: Period,
+    fromDate?: string,
+    toDate?: string,
+  ): { from: Date; to: Date } {
+    if (fromDate && toDate) {
+      const f = new Date(`${fromDate}T00:00:00.000Z`);
+      const t = new Date(`${toDate}T00:00:00.000Z`);
+      if (!Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime())) {
+        return f.getTime() <= t.getTime() ? { from: f, to: t } : { from: t, to: f };
+      }
+    }
     const now = new Date();
     const to = utcDay(now);
-    if (period === 'day') return { from: to, to };
-    if (period === 'week') {
+    if (period === "day") return { from: to, to };
+    if (period === "week") {
       const from = new Date(to);
       from.setUTCDate(from.getUTCDate() - 6);
       return { from, to };
