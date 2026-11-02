@@ -680,7 +680,11 @@ export class BillingService {
         },
         include: {
           lines: { orderBy: { sortOrder: 'asc' } },
-          tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } },
+          tenant: {
+            include: {
+              entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } },
+            },
+          },
           branch: true,
         },
       });
@@ -877,7 +881,11 @@ export class BillingService {
         },
         include: {
           lines: { orderBy: { sortOrder: 'asc' } },
-          tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } },
+          tenant: {
+            include: {
+              entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } },
+            },
+          },
           branch: true,
         },
       });
@@ -928,7 +936,17 @@ export class BillingService {
     const session = await this.prisma.tableSession.findFirst({
       where: { id: tableSessionId, branchId: context.branchId! },
       include: {
-        bill: { include: { lines: { orderBy: { sortOrder: 'asc' } }, tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } }, branch: true } },
+        bill: {
+          include: {
+            lines: { orderBy: { sortOrder: 'asc' } },
+            tenant: {
+              include: {
+                entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } },
+              },
+            },
+            branch: true,
+          },
+        },
         billRequests: {
           orderBy: { requestedAt: 'desc' },
           take: 1,
@@ -1016,7 +1034,11 @@ export class BillingService {
       where: { id: billId, branchId: context.branchId! },
       include: {
         lines: { orderBy: { sortOrder: 'asc' } },
-        tenant: { include: { entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } } } },
+        tenant: {
+          include: {
+            entitlements: { where: { entitlementKey: 'TENANT_PROFILE' } },
+          },
+        },
         branch: true,
         tableSession: {
           include: { table: { include: { location: true } } },
@@ -1066,8 +1088,12 @@ export class BillingService {
       status: bill.status,
       currencyCode: bill.currencyCode,
       restaurantName: bill.tenant.displayName,
-      address: ((bill.tenant as any).entitlements?.[0]?.valueJson as any)?.address ?? null,
-      phone: ((bill.tenant as any).entitlements?.[0]?.valueJson as any)?.contactPhone ?? null,
+      address:
+        ((bill.tenant as any).entitlements?.[0]?.valueJson as any)?.address ??
+        null,
+      phone:
+        ((bill.tenant as any).entitlements?.[0]?.valueJson as any)
+          ?.contactPhone ?? null,
       branchName: bill.branch.name,
       tableName:
         seating?.displayName ?? (room ? `Room ${room.roomNumber}` : null),

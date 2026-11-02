@@ -857,18 +857,24 @@ export class ManagerReportsService {
       } else if (item.roomSession?.hotelRoom?.roomNumber) {
         tableLabel = `Room ${item.roomSession.hotelRoom.roomNumber}`;
       } else if (item.outsideOrder) {
-        tableLabel = item.outsideOrder.destinationName || item.outsideOrder.customerName || 'Outside Order';
+        tableLabel =
+          item.outsideOrder.destinationName ||
+          item.outsideOrder.customerName ||
+          'Outside Order';
       }
 
       const waiterName = item.order?.createdBy?.employeeDisplayName ?? 'Staff';
 
       // Date key: YYYY-MM-DD
       const dateKey = item.confirmedAt.toISOString().slice(0, 10);
-      const displayDate = new Date(item.confirmedAt).toLocaleDateString('en-US', {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-      });
+      const displayDate = new Date(item.confirmedAt).toLocaleDateString(
+        'en-US',
+        {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+        },
+      );
 
       const prevDaily = dailyVolumeMap.get(dateKey) ?? {
         date: dateKey,
@@ -974,7 +980,7 @@ export class ManagerReportsService {
         confirmedAt: item.confirmedAt.toISOString(),
         state: item.state,
         specialInstruction: item.specialInstruction ?? undefined,
-        modifiers: item.modifiers?.map(m => m.optionNameSnapshot) ?? [],
+        modifiers: item.modifiers?.map((m) => m.optionNameSnapshot) ?? [],
         billNumber,
         paymentStatus,
         billTotal,
@@ -1189,13 +1195,15 @@ export class ManagerReportsService {
       const f = new Date(`${fromDate}T00:00:00.000Z`);
       const t = new Date(`${toDate}T00:00:00.000Z`);
       if (!Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime())) {
-        return f.getTime() <= t.getTime() ? { from: f, to: t } : { from: t, to: f };
+        return f.getTime() <= t.getTime()
+          ? { from: f, to: t }
+          : { from: t, to: f };
       }
     }
     const now = new Date();
     const to = utcDay(now);
-    if (period === "day") return { from: to, to };
-    if (period === "week") {
+    if (period === 'day') return { from: to, to };
+    if (period === 'week') {
       const from = new Date(to);
       from.setUTCDate(from.getUTCDate() - 6);
       return { from, to };

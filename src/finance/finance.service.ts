@@ -1,4 +1,4 @@
- import {
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -42,9 +42,7 @@ import {
   FinanceSummaryDto,
   FinanceSummaryResponseDto,
 } from './dto/finance-response.dto';
-import {
-  IngredientOrdersResponseDto,
-} from './dto/ingredient-orders.dto';
+import { IngredientOrdersResponseDto } from './dto/ingredient-orders.dto';
 
 /** Ledger entry types that count as cost of goods sold / waste. */
 const COGS_ENTRY_TYPE = 'SALE_DEPLETE';
@@ -144,7 +142,7 @@ export class FinanceService {
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
     private readonly casl: CaslService,
-  ) { }
+  ) {}
 
   // ---------------------------------------------------------------------------
   // Public API
@@ -489,10 +487,10 @@ export class FinanceService {
     if (dto.categoryId !== undefined) {
       categoryId = dto.categoryId
         ? await this.resolveCategoryId(
-          context.tenantId!,
-          entry.direction as FinanceDirection,
-          dto.categoryId,
-        )
+            context.tenantId!,
+            entry.direction as FinanceDirection,
+            dto.categoryId,
+          )
         : null;
     }
 
@@ -1604,11 +1602,11 @@ export class FinanceService {
           ...(query.categoryId ? { categoryId: query.categoryId } : {}),
           ...(search
             ? {
-              OR: [
-                { label: { contains: search, mode: 'insensitive' } },
-                { counterparty: { contains: search, mode: 'insensitive' } },
-              ],
-            }
+                OR: [
+                  { label: { contains: search, mode: 'insensitive' } },
+                  { counterparty: { contains: search, mode: 'insensitive' } },
+                ],
+              }
             : {}),
         },
         select: {
@@ -1747,8 +1745,8 @@ export class FinanceService {
           },
           ...(search
             ? {
-              ingredient: { name: { contains: search, mode: 'insensitive' } },
-            }
+                ingredient: { name: { contains: search, mode: 'insensitive' } },
+              }
             : {}),
         },
         select: {

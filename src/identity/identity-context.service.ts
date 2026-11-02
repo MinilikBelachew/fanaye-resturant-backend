@@ -241,7 +241,9 @@ export class IdentityContextService {
           ...(isUuid ? [{ id: trimmed }] : []),
           { displayName: { equals: trimmed, mode: 'insensitive' } },
           { legalName: { equals: trimmed, mode: 'insensitive' } },
-          { site: { slug: { equals: trimmed, mode: 'insensitive' } } },
+          {
+            sites: { some: { slug: { equals: trimmed, mode: 'insensitive' } } },
+          },
         ],
       },
       select: { id: true },
@@ -301,7 +303,9 @@ export class IdentityContextService {
           ...(isUuid ? [{ id: trimmed }] : []),
           { displayName: { equals: trimmed, mode: 'insensitive' } },
           { legalName: { equals: trimmed, mode: 'insensitive' } },
-          { site: { slug: { equals: trimmed, mode: 'insensitive' } } },
+          {
+            sites: { some: { slug: { equals: trimmed, mode: 'insensitive' } } },
+          },
         ],
       },
       select: { id: true },
@@ -457,17 +461,20 @@ export class IdentityContextService {
           ...(isUuid ? [{ id: trimmed }] : []),
           { displayName: { equals: trimmed, mode: 'insensitive' } },
           { legalName: { equals: trimmed, mode: 'insensitive' } },
-          { site: { slug: { equals: trimmed, mode: 'insensitive' } } },
+          {
+            sites: { some: { slug: { equals: trimmed, mode: 'insensitive' } } },
+          },
         ],
       },
       select: {
         id: true,
         displayName: true,
         legalName: true,
-        site: {
+        sites: {
           select: {
             slug: true,
           },
+          take: 1,
         },
       },
     });
@@ -483,7 +490,7 @@ export class IdentityContextService {
         id: tenant.id,
         name: tenant.displayName || tenant.legalName || 'Restaurant',
         slug:
-          tenant.site?.slug ||
+          tenant.sites?.[0]?.slug ||
           (tenant.displayName
             ? tenant.displayName.toLowerCase().replace(/\s+/g, '-')
             : tenant.id),

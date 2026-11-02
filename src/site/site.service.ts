@@ -62,6 +62,12 @@ export class SiteService {
     );
   }
 
+  private assertBranchAccess(context: AuthContextDto) {
+    if (!context.branchId) {
+      throw new BadRequestException('No branch selected.');
+    }
+  }
+
   private slugify(input: string): string {
     const base = input
       .toLowerCase()
@@ -213,13 +219,16 @@ export class SiteService {
     site: {
       id: string;
       tenantId: string;
+      branchId: string | null;
       slug: string;
+      templateId: string | null;
       status: string;
       themeJson: unknown;
       draftDataJson: unknown;
       publishedDataJson: unknown;
       publishedAt: Date | null;
       tenant: { displayName: string };
+      branch?: { name: string; id: string } | null;
     },
     calendarPreference?: string,
     profile?: ProfileJson,
@@ -231,8 +240,11 @@ export class SiteService {
     return {
       id: site.id,
       tenantId: site.tenantId,
+      branchId: site.branchId,
+      branchName: site.branch?.name || null,
       tenantName: site.tenant.displayName,
       slug: site.slug,
+      templateId: site.templateId,
       status: site.status,
       theme: this.asTheme(site.themeJson),
       profile: profile
@@ -262,14 +274,14 @@ export class SiteService {
     };
   }
 
-  private async uniqueSlug(base: string, excludeTenantId?: string) {
+  private async uniqueSlug(base: string, excludeSiteId?: string) {
     let candidate = this.slugify(base);
     let attempt = 0;
     while (attempt < 20) {
       const existing = await this.prisma.tenantSite.findUnique({
         where: { slug: candidate },
       });
-      if (!existing || existing.tenantId === excludeTenantId) {
+      if (!existing || existing.id === excludeSiteId) {
         return candidate;
       }
       attempt += 1;
@@ -278,15 +290,30 @@ export class SiteService {
     return `${this.slugify(base)}-${Date.now().toString(36)}`;
   }
 
-  /** Create a TenantSite with a unique slug from the restaurant name if missing. */
-  async ensureSiteForTenant(tenantId: string) {
-    return this.ensureSite(tenantId);
+  /** Create a TenantSite for a branch with a unique slug from the branch/tenant name. */
+  async ensureSiteForBranch(tenantId: string, branchId: string) {
+    return this.ensureSite(tenantId, branchId);
   }
 
-  private async ensureSite(tenantId: string) {
-    const existing = await this.prisma.tenantSite.findUnique({
-      where: { tenantId },
-      include: { tenant: true },
+  /** @deprecated Use ensureSiteForBranch instead. For backward compatibility only. */
+  async ensureSiteForTenant(tenantId: string, branchId?: string) {
+    if (!branchId) {
+      // Find first active branch for this tenant
+      const branch = await this.prisma.branch.findFirst({
+        where: { tenantId, status: 'ACTIVE' },
+      });
+      if (!branch) {
+        throw new NotFoundException('No active branch found for tenant');
+      }
+      branchId = branch.id;
+    }
+    return this.ensureSite(tenantId, branchId);
+  }
+
+  private async ensureSite(tenantId: string, branchId: string) {
+    const existing = await this.prisma.tenantSite.findFirst({
+      where: { tenantId, branchId },
+      include: { tenant: true, branch: true },
     });
     if (existing) return existing;
 
@@ -297,10 +324,18 @@ export class SiteService {
       throw new NotFoundException('Tenant not found');
     }
 
-    const slug = await this.uniqueSlug(tenant.displayName);
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+    });
+    if (!branch) {
+      throw new NotFoundException('Branch not found');
+    }
+
+    const slug = await this.uniqueSlug(branch.name || tenant.displayName);
     return this.prisma.tenantSite.create({
       data: {
         tenantId,
+        branchId,
         slug,
         status: 'DRAFT',
         themeJson: DEFAULT_THEME as unknown as Prisma.InputJsonValue,
@@ -308,7 +343,7 @@ export class SiteService {
           tenant.displayName,
         ) as unknown as Prisma.InputJsonValue,
       },
-      include: { tenant: true },
+      include: { tenant: true, branch: true },
     });
   }
 
@@ -319,9 +354,7 @@ export class SiteService {
   ): Promise<{ slug: string; publicPath: string }> {
     const context = await this.identity.getByUserId(userId);
     this.assertEditorRole(context);
-    if (!context.tenantId) {
-      throw new BadRequestException('No tenant workspace selected.');
-    }
+    this.assertBranchAccess(context);
 
     const cleaned = this.slugify(rawSlug.trim());
     if (!cleaned || cleaned.length < 2) {
@@ -330,8 +363,8 @@ export class SiteService {
       );
     }
 
-    const site = await this.ensureSite(context.tenantId);
-    const nextSlug = await this.uniqueSlug(cleaned, context.tenantId);
+    const site = await this.ensureSite(context.tenantId!, context.branchId!);
+    const nextSlug = await this.uniqueSlug(cleaned, site.id);
     const updated = await this.prisma.tenantSite.update({
       where: { id: site.id },
       data: { slug: nextSlug },
@@ -346,14 +379,13 @@ export class SiteService {
   async getMine(userId: string): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
     this.assertEditorRole(context);
-    if (!context.tenantId) {
-      throw new BadRequestException('No tenant workspace selected.');
-    }
-    const site = await this.ensureSite(context.tenantId);
+    this.assertBranchAccess(context);
+
+    const site = await this.ensureSite(context.tenantId!, context.branchId!);
     const settings = await this.prisma.tenantSettings.findUnique({
-      where: { tenantId: context.tenantId },
+      where: { tenantId: context.tenantId! },
     });
-    const profile = await this.readProfile(context.tenantId);
+    const profile = await this.readProfile(context.tenantId!);
     return {
       data: this.toResponse(
         site,
@@ -370,26 +402,24 @@ export class SiteService {
   ): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
     this.assertEditorRole(context);
-    if (!context.tenantId) {
-      throw new BadRequestException('No tenant workspace selected.');
-    }
+    this.assertBranchAccess(context);
 
-    const site = await this.ensureSite(context.tenantId);
+    const site = await this.ensureSite(context.tenantId!, context.branchId!);
     let nextSlug = site.slug;
     if (dto.slug?.trim()) {
-      nextSlug = await this.uniqueSlug(dto.slug.trim(), context.tenantId);
+      nextSlug = await this.uniqueSlug(dto.slug.trim(), site.id);
     }
 
     const nextTenantName = dto.tenantName?.trim();
     if (nextTenantName && nextTenantName !== site.tenant.displayName) {
       await this.prisma.tenant.update({
-        where: { id: context.tenantId },
+        where: { id: context.tenantId! },
         data: { displayName: nextTenantName },
       });
     }
 
     const existingSettings = await this.prisma.tenantSettings.findUnique({
-      where: { tenantId: context.tenantId },
+      where: { tenantId: context.tenantId! },
     });
 
     let activeCalendarPref =
@@ -400,9 +430,9 @@ export class SiteService {
     }
 
     const updatedSettings = await this.prisma.tenantSettings.upsert({
-      where: { tenantId: context.tenantId },
+      where: { tenantId: context.tenantId! },
       create: {
-        tenantId: context.tenantId,
+        tenantId: context.tenantId!,
         calendarPreference: activeCalendarPref,
         autoApproveSupplyRequests: dto.autoApproveSupplyRequests ?? false,
         requireDriverForDispatch: dto.requireDriverForDispatch ?? false,
@@ -419,7 +449,7 @@ export class SiteService {
     });
 
     if (dto.profile) {
-      const existing = await this.readProfile(context.tenantId);
+      const existing = await this.readProfile(context.tenantId!);
       const nextProfile: ProfileJson = {
         ...existing,
         contactPhone:
@@ -471,7 +501,7 @@ export class SiteService {
       const existingEntitlement = await this.prisma.tenantEntitlement.findFirst(
         {
           where: {
-            tenantId: context.tenantId,
+            tenantId: context.tenantId!,
             entitlementKey: TENANT_PROFILE_KEY,
             effectiveTo: null,
           },
@@ -486,7 +516,7 @@ export class SiteService {
       } else {
         await this.prisma.tenantEntitlement.create({
           data: {
-            tenantId: context.tenantId,
+            tenantId: context.tenantId!,
             entitlementKey: TENANT_PROFILE_KEY,
             effectiveFrom: new Date(),
             valueJson: nextProfile as unknown as Prisma.InputJsonValue,
@@ -499,6 +529,7 @@ export class SiteService {
       where: { id: site.id },
       data: {
         slug: nextSlug,
+        ...(dto.templateId ? { templateId: dto.templateId } : {}),
         ...(dto.theme
           ? {
               themeJson: {
@@ -513,10 +544,10 @@ export class SiteService {
             }
           : {}),
       },
-      include: { tenant: true },
+      include: { tenant: true, branch: true },
     });
 
-    const currentProfile = await this.readProfile(context.tenantId);
+    const currentProfile = await this.readProfile(context.tenantId!);
     return {
       data: this.toResponse(
         updated,
@@ -530,11 +561,9 @@ export class SiteService {
   async publishMine(userId: string): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
     this.assertEditorRole(context);
-    if (!context.tenantId) {
-      throw new BadRequestException('No tenant workspace selected.');
-    }
+    this.assertBranchAccess(context);
 
-    const site = await this.ensureSite(context.tenantId);
+    const site = await this.ensureSite(context.tenantId!, context.branchId!);
     const updated = await this.prisma.tenantSite.update({
       where: { id: site.id },
       data: {
@@ -542,30 +571,28 @@ export class SiteService {
         publishedDataJson: site.draftDataJson as Prisma.InputJsonValue,
         publishedAt: new Date(),
       },
-      include: { tenant: true },
+      include: { tenant: true, branch: true },
     });
 
-    const currentProfile = await this.readProfile(context.tenantId);
+    const currentProfile = await this.readProfile(context.tenantId!);
     return { data: this.toResponse(updated, undefined, currentProfile) };
   }
 
   async unpublishMine(userId: string): Promise<SiteSingleResponseDto> {
     const context = await this.identity.getByUserId(userId);
     this.assertEditorRole(context);
-    if (!context.tenantId) {
-      throw new BadRequestException('No tenant workspace selected.');
-    }
+    this.assertBranchAccess(context);
 
-    const site = await this.ensureSite(context.tenantId);
+    const site = await this.ensureSite(context.tenantId!, context.branchId!);
     const updated = await this.prisma.tenantSite.update({
       where: { id: site.id },
       data: {
         status: 'DRAFT',
       },
-      include: { tenant: true },
+      include: { tenant: true, branch: true },
     });
 
-    const currentProfile = await this.readProfile(context.tenantId);
+    const currentProfile = await this.readProfile(context.tenantId!);
     return { data: this.toResponse(updated, undefined, currentProfile) };
   }
 
@@ -582,9 +609,9 @@ export class SiteService {
     return row.valueJson as ProfileJson;
   }
 
-  private async publicMenu(tenantId: string) {
+  private async publicMenu(tenantId: string, branchId: string) {
     const menu = await this.prisma.menu.findFirst({
-      where: { tenantId, status: 'ACTIVE' },
+      where: { tenantId, branchId, status: 'ACTIVE' },
       orderBy: { createdAt: 'asc' },
     });
     if (!menu) return [];
@@ -626,20 +653,27 @@ export class SiteService {
             },
           },
         },
+        branch: true,
       },
     });
 
-    if (!site || site.status !== 'PUBLISHED' || !site.publishedDataJson) {
+    if (
+      !site ||
+      site.status !== 'PUBLISHED' ||
+      !site.publishedDataJson ||
+      !site.branchId
+    ) {
       throw new NotFoundException('Published site not found.');
     }
 
     const profile = await this.readProfile(site.tenantId);
     const manager = site.tenant.staffMemberships[0]?.user;
-    const menuItems = await this.publicMenu(site.tenantId);
+    const menuItems = await this.publicMenu(site.tenantId, site.branchId);
 
     const data: PublicSiteResponseDto = {
       slug: site.slug,
       tenantName: site.tenant.displayName,
+      branchName: site.branch?.name || null,
       theme: this.asTheme(site.themeJson),
       data: this.asData(site.publishedDataJson),
       phone: profile.contactPhone || manager?.phone || null,

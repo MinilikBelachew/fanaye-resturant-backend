@@ -355,4 +355,3 @@ export class FbReportResponseDto {
   @ApiProperty({ type: FbReportDataDto })
   data: FbReportDataDto;
 }
-

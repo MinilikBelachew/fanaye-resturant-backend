@@ -29,4 +29,3 @@ export class IngredientOrdersResponseDto {
   @ApiProperty({ type: [IngredientOrderLineDto] })
   data: IngredientOrderLineDto[];
 }
-

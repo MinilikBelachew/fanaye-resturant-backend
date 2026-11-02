@@ -1,4 +1,15 @@
 const ADDIS = 'Africa/Addis_Ababa';
+export const DEFAULT_BRANCH_TIMEZONE = ADDIS;
+
+export function calendarDayCode(
+  now = new Date(),
+  timeZone = ADDIS,
+): 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun' {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+  }).format(now) as any;
+}
 
 export function calendarYmd(now = new Date(), timeZone = ADDIS): string {
   return new Intl.DateTimeFormat('en-CA', {

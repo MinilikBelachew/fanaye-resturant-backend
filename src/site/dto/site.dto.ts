@@ -223,6 +223,11 @@ export class UpdateSiteDto {
   })
   slug?: string;
 
+  @ApiPropertyOptional({ example: 'harbor-bistro' })
+  @IsOptional()
+  @IsString()
+  templateId?: string;
+
   @ApiPropertyOptional({ type: () => UpdateSiteThemeDto })
   @IsOptional()
   @Type(() => UpdateSiteThemeDto)
@@ -262,11 +267,20 @@ export class SiteResponseDto {
   @ApiProperty()
   tenantId: string;
 
+  @ApiPropertyOptional()
+  branchId?: string | null;
+
+  @ApiPropertyOptional()
+  branchName?: string | null;
+
   @ApiProperty()
   tenantName: string;
 
   @ApiProperty()
   slug: string;
+
+  @ApiPropertyOptional({ example: 'harbor-bistro' })
+  templateId?: string | null;
 
   @ApiProperty({ example: 'DRAFT' })
   status: string;
@@ -342,6 +356,9 @@ export class PublicSiteResponseDto {
 
   @ApiProperty()
   tenantName: string;
+
+  @ApiPropertyOptional()
+  branchName?: string | null;
 
   @ApiProperty({ type: () => SiteThemeDto })
   theme: SiteThemeDto;

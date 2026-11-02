@@ -10,7 +10,13 @@ import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
-import { businessDateUtc } from '../common/business-date';
+import {
+  businessDateUtc,
+  calendarDayCode,
+  calendarYmd,
+  addCalendarDays,
+  DEFAULT_BRANCH_TIMEZONE,
+} from '../common/business-date';
 import { ClockInDto } from './dto/clock-in.dto';
 import { ClockOutDto } from './dto/clock-out.dto';
 import {
@@ -22,8 +28,6 @@ import {
 } from './dto/current-shift-response.dto';
 
 const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
-/** JS Date#getDay() index → dayCode used by StaffDayShift */
-const DAY_CODES_JS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 type ClockInWindow = {
   assignment: {
@@ -96,8 +100,13 @@ export class ShiftsService {
       this.listUpcomingAssignments(context.staffMembershipId, context.branchId),
     ]);
 
-    const todayDayIndex = (new Date().getDay() + 6) % 7;
-    const todayDayCode = DAY_ORDER[todayDayIndex];
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: context.branchId },
+      select: { timezone: true },
+    });
+    const timeZone = branch?.timezone || DEFAULT_BRANCH_TIMEZONE;
+    const todayDayCode = calendarDayCode(new Date(), timeZone);
+
     const todayPlan = weeklyPlan.find((item) => item.dayCode === todayDayCode);
     let assignedTables: ShiftTableSummaryDto[] = todayPlan?.tables ?? [];
 
@@ -156,7 +165,13 @@ export class ShiftsService {
       throw new NotFoundException('Shift assignment not found.');
     }
 
-    this.assertWithinClockInWindow(window, now);
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: context.branchId },
+      select: { timezone: true },
+    });
+    const timeZone = branch?.timezone || DEFAULT_BRANCH_TIMEZONE;
+
+    this.assertWithinClockInWindow(window, now, timeZone);
     // Guaranteed non-null after assertWithinClockInWindow
     const scheduledStartAt = window.startAt!;
     const scheduledEndAt = window.endAt!;
@@ -562,7 +577,13 @@ export class ShiftsService {
       };
     }
 
-    const dayCode = DAY_CODES_JS[now.getDay()];
+    const branch = await this.prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { timezone: true },
+    });
+    const timeZone = branch?.timezone || DEFAULT_BRANCH_TIMEZONE;
+
+    const dayCode = calendarDayCode(now, timeZone);
     const dayPlan = await this.prisma.staffDayShift.findFirst({
       where: { staffMembershipId: membershipId, dayCode },
       include: { shiftDefinition: true },
@@ -573,6 +594,7 @@ export class ShiftsService {
         dayPlan.shiftDefinition.startLocalTime,
         dayPlan.shiftDefinition.endLocalTime,
         now,
+        timeZone,
       );
       const graceMinutes = dayPlan.shiftDefinition.graceMinutes ?? 15;
       const assignment = await this.prisma.shiftAssignment.findFirst({
@@ -622,7 +644,11 @@ export class ShiftsService {
     };
   }
 
-  private assertWithinClockInWindow(window: ClockInWindow, now: Date): void {
+  private assertWithinClockInWindow(
+    window: ClockInWindow,
+    now: Date,
+    timeZone = DEFAULT_BRANCH_TIMEZONE,
+  ): void {
     if (!window.startAt || !window.endAt) {
       throw new UnprocessableEntityException({
         status: 422,
@@ -635,14 +661,30 @@ export class ShiftsService {
     const graceMs = Math.max(0, window.graceMinutes) * 60_000;
     const earliest = window.startAt.getTime() - graceMs;
     const latest = window.endAt.getTime() + graceMs;
-    if (now.getTime() < earliest || now.getTime() > latest) {
-      const startLabel = formatClockLabel(window.startAt);
-      const endLabel = formatClockLabel(window.endAt);
+
+    // Too early: before shift start (minus grace)
+    if (now.getTime() < earliest) {
+      const startLabel = formatClockLabel(window.startAt, timeZone);
+      const earlyMins = Math.max(
+        1,
+        Math.round((earliest - now.getTime()) / 60000),
+      );
       throw new UnprocessableEntityException({
         status: 422,
         code: 'SHIFT_OUTSIDE_WINDOW',
         errors: { shift: 'outsideWindow' },
-        message: `Clock-in is only allowed during ${window.definitionName} (${startLabel}–${endLabel}, ±${window.graceMinutes} min grace).`,
+        message: `Shift has not started yet. ${window.definitionName} starts at ${startLabel} (clock-in opens in ${earlyMins} min).`,
+      });
+    }
+
+    // Too late: after shift has completely ended (plus grace)
+    if (now.getTime() > latest) {
+      const endLabel = formatClockLabel(window.endAt, timeZone);
+      throw new UnprocessableEntityException({
+        status: 422,
+        code: 'SHIFT_OUTSIDE_WINDOW',
+        errors: { shift: 'outsideWindow' },
+        message: `${window.definitionName} ended at ${endLabel}. This shift has expired; please contact a manager or clock into the current shift.`,
       });
     }
   }
@@ -1500,31 +1542,39 @@ function formatShiftLocalTime(value: Date): string {
   return `${hours}:${minutes}`;
 }
 
-function formatClockLabel(value: Date): string {
-  const hours = value.getHours().toString().padStart(2, '0');
-  const minutes = value.getMinutes().toString().padStart(2, '0');
-  return `${hours}:${minutes}`;
+function formatClockLabel(
+  value: Date,
+  timeZone = DEFAULT_BRANCH_TIMEZONE,
+): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(value);
 }
 
-/** Build today's start/end from a ShiftDefinition Time field (stored as UTC clock). */
+/** Build today's start/end from a ShiftDefinition Time field using branch timezone. */
 function computeShiftWindowForDay(
   startLocalTime: Date,
   endLocalTime: Date,
   day: Date,
+  timeZone = DEFAULT_BRANCH_TIMEZONE,
 ): { startAt: Date; endAt: Date } {
-  const startH = startLocalTime.getUTCHours();
-  const startM = startLocalTime.getUTCMinutes();
-  const endH = endLocalTime.getUTCHours();
-  const endM = endLocalTime.getUTCMinutes();
+  const startH = startLocalTime.getUTCHours().toString().padStart(2, '0');
+  const startM = startLocalTime.getUTCMinutes().toString().padStart(2, '0');
+  const endH = endLocalTime.getUTCHours().toString().padStart(2, '0');
+  const endM = endLocalTime.getUTCMinutes().toString().padStart(2, '0');
 
-  const startAt = new Date(day);
-  startAt.setHours(startH, startM, 0, 0);
-
-  const endAt = new Date(day);
-  endAt.setHours(endH, endM, 0, 0);
+  const ymd = calendarYmd(day, timeZone);
+  // Addis Ababa is UTC+3 with no daylight saving time (always +03:00)
+  const tzOffset = '+03:00';
+  const startAt = new Date(`${ymd}T${startH}:${startM}:00${tzOffset}`);
+  let endAt = new Date(`${ymd}T${endH}:${endM}:00${tzOffset}`);
 
   if (endAt <= startAt) {
-    endAt.setDate(endAt.getDate() + 1);
+    const nextYmd = addCalendarDays(ymd, 1);
+    endAt = new Date(`${nextYmd}T${endH}:${endM}:00${tzOffset}`);
   }
   return { startAt, endAt };
 }
