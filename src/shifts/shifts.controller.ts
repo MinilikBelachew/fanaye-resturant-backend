@@ -13,6 +13,11 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ShiftsService } from './shifts.service';
+import {
+  ActiveShiftSummaryDto,
+  ManagerForceClockOutDto,
+  ManagerForceClockOutResponseDto,
+} from './dto/manager-force-clock-out.dto';
 import { ClockInDto } from './dto/clock-in.dto';
 import { ClockOutDto } from './dto/clock-out.dto';
 import { CurrentShiftResponseDto } from './dto/current-shift-response.dto';
@@ -102,5 +107,29 @@ export class ShiftsController {
     @Body() dto: WaiterShiftHandoverDto,
   ): Promise<WaiterShiftHandoverResponseDto> {
     return this.shiftsService.waiterHandover(String(request.user.id), dto);
+  }
+
+  @Get('manager/active-sessions')
+  @ApiOkResponse({ type: [ActiveShiftSummaryDto] })
+  @HttpCode(HttpStatus.OK)
+  listManagerActiveSessions(
+    @Request() request,
+  ): Promise<ActiveShiftSummaryDto[]> {
+    return this.shiftsService.listManagerActiveSessions(
+      String(request.user.id),
+    );
+  }
+
+  @Post('manager/force-clock-out')
+  @ApiOkResponse({ type: ManagerForceClockOutResponseDto })
+  @HttpCode(HttpStatus.OK)
+  managerForceClockOut(
+    @Request() request,
+    @Body() dto: ManagerForceClockOutDto,
+  ): Promise<ManagerForceClockOutResponseDto> {
+    return this.shiftsService.managerForceClockOut(
+      String(request.user.id),
+      dto,
+    );
   }
 }

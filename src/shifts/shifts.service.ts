@@ -10,6 +10,13 @@ import bcrypt from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
+import { CaslService } from '../casl/casl.service';
+import {
+  ActiveShiftSummaryDto,
+  CashHandlingOption,
+  ManagerForceClockOutDto,
+  ManagerForceClockOutResponseDto,
+} from './dto/manager-force-clock-out.dto';
 import {
   businessDateUtc,
   calendarDayCode,
@@ -66,6 +73,7 @@ export class ShiftsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identityContext: IdentityContextService,
+    private readonly casl: CaslService,
   ) {}
 
   async getCurrent(userId: string): Promise<CurrentShiftResponseDto> {
@@ -1531,6 +1539,369 @@ export class ShiftsService {
         cashTransferredFormatted: `ETB ${transferAmount.toFixed(2)}`,
         handedOverAt: now,
         status: 'COMPLETED',
+      };
+    });
+  }
+
+  async listManagerActiveSessions(
+    userId: string,
+  ): Promise<ActiveShiftSummaryDto[]> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.branchId) {
+      throw new ForbiddenException('Branch context required.');
+    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Shift',
+      'Only managers can view active staff shifts.',
+    );
+
+    const now = new Date();
+    const openSessions = await this.prisma.shiftSession.findMany({
+      where: {
+        branchId: context.branchId,
+        state: 'OPEN',
+        clockOutAt: null,
+      },
+      include: {
+        membership: {
+          include: {
+            user: { select: { displayName: true, email: true, phone: true } },
+          },
+        },
+        role: true,
+        tableSessions: {
+          where: {
+            closedAt: null,
+            status: { not: 'CLOSED' },
+          },
+          include: {
+            table: { include: { location: true } },
+          },
+        },
+      },
+      orderBy: { clockInAt: 'desc' },
+    });
+
+    const results: ActiveShiftSummaryDto[] = [];
+    for (const session of openSessions) {
+      const undropped = await this.calculateWaiterUndroppedCash(
+        context.branchId,
+        session.staffMembershipId,
+        session.id,
+      );
+
+      const scheduledEnd = session.scheduledEndAtSnapshot;
+      const isExpired = Boolean(scheduledEnd && scheduledEnd < now);
+
+      results.push({
+        shiftSessionId: session.id,
+        staffMembershipId: session.staffMembershipId,
+        staffName: session.membership?.user?.displayName || 'Unknown Staff',
+        roleCode: session.role?.code,
+        roleName: session.role?.name,
+        clockInAt: session.clockInAt,
+        scheduledStartAt: session.scheduledStartAtSnapshot,
+        scheduledEndAt: scheduledEnd,
+        isExpired,
+        lateByMinutes: session.lateByMinutes,
+        openTablesCount: session.tableSessions.length,
+        openTables: session.tableSessions.map((ts) => ({
+          sessionTableId: ts.id,
+          tableId: ts.tableId,
+          tableName: ts.table.displayName,
+          locationName: ts.table.location?.name,
+          guestCount: ts.guestCount,
+          openedAt: ts.openedAt,
+        })),
+        undroppedCash: undropped.toFixed(2),
+      });
+    }
+
+    return results;
+  }
+
+  async managerForceClockOut(
+    userId: string,
+    dto: ManagerForceClockOutDto,
+  ): Promise<ManagerForceClockOutResponseDto> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.branchId || !context.staffMembershipId) {
+      throw new ForbiddenException('Branch staff membership required.');
+    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Shift',
+      'Only managers can force clock-out staff.',
+    );
+
+    const session = await this.prisma.shiftSession.findFirst({
+      where: {
+        id: dto.shiftSessionId,
+        branchId: context.branchId,
+      },
+      include: {
+        membership: {
+          include: {
+            user: { select: { displayName: true } },
+          },
+        },
+        tableSessions: {
+          where: {
+            closedAt: null,
+            status: { not: 'CLOSED' },
+          },
+          include: {
+            table: true,
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Shift session not found in this branch.');
+    }
+
+    if (session.state !== 'OPEN' || session.clockOutAt) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { shift: 'alreadyClosed' },
+        message: 'This shift session is already closed.',
+      });
+    }
+
+    let targetStaff: any = null;
+    let targetShift: any = null;
+    if (dto.reassignTablesToMembershipId) {
+      targetStaff = await this.prisma.tenantStaffMembership.findFirst({
+        where: {
+          id: dto.reassignTablesToMembershipId,
+          status: 'ACTIVE',
+          branchAssignments: {
+            some: {
+              branchId: context.branchId,
+              status: 'ACTIVE',
+              releasedAt: null,
+            },
+          },
+        },
+        include: { user: { select: { displayName: true } } },
+      });
+      if (!targetStaff) {
+        throw new NotFoundException(
+          'Target staff member for table reassignment not found in this branch.',
+        );
+      }
+      targetShift = await this.prisma.shiftSession.findFirst({
+        where: {
+          staffMembershipId: targetStaff.id,
+          branchId: context.branchId,
+          state: 'OPEN',
+          clockOutAt: null,
+        },
+        orderBy: { clockInAt: 'desc' },
+      });
+    }
+
+    const openTables = session.tableSessions;
+    if (
+      openTables.length > 0 &&
+      !dto.reassignTablesToMembershipId &&
+      !dto.closeOpenTables
+    ) {
+      throw new ConflictException({
+        status: 409,
+        code: 'OPEN_TABLES_ACTION_REQUIRED',
+        message: `Shift has ${openTables.length} open tables. Please select a waiter to reassign tables to, or confirm closing them.`,
+        openTablesCount: openTables.length,
+      });
+    }
+
+    const now = new Date();
+    const undropped = await this.calculateWaiterUndroppedCash(
+      context.branchId,
+      session.staffMembershipId,
+      session.id,
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      let tablesTransferredCount = 0;
+      let tablesClosedCount = 0;
+
+      if (dto.reassignTablesToMembershipId && targetStaff) {
+        for (const tableSession of openTables) {
+          await tx.tableSession.update({
+            where: { id: tableSession.id },
+            data: {
+              primaryWaiterMembershipId: targetStaff.id,
+              primaryWaiterShiftSessionId: targetShift
+                ? targetShift.id
+                : session.id,
+              version: { increment: 1 },
+            },
+          });
+
+          await tx.diningTable.update({
+            where: { id: tableSession.tableId },
+            data: {
+              assignedWaiterMembershipId: targetStaff.id,
+              version: { increment: 1 },
+            },
+          });
+          tablesTransferredCount++;
+        }
+      } else if (dto.closeOpenTables) {
+        for (const tableSession of openTables) {
+          await tx.tableSession.update({
+            where: { id: tableSession.id },
+            data: {
+              status: 'CLOSED',
+              closedAt: now,
+              closedByMembershipId: context.staffMembershipId,
+              closeReason: `Manager Force Close: ${dto.reason.trim()}`,
+              version: { increment: 1 },
+            },
+          });
+
+          await tx.diningTable.update({
+            where: { id: tableSession.tableId },
+            data: {
+              status: 'AVAILABLE',
+              version: { increment: 1 },
+            },
+          });
+          tablesClosedCount++;
+        }
+      }
+
+      // Cash handling
+      let cashHandledAmount = '0.00';
+      const cashHandling = dto.cashHandling ?? CashHandlingOption.NONE;
+
+      if (undropped.gt(0)) {
+        cashHandledAmount = undropped.toFixed(2);
+
+        if (cashHandling === CashHandlingOption.DROP_TO_SAFE) {
+          const drop = await tx.cashDrop.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: context.branchId!,
+              businessDate: session.businessDate,
+              waiterMembershipId: session.staffMembershipId,
+              waiterShiftSessionId: session.id,
+              declaredAmount: undropped,
+              countedAmount: undropped,
+              resolutionAmount: undropped,
+              status: 'RECEIVED',
+              receivedByCashierMembershipId: context.staffMembershipId,
+              receivedAt: now,
+              currencyCode: 'ETB',
+            },
+          });
+
+          await tx.cashLedgerEntry.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: context.branchId!,
+              businessDate: session.businessDate,
+              holderType: 'WAITER_SHIFT',
+              waiterShiftSessionId: session.id,
+              entryType: 'WAITER_CASH_DROP',
+              amountDelta: undropped.negated(),
+              sourceType: 'MANAGER_FORCE_DROP',
+              sourceId: drop.id,
+              createdByMembershipId: context.staffMembershipId,
+            },
+          });
+        } else if (cashHandling === CashHandlingOption.FLAG_AS_SHORTAGE) {
+          const drop = await tx.cashDrop.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: context.branchId!,
+              businessDate: session.businessDate,
+              waiterMembershipId: session.staffMembershipId,
+              waiterShiftSessionId: session.id,
+              declaredAmount: undropped,
+              status: 'DISPUTED',
+              currencyCode: 'ETB',
+              dispute: {
+                create: {
+                  tenantId: context.tenantId!,
+                  branchId: context.branchId!,
+                  declaredAmount: undropped,
+                  countedAmount: new Prisma.Decimal(0),
+                  variance: undropped,
+                  cashierComment: `Manager Force Clock-Out: ${dto.reason.trim()} | ${dto.cashNotes || 'Uncollected cash balance flagged as staff shortage'}`,
+                  status: 'OPEN',
+                },
+              },
+            },
+          });
+
+          await tx.cashLedgerEntry.create({
+            data: {
+              tenantId: context.tenantId!,
+              branchId: context.branchId!,
+              businessDate: session.businessDate,
+              holderType: 'WAITER_SHIFT',
+              waiterShiftSessionId: session.id,
+              entryType: 'WAITER_CASH_SHORTAGE',
+              amountDelta: undropped.negated(),
+              sourceType: 'STAFF_SHORTAGE_RECORD',
+              sourceId: drop.id,
+              createdByMembershipId: context.staffMembershipId,
+            },
+          });
+        }
+      }
+
+      await tx.shiftSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'CLOSED',
+          clockOutAt: now,
+          version: { increment: 1 },
+        },
+      });
+
+      await this.closeCashierDrawerIfNeeded(session.id);
+
+      const staffName = session.membership?.user?.displayName || 'Staff';
+      await tx.auditEvent.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          actorUserId: String(userId),
+          actorStaffMembershipId: context.staffMembershipId,
+          action: 'MANAGER_FORCE_CLOCK_OUT',
+          entityType: 'SHIFT_SESSION',
+          entityId: session.id,
+          metadataJson: {
+            staffName,
+            staffMembershipId: session.staffMembershipId,
+            reason: dto.reason.trim(),
+            tablesTransferredCount,
+            reassignedToStaff: targetStaff?.user?.displayName ?? null,
+            tablesClosedCount,
+            cashHandledAmount,
+            cashHandling,
+            cashNotes: dto.cashNotes ?? null,
+          },
+        },
+      });
+
+      return {
+        success: true,
+        message: `Shift for ${staffName} successfully force-closed.`,
+        shiftSessionId: session.id,
+        staffName,
+        clockOutAt: now,
+        tablesTransferredCount,
+        tablesClosedCount,
+        cashHandledAmount,
+        cashHandling,
       };
     });
   }
