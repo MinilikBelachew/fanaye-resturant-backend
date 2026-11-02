@@ -16,6 +16,8 @@ import {
   CashHandlingOption,
   ManagerForceClockOutDto,
   ManagerForceClockOutResponseDto,
+  ManagerForceCloseCashierDrawerDto,
+  ManagerForceCloseCashierResponseDto,
 } from './dto/manager-force-clock-out.dto';
 import {
   businessDateUtc,
@@ -1902,6 +1904,222 @@ export class ShiftsService {
         tablesClosedCount,
         cashHandledAmount,
         cashHandling,
+      };
+    });
+  }
+  async managerForceCloseCashierDrawer(
+    userId: string,
+    dto: ManagerForceCloseCashierDrawerDto,
+  ): Promise<ManagerForceCloseCashierResponseDto> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.branchId || !context.staffMembershipId) {
+      throw new ForbiddenException('Branch staff membership required.');
+    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Shift',
+      'Only managers can force-close cashier drawers and shifts.',
+    );
+
+    const session = await this.prisma.shiftSession.findFirst({
+      where: {
+        id: dto.shiftSessionId,
+        branchId: context.branchId,
+      },
+      include: {
+        membership: {
+          include: {
+            user: { select: { displayName: true } },
+          },
+        },
+        cashierSession: true,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Shift session not found in this branch.');
+    }
+
+    if (session.state !== 'OPEN' || session.clockOutAt) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { shift: 'alreadyClosed' },
+        message: 'This shift session is already closed.',
+      });
+    }
+
+    const financial =
+      session.cashierSession ??
+      (await this.prisma.cashierFinancialSession.findFirst({
+        where: {
+          branchId: context.branchId,
+          cashierMembershipId: session.staffMembershipId,
+          status: 'OPEN',
+        },
+      }));
+
+    const now = new Date();
+    const staffName = session.membership?.user?.displayName || 'Cashier';
+
+    if (!financial) {
+      return this.prisma.$transaction(async (tx) => {
+        await tx.shiftSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'CLOSED',
+            clockOutAt: now,
+            version: { increment: 1 },
+          },
+        });
+
+        await tx.auditEvent.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            actorStaffMembershipId: context.staffMembershipId,
+            action: 'MANAGER_FORCE_CLOCK_OUT_STAFF',
+            entityType: 'ShiftSession',
+            entityId: session.id,
+            metadataJson: {
+              staffName,
+              staffMembershipId: session.staffMembershipId,
+              reason: dto.reason.trim(),
+              clockOutAt: now.toISOString(),
+            },
+          },
+        });
+
+        return {
+          success: true,
+          message: `Shift closed for ${staffName} (no drawer was open).`,
+          shiftSessionId: session.id,
+          cashierName: staffName,
+          drawerStatus: 'CLOSED',
+          expectedCash: '0.00',
+          countedCash: '0.00',
+          variance: '0.00',
+          safeDepositAmount: '0.00',
+          clockOutAt: now,
+        };
+      });
+    }
+
+    const expected = await this.liveExpectedCash(financial);
+    const counted =
+      dto.countedCashAmount !== undefined && dto.countedCashAmount !== null
+        ? new Prisma.Decimal(dto.countedCashAmount)
+        : expected;
+    const variance = counted.minus(expected);
+    const depositToSafe = dto.depositToSafe !== false;
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Create or update CashierReconciliation
+      const recon = await tx.cashierReconciliation.upsert({
+        where: { cashierFinancialSessionId: financial.id },
+        create: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          businessDate: financial.businessDate,
+          cashierFinancialSessionId: financial.id,
+          expectedCashAmount: expected,
+          countedCashAmount: counted,
+          varianceAmount: variance,
+          cashierComment: `Manager Force Close: ${dto.reason.trim()}${dto.cashNotes ? ` | ${dto.cashNotes.trim()}` : ''}`,
+          status: 'APPROVED',
+          submittedAt: now,
+          reviewedByMembershipId: context.staffMembershipId,
+          reviewedAt: now,
+          reviewComment: `Manager Force Close: ${dto.reason.trim()}`,
+        },
+        update: {
+          expectedCashAmount: expected,
+          countedCashAmount: counted,
+          varianceAmount: variance,
+          cashierComment: `Manager Force Close: ${dto.reason.trim()}${dto.cashNotes ? ` | ${dto.cashNotes.trim()}` : ''}`,
+          status: 'APPROVED',
+          reviewedByMembershipId: context.staffMembershipId,
+          reviewedAt: now,
+          reviewComment: `Manager Force Close: ${dto.reason.trim()}`,
+        },
+      });
+
+      // 2. Safe drop if requested
+      let safeDepositAmount = '0.00';
+      if (depositToSafe && counted.gt(0)) {
+        safeDepositAmount = counted.toFixed(2);
+        await tx.cashLedgerEntry.create({
+          data: {
+            tenantId: context.tenantId!,
+            branchId: context.branchId!,
+            businessDate: financial.businessDate,
+            holderType: 'CASHIER_SESSION',
+            cashierFinancialSessionId: financial.id,
+            entryType: 'SAFE_DROP_OUT',
+            amountDelta: counted.negated(),
+            sourceType: 'MANAGER_FORCE_CLOSE',
+            sourceId: financial.id,
+            createdByMembershipId: context.staffMembershipId,
+          },
+        });
+      }
+
+      // 3. Mark CashierFinancialSession as RECONCILED and closed
+      await tx.cashierFinancialSession.update({
+        where: { id: financial.id },
+        data: {
+          status: 'RECONCILED',
+          closedAt: now,
+          version: { increment: 1 },
+        },
+      });
+
+      // 4. Mark ShiftSession as CLOSED
+      await tx.shiftSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'CLOSED',
+          clockOutAt: now,
+          version: { increment: 1 },
+        },
+      });
+
+      // 5. Create AuditEvent
+      await tx.auditEvent.create({
+        data: {
+          tenantId: context.tenantId!,
+          branchId: context.branchId!,
+          actorStaffMembershipId: context.staffMembershipId,
+          action: 'MANAGER_FORCE_CLOSE_CASHIER_DRAWER',
+          entityType: 'ShiftSession',
+          entityId: session.id,
+          metadataJson: {
+            cashierMembershipId: session.staffMembershipId,
+            cashierName: staffName,
+            financialSessionId: financial.id,
+            reconciliationId: recon.id,
+            reason: dto.reason.trim(),
+            expectedCash: expected.toFixed(2),
+            countedCash: counted.toFixed(2),
+            variance: variance.toFixed(2),
+            safeDepositAmount,
+            depositToSafe,
+            clockOutAt: now.toISOString(),
+          },
+        },
+      });
+
+      return {
+        success: true,
+        message: `Shift and cashier drawer closed successfully for ${staffName}.`,
+        shiftSessionId: session.id,
+        cashierName: staffName,
+        drawerStatus: 'RECONCILED',
+        expectedCash: expected.toFixed(2),
+        countedCash: counted.toFixed(2),
+        variance: variance.toFixed(2),
+        safeDepositAmount,
+        clockOutAt: now,
       };
     });
   }

@@ -17,6 +17,8 @@ import {
   ActiveShiftSummaryDto,
   ManagerForceClockOutDto,
   ManagerForceClockOutResponseDto,
+  ManagerForceCloseCashierDrawerDto,
+  ManagerForceCloseCashierResponseDto,
 } from './dto/manager-force-clock-out.dto';
 import { ClockInDto } from './dto/clock-in.dto';
 import { ClockOutDto } from './dto/clock-out.dto';
@@ -128,6 +130,18 @@ export class ShiftsController {
     @Body() dto: ManagerForceClockOutDto,
   ): Promise<ManagerForceClockOutResponseDto> {
     return this.shiftsService.managerForceClockOut(
+      String(request.user.id),
+      dto,
+    );
+  }
+  @Post('manager/force-close-cashier-drawer')
+  @ApiOkResponse({ type: ManagerForceCloseCashierResponseDto })
+  @HttpCode(HttpStatus.OK)
+  managerForceCloseCashierDrawer(
+    @Request() request,
+    @Body() dto: ManagerForceCloseCashierDrawerDto,
+  ): Promise<ManagerForceCloseCashierResponseDto> {
+    return this.shiftsService.managerForceCloseCashierDrawer(
       String(request.user.id),
       dto,
     );

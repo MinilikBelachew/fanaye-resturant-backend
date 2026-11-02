@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsEnum,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -141,4 +142,91 @@ export class ActiveShiftSummaryDto {
 
   @ApiProperty()
   undroppedCash: string;
+
+  @ApiPropertyOptional()
+  hasCashierDrawer?: boolean;
+
+  @ApiPropertyOptional()
+  cashierDrawerStatus?: string;
+
+  @ApiPropertyOptional()
+  drawerExpectedCash?: string;
+
+  @ApiPropertyOptional()
+  drawerOpeningFloat?: string;
+}
+
+export class ManagerForceCloseCashierDrawerDto {
+  @ApiProperty({
+    description: 'The shift session ID of the cashier to force close',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  @IsUUID()
+  @IsNotEmpty()
+  shiftSessionId: string;
+
+  @ApiProperty({
+    description: 'Reason for the forced drawer and shift closure',
+    example: 'Cashier departed without reconciling drawer or clocking out',
+  })
+  @IsString()
+  @IsNotEmpty()
+  reason: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Actual physical cash counted in drawer. If omitted, defaults to expected cash (Quick Close with 0 variance).',
+  })
+  @IsOptional()
+  @IsNumber()
+  countedCashAmount?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether to deposit the counted cash to branch safe to empty drawer (default: true)',
+    default: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  depositToSafe?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional manager notes or memo regarding drawer count/variance',
+  })
+  @IsOptional()
+  @IsString()
+  cashNotes?: string;
+}
+
+export class ManagerForceCloseCashierResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty()
+  message: string;
+
+  @ApiProperty()
+  shiftSessionId: string;
+
+  @ApiProperty()
+  cashierName: string;
+
+  @ApiProperty()
+  drawerStatus: string;
+
+  @ApiProperty()
+  expectedCash: string;
+
+  @ApiProperty()
+  countedCash: string;
+
+  @ApiProperty()
+  variance: string;
+
+  @ApiProperty()
+  safeDepositAmount: string;
+
+  @ApiProperty()
+  clockOutAt: Date;
 }
