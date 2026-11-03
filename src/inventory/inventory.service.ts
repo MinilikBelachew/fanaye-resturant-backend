@@ -5161,6 +5161,25 @@ export class InventoryService {
     }
   }
 
+  private canManageVendors(ctx: AuthContextDto): boolean {
+    return (
+      this.isCentralInventoryRole(ctx.roleCode) ||
+      ctx.roleCode === 'BRANCH_MANAGER' ||
+      ctx.roleCode === 'MANAGER' ||
+      this.casl.can(ctx, 'manage', 'Inventory') ||
+      this.casl.can(ctx, 'receive', 'Inventory')
+    );
+  }
+
+  private assertVendorManageAccess(
+    ctx: AuthContextDto,
+    message = 'Only owners, store managers, or managers can register vendors.',
+  ): void {
+    if (!this.canManageVendors(ctx)) {
+      throw new ForbiddenException(message);
+    }
+  }
+
   /**
    * Inventory access for managers, owners, and store managers.
    * Branch is optional for network/main-warehouse operations.
@@ -5550,9 +5569,28 @@ export class InventoryService {
       action: 'read',
     });
     const { page, limit, skip } = this.pageOf(query);
+
+    let branchFilter: Prisma.VendorWhereInput = {};
+    if (query.scope === 'CENTRAL') {
+      branchFilter = { branchId: null };
+    } else if (query.branchId) {
+      if (query.scope === 'BRANCH_ONLY') {
+        branchFilter = { branchId: query.branchId };
+      } else {
+        branchFilter = {
+          OR: [{ branchId: null }, { branchId: query.branchId }],
+        };
+      }
+    } else if (!this.isCentralInventoryRole(ctx.roleCode) && ctx.branchId) {
+      branchFilter = {
+        OR: [{ branchId: null }, { branchId: ctx.branchId }],
+      };
+    }
+
     const where: Prisma.VendorWhereInput = {
       tenantId: ctx.tenantId!,
       ...(query.status ? { status: query.status } : {}),
+      ...branchFilter,
       ...(query.q?.trim()
         ? {
             OR: [
@@ -5573,6 +5611,9 @@ export class InventoryService {
         orderBy: [{ status: 'asc' }, { name: 'asc' }],
         skip,
         take: limit,
+        include: {
+          branch: { select: { id: true, name: true, displayCode: true } },
+        },
       }),
       this.prisma.vendor.count({ where }),
     ]);
@@ -5586,19 +5627,37 @@ export class InventoryService {
     const ctx = await this.requireInventoryAccess(userId, {
       requireBranch: false,
     });
-    this.assertCentralInventoryRole(
+    this.assertVendorManageAccess(
       ctx,
-      'Only owners or store managers can register vendors.',
+      'Only owners, store managers, or managers can register vendors.',
     );
+
+    let targetBranchId: string | null = null;
+    if (dto.branchId) {
+      const branch = await this.prisma.branch.findFirst({
+        where: { id: dto.branchId, tenantId: ctx.tenantId! },
+      });
+      if (!branch) throw new NotFoundException('Branch not found.');
+      targetBranchId = branch.id;
+    } else if (dto.branchId === null) {
+      targetBranchId = null;
+    } else if (!this.isCentralInventoryRole(ctx.roleCode) && ctx.branchId) {
+      targetBranchId = ctx.branchId;
+    }
+
     const vendor = await this.prisma.vendor.create({
       data: {
         tenantId: ctx.tenantId!,
+        branchId: targetBranchId,
         type: dto.type,
         name: dto.name.trim(),
         contactPerson: dto.contactPerson?.trim() || null,
         phone: dto.phone?.trim() || null,
         address: dto.address?.trim() || null,
         createdByMembershipId: ctx.staffMembershipId,
+      },
+      include: {
+        branch: { select: { id: true, name: true, displayCode: true } },
       },
     });
     return { data: this.toVendorDto(vendor) };
@@ -5608,14 +5667,28 @@ export class InventoryService {
     const ctx = await this.requireInventoryAccess(userId, {
       requireBranch: false,
     });
-    this.assertCentralInventoryRole(
+    this.assertVendorManageAccess(
       ctx,
-      'Only owners or store managers can update vendors.',
+      'Only owners, store managers, or managers can update vendors.',
     );
     const existing = await this.prisma.vendor.findFirst({
       where: { id: vendorId, tenantId: ctx.tenantId! },
     });
     if (!existing) throw new NotFoundException('Vendor not found.');
+
+    let targetBranchId: string | null | undefined = undefined;
+    if (dto.branchId !== undefined) {
+      if (dto.branchId) {
+        const branch = await this.prisma.branch.findFirst({
+          where: { id: dto.branchId, tenantId: ctx.tenantId! },
+        });
+        if (!branch) throw new NotFoundException('Branch not found.');
+        targetBranchId = branch.id;
+      } else {
+        targetBranchId = null;
+      }
+    }
+
     const vendor = await this.prisma.vendor.update({
       where: { id: vendorId },
       data: {
@@ -5631,6 +5704,10 @@ export class InventoryService {
           ? { address: dto.address?.trim() || null }
           : {}),
         ...(dto.status ? { status: dto.status } : {}),
+        ...(targetBranchId !== undefined ? { branchId: targetBranchId } : {}),
+      },
+      include: {
+        branch: { select: { id: true, name: true, displayCode: true } },
       },
     });
     return { data: this.toVendorDto(vendor) };
@@ -5640,9 +5717,9 @@ export class InventoryService {
     const ctx = await this.requireInventoryAccess(userId, {
       requireBranch: false,
     });
-    this.assertCentralInventoryRole(
+    this.assertVendorManageAccess(
       ctx,
-      'Only owners or store managers can delete vendors.',
+      'Only owners, store managers, or managers can delete vendors.',
     );
     const existing = await this.prisma.vendor.findFirst({
       where: { id: vendorId, tenantId: ctx.tenantId! },
@@ -5668,6 +5745,8 @@ export class InventoryService {
     phone: string | null;
     address: string | null;
     status: string;
+    branchId?: string | null;
+    branch?: { id: string; name: string; displayCode?: string | null } | null;
     createdAt: Date;
     updatedAt: Date;
   }) {
@@ -5679,6 +5758,14 @@ export class InventoryService {
       phone: v.phone,
       address: v.address,
       status: v.status,
+      branchId: v.branchId ?? null,
+      branch: v.branch
+        ? {
+            id: v.branch.id,
+            name: v.branch.name,
+            displayCode: v.branch.displayCode ?? null,
+          }
+        : null,
       createdAt: v.createdAt.toISOString(),
       updatedAt: v.updatedAt.toISOString(),
     };

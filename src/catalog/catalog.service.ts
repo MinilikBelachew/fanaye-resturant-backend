@@ -11,6 +11,7 @@ import { IdentityContextService } from '../identity/identity-context.service';
 import { CatalogCreateMenuItemDto } from './dto/create-menu-item.dto';
 import { CatalogUpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { UpdateCategoryDto } from './dto/update-category.dto';
 import {
   MenuItemDto,
   MenuItemSingleResponseDto,
@@ -477,6 +478,37 @@ export class CatalogService {
       id: created.id,
       name: created.name,
       sortOrder: created.sortOrder,
+    };
+  }
+
+  async updateCategory(
+    userId: string,
+    id: string,
+    dto: UpdateCategoryDto,
+  ): Promise<MenuCategoryDto> {
+    const { menu } = await this.getContextAndMenu(userId, {
+      mutate: true,
+    });
+
+    const existing = await this.prisma.menuCategory.findFirst({
+      where: { id, menuId: menu.id },
+    });
+    if (!existing) {
+      throw new NotFoundException('Category not found.');
+    }
+
+    const updated = await this.prisma.menuCategory.update({
+      where: { id },
+      data: {
+        ...(dto.name ? { name: dto.name.trim() } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
+    });
+
+    return {
+      id: updated.id,
+      name: updated.name,
+      sortOrder: updated.sortOrder,
     };
   }
 

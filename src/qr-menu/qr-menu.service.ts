@@ -68,14 +68,7 @@ export class QrMenuService {
     const site = await this.prisma.tenantSite.findUnique({
       where: { slug },
       include: {
-        tenant: {
-          include: {
-            branches: {
-              where: { status: 'ACTIVE' },
-              take: 1,
-            },
-          },
-        },
+        tenant: true,
       },
     });
 
@@ -84,12 +77,6 @@ export class QrMenuService {
     }
 
     const tenant = site.tenant;
-    const branch = tenant.branches[0];
-    if (!branch) {
-      throw new NotFoundException(
-        'Restaurant location is not currently available.',
-      );
-    }
 
     // Try finding table by UUID or displayNumber
     let table = await this.prisma.diningTable.findFirst({
@@ -99,6 +86,7 @@ export class QrMenuService {
       },
       include: {
         location: true,
+        branch: true,
       },
     });
 
@@ -110,6 +98,7 @@ export class QrMenuService {
         },
         include: {
           location: true,
+          branch: true,
         },
       });
     }
@@ -117,6 +106,8 @@ export class QrMenuService {
     if (!table) {
       throw new NotFoundException(`Dining table '${tableId}' was not found.`);
     }
+
+    const branchId = table.branchId;
 
     const rawConfig = (site.qrMenuConfigJson as Record<string, unknown>) || {};
     const fullConfig: QrMenuConfigDto = {
@@ -133,25 +124,17 @@ export class QrMenuService {
       wifiPassword: undefined,
     };
 
-    // Load active menu items & categories
-    const categories = await this.prisma.menuCategory.findMany({
-      where: {
-        menu: {
-          tenantId: tenant.id,
-          status: 'ACTIVE',
-        },
-        status: 'ACTIVE',
-      },
-      orderBy: { sortOrder: 'asc' },
-    });
-
+    // Load active menu items for THIS branch
     const menuItems = await this.prisma.menuItem.findMany({
       where: {
         tenantId: tenant.id,
         status: 'ACTIVE',
         showOnQrMenu: true,
         soldOut: false,
-        station: { status: 'ACTIVE' },
+        OR: [
+          { station: { branchId, status: 'ACTIVE' } },
+          { menu: { branchId, status: 'ACTIVE' } },
+        ],
       },
       include: {
         category: true,
@@ -179,12 +162,69 @@ export class QrMenuService {
       categoryCounts.set(catId, (categoryCounts.get(catId) ?? 0) + 1);
     }
 
-    const publicCategories: PublicMenuCategoryDto[] = categories.map((cat) => ({
-      id: cat.id,
-      name: cat.name,
-      sortOrder: cat.sortOrder,
-      itemsCount: categoryCounts.get(cat.id) ?? 0,
-    }));
+    // Load active categories for this branch's menu (or tenant fallback menu)
+    const categories = await this.prisma.menuCategory.findMany({
+      where: {
+        menu: {
+          tenantId: tenant.id,
+          OR: [{ branchId }, { branchId: null }],
+          status: 'ACTIVE',
+        },
+        status: 'ACTIVE',
+      },
+      orderBy: { sortOrder: 'asc' },
+    });
+
+    // Only include categories that actually have items at this branch.
+    // Deduplicate categories by lowercase name to ensure clean tabs.
+    const seenCategoryNames = new Set<string>();
+    const publicCategories: PublicMenuCategoryDto[] = [];
+
+    for (const cat of categories) {
+      const count = categoryCounts.get(cat.id) ?? 0;
+      const normalizedName = cat.name.trim().toLowerCase();
+      if (count > 0 && !seenCategoryNames.has(normalizedName)) {
+        seenCategoryNames.add(normalizedName);
+        publicCategories.push({
+          id: cat.id,
+          name: cat.name,
+          sortOrder: cat.sortOrder,
+          itemsCount: count,
+        });
+      }
+    }
+
+    // Also include any categories present on the items themselves
+    for (const item of menuItems) {
+      if (item.category) {
+        const normalizedName = item.category.name.trim().toLowerCase();
+        if (!seenCategoryNames.has(normalizedName)) {
+          const count = categoryCounts.get(item.category.id) ?? 0;
+          if (count > 0) {
+            seenCategoryNames.add(normalizedName);
+            publicCategories.push({
+              id: item.category.id,
+              name: item.category.name,
+              sortOrder: item.category.sortOrder ?? 0,
+              itemsCount: count,
+            });
+          }
+        }
+      }
+    }
+
+    // Fallback category if items exist without a category
+    const otherCount = categoryCounts.get('other') ?? 0;
+    if (otherCount > 0 && !seenCategoryNames.has('other')) {
+      publicCategories.push({
+        id: 'other',
+        name: 'Other',
+        sortOrder: 999,
+        itemsCount: otherCount,
+      });
+    }
+
+    publicCategories.sort((a, b) => a.sortOrder - b.sortOrder);
 
     const mapItem = (item: (typeof menuItems)[number]): PublicMenuItemDto => {
       const modifierGroups: PublicModifierGroupDto[] = item.modifiers
@@ -213,7 +253,7 @@ export class QrMenuService {
         price: money(item.currentPrice),
         currencyCode: item.currencyCode,
         badge: item.badge,
-        categoryId: item.menuCategoryId,
+        categoryId: item.menuCategoryId ?? 'other',
         categoryName: item.category?.name ?? item.station.name,
         stationName: item.station.name,
         imageUrl: item.imageFile?.path
@@ -364,31 +404,26 @@ export class QrMenuService {
     const site = await this.prisma.tenantSite.findUnique({
       where: { slug },
       include: {
-        tenant: {
-          include: {
-            branches: {
-              where: { status: 'ACTIVE' },
-              take: 1,
-            },
-          },
-        },
+        tenant: true,
       },
     });
 
     if (!site) throw new NotFoundException('Restaurant site not found.');
     const tenant = site.tenant;
-    const branch = tenant.branches[0];
-    if (!branch) throw new NotFoundException('Branch is not active.');
 
     let table = await this.prisma.diningTable.findFirst({
       where: { id: tableId, tenantId: tenant.id },
+      include: { branch: true },
     });
     if (!table) {
       table = await this.prisma.diningTable.findFirst({
         where: { displayNumber: tableId, tenantId: tenant.id },
+        include: { branch: true },
       });
     }
     if (!table) throw new NotFoundException('Table not found.');
+
+    const branch = table.branch;
 
     const config = (site.qrMenuConfigJson as Record<string, unknown>) || {};
     const autoSendToKitchen = config.autoSendToKitchen !== false;
@@ -717,28 +752,26 @@ export class QrMenuService {
     const site = await this.prisma.tenantSite.findUnique({
       where: { slug },
       include: {
-        tenant: {
-          include: {
-            branches: { where: { status: 'ACTIVE' }, take: 1 },
-          },
-        },
+        tenant: true,
       },
     });
 
     if (!site) throw new NotFoundException('Restaurant site not found.');
     const tenant = site.tenant;
-    const branch = tenant.branches[0];
-    if (!branch) throw new NotFoundException('Branch is not active.');
 
     let table = await this.prisma.diningTable.findFirst({
       where: { id: tableId, tenantId: tenant.id },
+      include: { branch: true },
     });
     if (!table) {
       table = await this.prisma.diningTable.findFirst({
         where: { displayNumber: tableId, tenantId: tenant.id },
+        include: { branch: true },
       });
     }
     if (!table) throw new NotFoundException('Table not found.');
+
+    const branch = table.branch;
 
     let waiterId = table.assignedWaiterMembershipId;
     if (!waiterId) {
@@ -844,10 +877,12 @@ export class QrMenuService {
     }
 
     const site = await this.sites.ensureSiteForTenant(context.tenantId);
+    const existing = (site.qrMenuConfigJson as Record<string, unknown>) || {};
+    const merged = { ...existing, ...dto };
     const updated = await this.prisma.tenantSite.update({
       where: { id: site.id },
       data: {
-        qrMenuConfigJson: dto as unknown as Prisma.InputJsonValue,
+        qrMenuConfigJson: merged as unknown as Prisma.InputJsonValue,
       },
     });
 

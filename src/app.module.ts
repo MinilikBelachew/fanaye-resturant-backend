@@ -57,6 +57,7 @@ import { RoomsModule } from './rooms/rooms.module';
 import { CaslModule } from './casl/casl.module';
 import { OutsideOrdersModule } from './outside-orders/outside-orders.module';
 import { FinanceModule } from './finance/finance.module';
+import { BiometricsModule } from './biometrics/biometrics.module';
 
 @Module({
   imports: [
@@ -165,6 +166,7 @@ import { FinanceModule } from './finance/finance.module';
     RoomsModule,
     OutsideOrdersModule,
     FinanceModule,
+    BiometricsModule,
   ],
   providers: [
     {

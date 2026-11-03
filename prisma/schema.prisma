@@ -45,6 +45,7 @@ model AppUser {
   auditEvents         AuditEvent[]
   idempotencyCommands IdempotencyCommand[]
   supportSessions     PlatformSupportSession[]
+  biometricProfile    StaffBiometricProfile?
 
   @@unique([email], map: "uq_app_users__email")
   @@unique([phone], map: "uq_app_users__phone")
@@ -249,6 +250,9 @@ model Tenant {
   orderMaterialIssueLines    OrderMaterialIssueLine[]
   financeCategories          FinanceCategory[]
   manualFinanceEntries       ManualFinanceEntry[]
+  staffBiometrics            StaffBiometricProfile[]
+  customerBiometrics         CustomerBiometricProfile[]
+  customerVisits             CustomerVisitLog[]
 
   @@index([status], map: "ix_tenants__status")
   @@map("tenants")
@@ -408,6 +412,7 @@ model Branch {
   inventoryIngredients      InventoryIngredient[]
   inventoryStockBalances    InventoryStockBalance[]
   inventoryLocations        InventoryLocation[]
+  vendors                   Vendor[]
   inventoryLedgerEntries    InventoryLedgerEntry[]
   inventoryCountSessions    InventoryCountSession[]
   payrollRuns               PayrollRun[]
@@ -417,6 +422,9 @@ model Branch {
   orderMaterialIssues       OrderMaterialIssue[]
   manualFinanceEntries      ManualFinanceEntry[]
   site                      TenantSite?                @relation("BranchSite")
+  staffBiometrics           StaffBiometricProfile[]
+  customerBiometrics        CustomerBiometricProfile[]
+  customerVisits            CustomerVisitLog[]
 
   @@unique([tenantId, displayCode], map: "uq_branches__tenant_display_code")
   @@index([tenantId, status], map: "ix_branches__tenant_status")
@@ -2223,6 +2231,8 @@ model Driver {
 model Vendor {
   id                    String   @id @default(uuid()) @db.Uuid
   tenantId              String   @map("tenant_id") @db.Uuid
+  /// Null = Central / company-wide vendor (available to all locations); set = localized to one branch
+  branchId              String?  @map("branch_id") @db.Uuid
   /// FARM | NEGADE | OTHER
   type                  String   @db.VarChar(20)
   name                  String   @db.VarChar(160)
@@ -2236,10 +2246,12 @@ model Vendor {
   updatedAt             DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   tenant        Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  branch        Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
   createdBy     TenantStaffMembership? @relation("VendorCreatedBy", fields: [createdByMembershipId], references: [id], onDelete: SetNull)
   ledgerEntries InventoryLedgerEntry[]
 
   @@index([tenantId, status], map: "ix_vendors__tenant_status")
+  @@index([tenantId, branchId, status], map: "ix_vendors__tenant_branch_status")
   @@map("vendors")
 }
 
@@ -2893,4 +2905,103 @@ model OrderMaterialIssueLine {
 
   @@index([issueId], map: "ix_order_material_issue_lines__issue")
   @@map("order_material_issue_lines")
+}
+
+
+// ==========================================
+// BIOMETRICS: STAFF ATTENDANCE & CUSTOMER INTELLIGENCE
+// ==========================================
+
+enum CustomerVipTier {
+  REGULAR
+  VIP
+  VVIP
+  BLACKLISTED
+}
+
+// Staff Biometric Profile with 3-Angle Enrollment
+model StaffBiometricProfile {
+  id                   String      @id @default(uuid()) @db.Uuid
+  tenantId             String      @map("tenant_id") @db.Uuid
+  branchId             String      @map("branch_id") @db.Uuid
+  userId               String      @unique @map("user_id") @db.Uuid
+
+  // 3-Angle 128-d Embeddings (Stored as Float array)
+  frontalEmbedding     Float[]     @map("frontal_embedding")
+  leftAngleEmbedding   Float[]     @map("left_angle_embedding")
+  rightAngleEmbedding  Float[]     @map("right_angle_embedding")
+  fusedEmbedding       Float[]     @map("fused_embedding")
+
+  frontalPhotoUrl      String?     @map("frontal_photo_url") @db.VarChar(255)
+  leftPhotoUrl         String?     @map("left_photo_url") @db.VarChar(255)
+  rightPhotoUrl        String?     @map("right_photo_url") @db.VarChar(255)
+
+  livenessConfidence   Float       @default(0.95) @map("liveness_confidence")
+  isActive             Boolean     @default(true) @map("is_active")
+  enrolledAt           DateTime    @default(now()) @map("enrolled_at") @db.Timestamptz(6)
+  updatedAt            DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant               Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch               Branch      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  user                 AppUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, branchId], map: "ix_staff_biometrics__tenant_branch")
+  @@map("staff_biometric_profiles")
+}
+
+// Anonymous & Registered Customer Profiles
+model CustomerBiometricProfile {
+  id                   String            @id @default(uuid()) @db.Uuid
+  tenantId             String            @map("tenant_id") @db.Uuid
+  branchId             String            @map("branch_id") @db.Uuid
+
+  // Auto-assigned anonymous code (e.g., CUST-7F3A-88)
+  customerCode         String            @unique @map("customer_code") @db.VarChar(64)
+
+  // Enriched by Branch Admin / Hostess
+  displayName          String?           @map("display_name") @db.VarChar(160)
+  phone                String?           @map("phone") @db.VarChar(40)
+  email                String?           @map("email") @db.VarChar(255)
+  notes                String?           @map("notes") @db.Text
+  vipTier              CustomerVipTier   @default(REGULAR) @map("vip_tier")
+
+  // 128-d Vector
+  embedding            Float[]
+  avatarUrl            String?           @map("avatar_url") @db.Text
+
+  // Visit frequency stats
+  totalVisits          Int               @default(1) @map("total_visits")
+  firstVisitAt         DateTime          @default(now()) @map("first_visit_at") @db.Timestamptz(6)
+  lastVisitAt          DateTime          @default(now()) @map("last_visit_at") @db.Timestamptz(6)
+
+  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant               Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch               Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  visitLogs            CustomerVisitLog[]
+
+  @@index([tenantId, branchId], map: "ix_customer_biometrics__tenant_branch")
+  @@index([customerCode], map: "ix_customer_biometrics__code")
+  @@map("customer_biometric_profiles")
+}
+
+// Historical Log of Customer Visits for Analytics
+model CustomerVisitLog {
+  id                   String                   @id @default(uuid()) @db.Uuid
+  tenantId             String                   @map("tenant_id") @db.Uuid
+  branchId             String                   @map("branch_id") @db.Uuid
+  customerId           String                   @map("customer_id") @db.Uuid
+  detectedAt           DateTime                 @default(now()) @map("detected_at") @db.Timestamptz(6)
+  matchScore           Float                    @map("match_score")
+  cameraLocation       String?                  @map("camera_location") @db.VarChar(120)
+  tableSessionId       String?                  @map("table_session_id") @db.Uuid
+
+  customer             CustomerBiometricProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tenant               Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch               Branch                   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, branchId, detectedAt], map: "ix_customer_visits__tenant_branch_date")
+  @@index([customerId], map: "ix_customer_visits__customer")
+  @@map("customer_visit_logs")
 }

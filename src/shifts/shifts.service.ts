@@ -198,6 +198,49 @@ export class ShiftsService {
       dto.roleId ?? window.assignment?.roleId ?? role?.roleId ?? null;
     const businessDate = businessDateUtc(now);
 
+    let isCashierRole = context.roleCode === 'CASHIER';
+    if (!isCashierRole && roleId) {
+      const assignedRole = await this.prisma.restaurantRole.findUnique({
+        where: { id: roleId },
+      });
+      if (assignedRole?.code === 'CASHIER') {
+        isCashierRole = true;
+      }
+    }
+
+    if (isCashierRole) {
+      const activeCashierShift = await this.prisma.shiftSession.findFirst({
+        where: {
+          branchId: context.branchId,
+          state: 'OPEN',
+          clockOutAt: null,
+          staffMembershipId: { not: context.staffMembershipId },
+          OR: [
+            { role: { code: 'CASHIER' } },
+            { cashierSession: { status: 'OPEN' } },
+          ],
+        },
+        include: {
+          membership: {
+            include: {
+              user: { select: { displayName: true } },
+            },
+          },
+        },
+      });
+
+      if (activeCashierShift) {
+        const prevCashierName =
+          activeCashierShift.membership?.user?.displayName || 'Another cashier';
+        throw new ConflictException({
+          status: 409,
+          code: 'CASHIER_DRAWER_ALREADY_OPEN',
+          message: `Cashier ${prevCashierName} has an open drawer and has not clocked out. Please ask a manager to close the previous shift.`,
+          cashierName: prevCashierName,
+        });
+      }
+    }
+
     const lateByMinutes = Math.max(
       0,
       Math.round((now.getTime() - scheduledStartAt.getTime()) / 60000),
@@ -265,6 +308,33 @@ export class ShiftsService {
       where: { shiftSessionId },
     });
     if (existing) return;
+
+    const existingOtherDrawer =
+      await this.prisma.cashierFinancialSession.findFirst({
+        where: {
+          branchId: context.branchId,
+          status: 'OPEN',
+          cashierMembershipId: { not: context.staffMembershipId },
+        },
+        include: {
+          cashier: {
+            include: {
+              user: { select: { displayName: true } },
+            },
+          },
+        },
+      });
+
+    if (existingOtherDrawer) {
+      const prevName =
+        existingOtherDrawer.cashier?.user?.displayName || 'Another cashier';
+      throw new ConflictException({
+        status: 409,
+        code: 'CASHIER_DRAWER_ALREADY_OPEN',
+        message: `Cashier ${prevName} has an open drawer and has not clocked out. Please ask a manager to close the previous shift.`,
+        cashierName: prevName,
+      });
+    }
     try {
       await this.prisma.cashierFinancialSession.create({
         data: {

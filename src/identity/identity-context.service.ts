@@ -161,6 +161,18 @@ export class IdentityContextService {
       roomsEnabled = roomCount > 0;
     }
 
+    let hasMainWarehouse = false;
+    if (membership?.tenantId) {
+      const mainWarehouse = await this.prisma.inventoryLocation.findFirst({
+        where: {
+          tenantId: membership.tenantId,
+          type: 'MAIN_WAREHOUSE',
+          status: 'ACTIVE',
+        },
+      });
+      hasMainWarehouse = Boolean(mainWarehouse);
+    }
+
     return {
       userId: user.id,
       displayName: user.displayName,
@@ -171,6 +183,7 @@ export class IdentityContextService {
       branchName,
       serviceMode,
       roomsEnabled,
+      hasMainWarehouse,
       staffMembershipId: membership?.id ?? null,
       roleCode,
       stationId: stationAssignment?.stationId ?? null,

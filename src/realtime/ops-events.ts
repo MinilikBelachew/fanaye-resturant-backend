@@ -39,6 +39,7 @@ export const OpsEventType = {
   MATERIAL_ISSUE_DISPUTED: 'material.issue.disputed',
   OUTSIDE_ORDER_OPENED: 'outside_order.opened',
   OUTSIDE_ORDER_CLOSED: 'outside_order.closed',
+  CUSTOMER_ARRIVED: 'customer.arrived',
 } as const;
 
 export type OpsEventTypeName = (typeof OpsEventType)[keyof typeof OpsEventType];

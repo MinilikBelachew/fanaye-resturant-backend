@@ -20,6 +20,7 @@ import {
 } from './dto/create-menu-item.dto';
 import { CatalogUpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { UpdateCategoryDto } from './dto/update-category.dto';
 import {
   MenuCategoryDto,
   MenuItemSingleResponseDto,
@@ -86,6 +87,16 @@ export class CatalogController {
     @Body() dto: CreateCategoryDto,
   ): Promise<MenuCategoryDto> {
     return this.catalogService.createCategory(String(request.user.id), dto);
+  }
+
+  @Patch('categories/:id')
+  @ApiOkResponse({ type: MenuCategoryDto })
+  updateCategory(
+    @Request() request,
+    @Param('id') id: string,
+    @Body() dto: UpdateCategoryDto,
+  ): Promise<MenuCategoryDto> {
+    return this.catalogService.updateCategory(String(request.user.id), id, dto);
   }
 
   @Delete('categories/:id')

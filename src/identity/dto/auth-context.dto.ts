@@ -61,6 +61,11 @@ export class AuthContextDto {
   @Expose()
   roomsEnabled: boolean;
 
+  /** Tenant has an active main warehouse configured — drives multi-branch inventory nav. */
+  @ApiPropertyOptional()
+  @Expose()
+  hasMainWarehouse?: boolean;
+
   @ApiPropertyOptional()
   @Expose()
   staffMembershipId: string | null;

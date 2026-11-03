@@ -519,6 +519,19 @@ export class InventoryListQueryDto {
   @IsOptional()
   @IsString()
   categoryId?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by branch id' })
+  @IsOptional()
+  @IsUUID()
+  branchId?: string;
+
+  @ApiPropertyOptional({
+    description: 'CENTRAL | BRANCH_ONLY | ALL',
+    example: 'CENTRAL',
+  })
+  @IsOptional()
+  @IsString()
+  scope?: string;
 }
 
 export class TransferLineInputDto {
@@ -1012,6 +1025,11 @@ export class CreateVendorDto {
   @IsString()
   @MaxLength(255)
   notes?: string;
+
+  @ApiPropertyOptional({ description: 'Specific branch ID (null or omitted for company-wide)' })
+  @IsOptional()
+  @IsUUID()
+  branchId?: string | null;
 }
 
 export class UpdateVendorDto {
@@ -1056,6 +1074,11 @@ export class UpdateVendorDto {
   @IsString()
   @MaxLength(20)
   status?: string;
+
+  @ApiPropertyOptional({ description: 'Specific branch ID (null for company-wide)' })
+  @IsOptional()
+  @IsUUID()
+  branchId?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────

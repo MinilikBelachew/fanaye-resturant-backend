@@ -19,7 +19,7 @@ export interface DefaultMaterialDefinition {
 }
 
 export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
-  // ─── CUTLERY (20 items) ───────────────────────────────────────────
+  // ─── CUTLERY (26 items) ───────────────────────────────────────────
   {
     code: 'MAT-CUT-001',
     name: 'Standard Dinner Fork',
@@ -30,7 +30,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/fork.jpg',
     description: 'Stainless steel 18/10 table dinner fork for main courses.',
     sortOrder: 1,
-    initialOnHand: 150,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-002',
@@ -42,7 +42,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/knife.jpg',
     description: 'Serrated stainless table dinner knife.',
     sortOrder: 2,
-    initialOnHand: 150,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-003',
@@ -54,7 +54,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/spoon.jpg',
     description: 'Deep oval bowl soup spoon.',
     sortOrder: 3,
-    initialOnHand: 150,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-004',
@@ -66,7 +66,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/teaspoon.jpg',
     description: 'Small stainless spoon for hot drinks and desserts.',
     sortOrder: 4,
-    initialOnHand: 200,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-005',
@@ -78,7 +78,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/fork.jpg',
     description: '3-prong fork for pastries and cakes.',
     sortOrder: 5,
-    initialOnHand: 120,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-006',
@@ -90,7 +90,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/knife.jpg',
     description: 'Heavy-duty sharp serrated steak knife.',
     sortOrder: 6,
-    initialOnHand: 80,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-007',
@@ -102,7 +102,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/knife.jpg',
     description: 'Rounded dull-edge butter knife.',
     sortOrder: 7,
-    initialOnHand: 60,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-008',
@@ -114,7 +114,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/knife.jpg',
     description: 'Wide blade fish knife for delicate fillets.',
     sortOrder: 8,
-    initialOnHand: 50,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-009',
@@ -126,7 +126,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/fork.jpg',
     description: '4-tine fish fork with notch.',
     sortOrder: 9,
-    initialOnHand: 50,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-010',
@@ -138,7 +138,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/fork.jpg',
     description: 'Broad fork for starters and salads.',
     sortOrder: 10,
-    initialOnHand: 100,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-011',
@@ -150,7 +150,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/chopsticks.jpg',
     description: 'Washable hardwood reusable chopsticks pair.',
     sortOrder: 11,
-    initialOnHand: 100,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-012',
@@ -162,7 +162,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/spoon.jpg',
     description: 'Heavy banquet serving spoon 25cm.',
     sortOrder: 12,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-013',
@@ -174,7 +174,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/fork.jpg',
     description: 'Heavy banquet serving fork 25cm.',
     sortOrder: 13,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-014',
@@ -186,7 +186,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cutlery-set.jpg',
     description: 'Stainless scissor-style tongs for salads and pasta.',
     sortOrder: 14,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-015',
@@ -198,7 +198,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cutlery-set.jpg',
     description: 'Flat-paddle tongs for baked goods and injera pieces.',
     sortOrder: 15,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-016',
@@ -210,7 +210,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/spoon.jpg',
     description: 'Deep round ladle 150ml capacity.',
     sortOrder: 16,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-017',
@@ -222,7 +222,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/spoon.jpg',
     description: 'Small hooked side-pour gravy ladle 60ml.',
     sortOrder: 17,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-018',
@@ -234,7 +234,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/knife.jpg',
     description: 'Triangular serrated edge pastry server.',
     sortOrder: 18,
-    initialOnHand: 20,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-019',
@@ -246,7 +246,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cutlery-set.jpg',
     description: 'Fork, knife, spoon in linen delivery pouch.',
     sortOrder: 19,
-    initialOnHand: 80,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CUT-020',
@@ -258,10 +258,82 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/spoon.jpg',
     description: 'Long handle 20cm spoon for tall drinks & sundaes.',
     sortOrder: 20,
-    initialOnHand: 60,
+    initialOnHand: 0,
   },
 
-  // ─── CROCKERY / PLATES & BOWLS (25 items) ──────────────────────────
+  {
+    code: 'MAT-CUT-021',
+    name: "Professional Waiter's Corkscrew / Wine Opener",
+    amharicName: 'የወይን መክፈቻ (ኮርክስክሩ)',
+    category: 'CUTLERY',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/wine-opener.jpg',
+    description: 'Double-hinged stainless steel sommelier corkscrew, foil cutter and bottle opener.',
+    sortOrder: 21,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CUT-022',
+    name: 'Cocktail Hawthorne Strainer',
+    amharicName: 'የኮክቴል ማጣሪያ (ስትሬይነር)',
+    category: 'CUTLERY',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/cocktail-strainer.jpg',
+    description: 'Stainless steel bar spring strainer for cocktail shakers and mixing glasses.',
+    sortOrder: 22,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CUT-023',
+    name: 'Cocktail Bar Muddler',
+    amharicName: 'የኮክቴል መፍጫ (ማድለር)',
+    category: 'CUTLERY',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/bar-muddler.jpg',
+    description: 'Stainless steel bar muddler with grooved nylon head for herbs and citrus.',
+    sortOrder: 23,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CUT-024',
+    name: 'Spiral Mixing Bar Spoon with Teardrop',
+    amharicName: 'የባር ረጅም ማንኪያ',
+    category: 'CUTLERY',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/bar-spoon.jpg',
+    description: '30cm stainless steel twisted spiral mixing bar spoon.',
+    sortOrder: 24,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CUT-025',
+    name: 'Commercial Ice Scoop (Stainless Steel)',
+    amharicName: 'የበረዶ ማውጫ ማንኪያ',
+    category: 'CUTLERY',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/ice-scoop.jpg',
+    description: '24oz heavy-duty stainless steel ice scoop with hanging loop.',
+    sortOrder: 25,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CUT-026',
+    name: 'Waiter Table Crumber (Stainless Steel)',
+    amharicName: 'የጠረጴዛ ፍርፋሪ ማጽጃ',
+    category: 'CUTLERY',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/table-crumber.jpg',
+    description: 'Pocket stainless steel waiter table crumber scoop with clip.',
+    sortOrder: 26,
+    initialOnHand: 0,
+  },
+  // ─── CROCKERY / PLATES & BOWLS (27 items) ──────────────────────────
   {
     code: 'MAT-CRK-001',
     name: 'Porcelain Dinner Plate 10.5"',
@@ -272,7 +344,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/dinner-plate.jpg',
     description: 'Commercial rolled-edge white porcelain main plate.',
     sortOrder: 21,
-    initialOnHand: 180,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-002',
@@ -284,7 +356,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/side-plate.jpg',
     description: 'Appetizer, dessert, and side bread plate.',
     sortOrder: 22,
-    initialOnHand: 180,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-003',
@@ -296,7 +368,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/pasta-bowl.jpg',
     description: 'Deep well pasta bowl with wide presentation rim.',
     sortOrder: 23,
-    initialOnHand: 90,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-004',
@@ -308,7 +380,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/soup-bowl.jpg',
     description: 'High-sided bowl for soups, broths, and shiro.',
     sortOrder: 24,
-    initialOnHand: 110,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-005',
@@ -320,7 +392,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/salad-bowl.jpg',
     description: 'Flared rim starter bowl for fresh salads.',
     sortOrder: 25,
-    initialOnHand: 85,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-006',
@@ -332,7 +404,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/oval-platter.jpg',
     description: 'Oval presentation dish for whole fish or mixed meats.',
     sortOrder: 26,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-007',
@@ -344,7 +416,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/oval-tray.jpg',
     description: 'Large oval sharing platter for family orders.',
     sortOrder: 27,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-008',
@@ -356,7 +428,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/dinner-plate.jpg',
     description: 'Gold rim base charger plate for VIP banquet tables.',
     sortOrder: 28,
-    initialOnHand: 60,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-009',
@@ -368,7 +440,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ramekin.jpg',
     description: 'Ribbed white ramekin for awaze, mitmita, dips.',
     sortOrder: 29,
-    initialOnHand: 160,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-010',
@@ -380,7 +452,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ramekin.jpg',
     description: 'Single-portion ramekin for baked sides.',
     sortOrder: 30,
-    initialOnHand: 100,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-011',
@@ -392,7 +464,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/coffee-cup.jpg',
     description: 'Classic 180ml coffee cup with matching saucer.',
     sortOrder: 31,
-    initialOnHand: 120,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-012',
@@ -404,7 +476,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/coffee-cup.jpg',
     description: 'Traditional ceramic coffee sini for jebena ceremonies.',
     sortOrder: 32,
-    initialOnHand: 150,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-013',
@@ -416,7 +488,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/mug.jpg',
     description: 'Heavy porcelain mug with thick thermal walls.',
     sortOrder: 33,
-    initialOnHand: 90,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-014',
@@ -428,7 +500,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/espresso-cup.jpg',
     description: 'Small 60ml single shot espresso cup with saucer.',
     sortOrder: 34,
-    initialOnHand: 80,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-015',
@@ -440,7 +512,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/teapot.jpg',
     description: 'Table teapot with stainless mesh filter for loose tea.',
     sortOrder: 35,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-016',
@@ -452,7 +524,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/creamer.jpg',
     description: 'Ceramic mini creamer jug with drip-free spout.',
     sortOrder: 36,
-    initialOnHand: 45,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-017',
@@ -464,7 +536,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/creamer.jpg',
     description: 'Sugar bowl with notch for spoon.',
     sortOrder: 37,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-018',
@@ -476,7 +548,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ramekin.jpg',
     description: 'Classic porcelain boat for jus, gravy, and sauces.',
     sortOrder: 38,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-019',
@@ -488,7 +560,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/square-plate.jpg',
     description: 'Contemporary square rim porcelain plate.',
     sortOrder: 39,
-    initialOnHand: 50,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-020',
@@ -500,7 +572,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/square-plate.jpg',
     description: 'Modern square main course plate.',
     sortOrder: 40,
-    initialOnHand: 45,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-021',
@@ -512,7 +584,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ramekin.jpg',
     description: '3-compartment dish for sauces, olives, and spices.',
     sortOrder: 41,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-022',
@@ -524,7 +596,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ramekin.jpg',
     description: 'Individual porcelain covered butter holder.',
     sortOrder: 42,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-023',
@@ -536,7 +608,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/clay-desta.jpg',
     description: 'Traditional unglazed earthenware pot for bubbling shiro.',
     sortOrder: 43,
-    initialOnHand: 60,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-024',
@@ -548,7 +620,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ramekin.jpg',
     description: 'Stemmed coupe dish for ice cream, puddings.',
     sortOrder: 44,
-    initialOnHand: 55,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CRK-025',
@@ -560,10 +632,34 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/stainless-platter.jpg',
     description: 'Wide shallow round platter for shared beyaynetu platter.',
     sortOrder: 45,
-    initialOnHand: 50,
+    initialOnHand: 0,
   },
 
-  // ─── GLASSWARE & BARWARE (20 items) ───────────────────────────────
+  {
+    code: 'MAT-CRK-026',
+    name: 'Stainless Steel Sauce / Gravy Boat 10oz',
+    amharicName: 'የሶስ እና መረቅ ማቅረቢያ',
+    category: 'CROCKERY',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/sauce-boat.jpg',
+    description: 'Polished stainless steel table gravy and sauce boat with handle.',
+    sortOrder: 52,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CRK-027',
+    name: 'Dual Oil & Vinegar Cruet Set with Wire Rack',
+    amharicName: 'የዘይት እና ኮምጣጤ ጠርሙስ ስብስብ',
+    category: 'CROCKERY',
+    unit: 'set',
+    isReusable: true,
+    imageUrl: '/images/materials/oil-vinegar-cruet.jpg',
+    description: 'Pair of glass cruet dispenser bottles with stainless steel wire caddy.',
+    sortOrder: 53,
+    initialOnHand: 0,
+  },
+  // ─── GLASSWARE & BARWARE (27 items) ───────────────────────────────
   {
     code: 'MAT-GLS-001',
     name: 'Water Goblet Glass 350ml',
@@ -574,7 +670,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/water-goblet.jpg',
     description: 'Stemmed universal water goblet for table setting.',
     sortOrder: 46,
-    initialOnHand: 200,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-002',
@@ -586,7 +682,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/red-wine-glass.jpg',
     description: 'Large round bowl crystal glass for full red wines.',
     sortOrder: 47,
-    initialOnHand: 120,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-003',
@@ -598,7 +694,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/white-wine-glass.jpg',
     description: 'U-shaped narrower bowl glass for crisp whites.',
     sortOrder: 48,
-    initialOnHand: 120,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-004',
@@ -610,7 +706,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/champagne-flute.jpg',
     description: 'Tall slim flute for sparkling wines and toasts.',
     sortOrder: 49,
-    initialOnHand: 90,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-005',
@@ -622,7 +718,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/highball-glass.jpg',
     description: 'Straight-sided tumbler for sodas, iced tea, juices.',
     sortOrder: 50,
-    initialOnHand: 180,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-006',
@@ -634,7 +730,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/whiskey-glass.jpg',
     description: 'Heavy-base short tumbler for spirits on the rocks.',
     sortOrder: 51,
-    initialOnHand: 140,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-007',
@@ -646,7 +742,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/beer-mug.jpg',
     description: 'Heavy dimpled glass beer tankard with sturdy handle.',
     sortOrder: 52,
-    initialOnHand: 110,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-008',
@@ -658,7 +754,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/beer-mug.jpg',
     description: 'Tall curved glass for lagers and pilsners.',
     sortOrder: 53,
-    initialOnHand: 90,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-009',
@@ -670,7 +766,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cocktail-glass.jpg',
     description: 'Classic inverted cone stemmed glass.',
     sortOrder: 54,
-    initialOnHand: 60,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-010',
@@ -682,7 +778,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cocktail-glass.jpg',
     description: 'Stepped bowl glass for blended cocktails.',
     sortOrder: 55,
-    initialOnHand: 45,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-011',
@@ -694,7 +790,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/shot-glass.jpg',
     description: 'Commercial thick bottom shooter glass.',
     sortOrder: 56,
-    initialOnHand: 150,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-012',
@@ -707,7 +803,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     description:
       'Heat-resistant handled glass for hot toddies & specialty coffees.',
     sortOrder: 57,
-    initialOnHand: 50,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-013',
@@ -719,7 +815,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/glass-carafe.jpg',
     description: 'Wide-base glass decanter for aerating red wines.',
     sortOrder: 58,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-014',
@@ -731,7 +827,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/glass-carafe.jpg',
     description: 'Heavy glass pitcher with pour lip for table service.',
     sortOrder: 59,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-015',
@@ -743,7 +839,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ice-bucket.jpg',
     description: 'Double-walled insulated wine ice bucket with mini tongs.',
     sortOrder: 60,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-016',
@@ -755,7 +851,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/ice-bucket.jpg',
     description: 'Double-wall brushed stainless single-bottle chiller.',
     sortOrder: 61,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-017',
@@ -767,7 +863,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cocktail-shaker.jpg',
     description: 'Weighted stainless tins 28oz & 18oz for mixology.',
     sortOrder: 62,
-    initialOnHand: 20,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-018',
@@ -779,7 +875,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cocktail-shaker.jpg',
     description: 'Dual measurement spirit measure with interior markings.',
     sortOrder: 63,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-019',
@@ -791,7 +887,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/highball-glass.jpg',
     description: 'Fluted retro milkshake parlor glass.',
     sortOrder: 64,
-    initialOnHand: 60,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-GLS-020',
@@ -803,10 +899,94 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/shot-glass.jpg',
     description: 'Catering shooter cup for panna cotta and mousse.',
     sortOrder: 65,
-    initialOnHand: 80,
+    initialOnHand: 0,
   },
 
-  // ─── TRAYS & PLATTERS (15 items) ──────────────────────────────────
+  {
+    code: 'MAT-GLS-021',
+    name: 'Moscow Mule Copper Mug 500ml',
+    amharicName: 'የሞስኮ ሙል የነሐስ ዋንጫ',
+    category: 'GLASSWARE',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/copper-mug.jpg',
+    description: 'Solid hammered copper mug with brass handle for specialty cocktails.',
+    sortOrder: 74,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-GLS-022',
+    name: 'Hurricane Cocktail Glass 440ml',
+    amharicName: 'የሀሪኬን ኮክቴል ብርጭቆ',
+    category: 'GLASSWARE',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/hurricane-glass.jpg',
+    description: 'Curved tall hurricane glass for tropical drinks and specialty cocktails.',
+    sortOrder: 75,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-GLS-023',
+    name: 'Brandy & Cognac Snifter 400ml',
+    amharicName: 'የብራንዲ እና ኮኛክ ብርጭቆ',
+    category: 'GLASSWARE',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/brandy-snifter.jpg',
+    description: 'Wide balloon bowl snifter glass for fine spirits, brandy, and cognac.',
+    sortOrder: 76,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-GLS-024',
+    name: 'Draft Beer Pitcher 1.8L',
+    amharicName: 'የድራፍት ቢራ ፒቸር',
+    category: 'GLASSWARE',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/beer-pitcher.jpg',
+    description: 'Heavy-duty clear commercial beer pitcher with pour spout and ice lip.',
+    sortOrder: 77,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-GLS-025',
+    name: 'Table Water Pitcher with Ice Guard 2.0L',
+    amharicName: 'የውሃ ማቅረቢያ ፒቸር',
+    category: 'GLASSWARE',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/water-pitcher.jpg',
+    description: 'Stainless steel commercial table water pitcher with ice guard lip.',
+    sortOrder: 78,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-GLS-026',
+    name: 'Glass Rim Rimmer 3-Tier',
+    amharicName: 'የብርጭቆ ጨው/ስኳር ማጥለቂያ',
+    category: 'GLASSWARE',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/glass-rimmer.jpg',
+    description: '3-tier rotating salt, sugar, and lime juice glass rimmer station.',
+    sortOrder: 79,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-GLS-027',
+    name: 'Wine Bucket Floor Stand (Chrome)',
+    amharicName: 'የወይን እና ሻምፓኝ ባልዲ መቆሚያ',
+    category: 'GLASSWARE',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/wine-bucket-stand.jpg',
+    description: 'Polished chrome floor stand for wine and champagne chillers.',
+    sortOrder: 80,
+    initialOnHand: 0,
+  },
+  // ─── TRAYS & PLATTERS (21 items) ──────────────────────────────────
   {
     code: 'MAT-TRY-001',
     name: 'Round Non-Slip Waiter Tray 14"',
@@ -817,7 +997,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/waiter-tray.jpg',
     description: 'Rubberised non-slip surface drinks tray.',
     sortOrder: 66,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-002',
@@ -829,7 +1009,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/waiter-tray.jpg',
     description: 'Heavy-duty fiberglass banquet tray.',
     sortOrder: 67,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-003',
@@ -841,7 +1021,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/oval-tray.jpg',
     description: 'Large oval tray for carrying 4-6 main course plates.',
     sortOrder: 68,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-004',
@@ -853,7 +1033,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/room-service-tray.jpg',
     description: 'Wood-finish melamine tray with ergonomic carry handles.',
     sortOrder: 69,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-005',
@@ -865,7 +1045,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/stainless-platter.jpg',
     description: 'Mirror-finish stainless platter for injera & tibs.',
     sortOrder: 70,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-006',
@@ -877,7 +1057,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/stainless-platter.jpg',
     description: 'Family-size communal platter for 4-6 persons.',
     sortOrder: 71,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-007',
@@ -889,7 +1069,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/wooden-pizza-board.jpg',
     description: 'Oiled acacia wood pizza paddle board with groove.',
     sortOrder: 72,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-008',
@@ -901,7 +1081,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/wooden-pizza-board.jpg',
     description: 'Large wooden pizza board for party size.',
     sortOrder: 73,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-009',
@@ -913,7 +1093,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cheese-board.jpg',
     description: 'Black slate stone platter with foam feet.',
     sortOrder: 74,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-010',
@@ -925,7 +1105,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/bread-basket.jpg',
     description: 'Black coated wire bread basket with cloth liner.',
     sortOrder: 75,
-    initialOnHand: 50,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-011',
@@ -938,7 +1118,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     description:
       'Traditional mini woven grass basket with lid for injera warmth.',
     sortOrder: 76,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-012',
@@ -950,7 +1130,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cutlery-set.jpg',
     description: 'Tabletop cylinder organizer for cutlery and napkins.',
     sortOrder: 77,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-013',
@@ -962,7 +1142,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/bill-folder.jpg',
     description: 'Padded black faux leather check presenter with card clip.',
     sortOrder: 78,
-    initialOnHand: 50,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-014',
@@ -974,7 +1154,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/room-service-tray.jpg',
     description: 'Clear acrylic tiered stand for afternoon tea & pastries.',
     sortOrder: 79,
-    initialOnHand: 15,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-TRY-015',
@@ -986,9 +1166,81 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/waiter-tray.jpg',
     description: 'Chrome tubular folding stand for waiter oval trays.',
     sortOrder: 80,
-    initialOnHand: 20,
+    initialOnHand: 0,
   },
 
+  {
+    code: 'MAT-TRY-016',
+    name: 'Cast Iron Sizzler Platter with Wood Trivet',
+    amharicName: 'የስጋ እና ፈሂታ የብረት መጥበሻ ሰሃን',
+    category: 'TRAYS',
+    unit: 'set',
+    isReusable: true,
+    imageUrl: '/images/materials/cast-iron-sizzler.jpg',
+    description: 'Heavy cast iron sizzling platter with natural wood underliner base.',
+    sortOrder: 96,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-TRY-017',
+    name: 'Table Number Clip Stand (Chrome / Stainless)',
+    amharicName: 'የጠረጴዛ ቁጥር መቆሚያ',
+    category: 'TRAYS',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/table-number-stand.jpg',
+    description: '12-inch stainless steel tall table number card holder stand.',
+    sortOrder: 97,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-TRY-018',
+    name: 'Tabletop Napkin Dispenser (Stainless Steel)',
+    amharicName: 'የናፕኪን (ሶፍት) ማስቀመጫ',
+    category: 'TRAYS',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/napkin-holder.jpg',
+    description: 'Dual-sided commercial stainless steel table napkin dispenser.',
+    sortOrder: 98,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-TRY-019',
+    name: 'Stainless Steel Taco Shell Holder (3-Wave)',
+    amharicName: 'የታኮ እና ሳንድዊች መደገፊያ',
+    category: 'TRAYS',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/taco-holder.jpg',
+    description: 'Stainless steel zig-zag presentation stand for tacos and wraps.',
+    sortOrder: 99,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-TRY-020',
+    name: 'French Fry Wire Cone with Sauce Dipper',
+    amharicName: 'የቺፕስ ማስቀመጫ ሽቦ ቋት',
+    category: 'TRAYS',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/fry-cone-holder.jpg',
+    description: 'Chrome wire spiral fry cone presentation stand with dip bowl ring.',
+    sortOrder: 100,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-TRY-021',
+    name: 'Tabletop Menu Tent Stand (Acrylic A5)',
+    amharicName: 'የሚኒዩ እና ማስታወቂያ መቆሚያ',
+    category: 'TRAYS',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/menu-stand.jpg',
+    description: 'Double-sided clear acrylic table tent menu and special display stand.',
+    sortOrder: 101,
+    initialOnHand: 0,
+  },
   // ─── WARMERS & INSULATED CARRIERS (12 items) ──────────────────────
   {
     code: 'MAT-WRM-001',
@@ -1001,7 +1253,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     description:
       'Thermal insulated waterproof backpack for bike/foot outside delivery.',
     sortOrder: 81,
-    initialOnHand: 15,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-002',
@@ -1013,7 +1265,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/insulated-box.jpg',
     description: 'EPP high-density insulated box for catering food pans.',
     sortOrder: 82,
-    initialOnHand: 12,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-003',
@@ -1025,7 +1277,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/pizza-delivery-bag.jpg',
     description: 'Heavy-duty breathable thermal pizza bag.',
     sortOrder: 83,
-    initialOnHand: 18,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-004',
@@ -1037,7 +1289,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/chafing-dish.jpg',
     description: 'Premium roll-top buffet chafing dish with burner holders.',
     sortOrder: 84,
-    initialOnHand: 20,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-005',
@@ -1049,7 +1301,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/chafing-dish.jpg',
     description: 'Round glass-window chafing dish for stews and tibs.',
     sortOrder: 85,
-    initialOnHand: 15,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-006',
@@ -1061,7 +1313,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/soup-kettle.jpg',
     description: 'Black powder-coated wet heat soup kettle 400W.',
     sortOrder: 86,
-    initialOnHand: 10,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-007',
@@ -1073,7 +1325,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/beverage-dispenser.jpg',
     description: 'Double-wall stainless drink urn for coffee, tea, punch.',
     sortOrder: 87,
-    initialOnHand: 12,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-008',
@@ -1085,7 +1337,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/thermal-carafe.jpg',
     description: 'Lever-action pump airpot flask keeps coffee hot 12 hrs.',
     sortOrder: 88,
-    initialOnHand: 16,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-009',
@@ -1097,7 +1349,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/thermal-carafe.jpg',
     description: 'Vacuum insulated wide-mouth food container with handle.',
     sortOrder: 89,
-    initialOnHand: 20,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-010',
@@ -1109,7 +1361,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/chafing-dish.jpg',
     description: 'Slim glass induction holding plate for table-side heat.',
     sortOrder: 90,
-    initialOnHand: 8,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-011',
@@ -1121,7 +1373,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/chafing-dish.jpg',
     description: 'Stainless steel fuel can holders with damping covers.',
     sortOrder: 91,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-WRM-012',
@@ -1133,10 +1385,10 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/insulated-box.jpg',
     description: 'Hard plastic dome cake carrier with snap-lock clips.',
     sortOrder: 92,
-    initialOnHand: 15,
+    initialOnHand: 0,
   },
 
-  // ─── CONTAINERS & CRATES (15 items) ───────────────────────────────
+  // ─── CONTAINERS & CRATES (18 items) ───────────────────────────────
   {
     code: 'MAT-CNT-001',
     name: 'Gastronorm GN 1/1 Food Pan (65mm Deep)',
@@ -1147,7 +1399,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/gn-food-pan.jpg',
     description: 'Standard commercial stainless catering insert pan.',
     sortOrder: 93,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-002',
@@ -1159,7 +1411,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/gn-food-pan.jpg',
     description: 'Deep stainless pan for stews, rice, and bulk dishes.',
     sortOrder: 94,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-003',
@@ -1171,7 +1423,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/gn-food-pan.jpg',
     description: 'Half-size stainless insert pan for sides.',
     sortOrder: 95,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-004',
@@ -1183,7 +1435,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/gn-food-pan.jpg',
     description: 'Recessed center handle lid for GN 1/1 pans.',
     sortOrder: 96,
-    initialOnHand: 40,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-005',
@@ -1195,7 +1447,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/gn-food-pan.jpg',
     description: 'Airtight silicone suction lid prevents transit spills.',
     sortOrder: 97,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-006',
@@ -1207,7 +1459,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/glass-rack-crate.jpg',
     description: 'Heavy-duty commercial glass washing & transport crate.',
     sortOrder: 98,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-007',
@@ -1219,7 +1471,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/glass-rack-crate.jpg',
     description: 'Fine glassware washing crate with drop-in dividers.',
     sortOrder: 99,
-    initialOnHand: 20,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-008',
@@ -1231,7 +1483,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/glass-rack-crate.jpg',
     description: 'Standard peg rack holds 18 large dinner plates vertically.',
     sortOrder: 100,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-009',
@@ -1243,7 +1495,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/cutlery-set.jpg',
     description: 'Perforated basket for sanitizing silverware.',
     sortOrder: 101,
-    initialOnHand: 20,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-010',
@@ -1255,7 +1507,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/bussing-tub.jpg',
     description: 'Commercial grey polypropylene bus box with handles.',
     sortOrder: 102,
-    initialOnHand: 35,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-011',
@@ -1267,7 +1519,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/insulated-box.jpg',
     description: 'Shatter-proof Cambro-style box with measurement graduations.',
     sortOrder: 103,
-    initialOnHand: 25,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-012',
@@ -1279,7 +1531,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/bussing-tub.jpg',
     description: 'Tamper-evident transport crate for banquet logistics.',
     sortOrder: 104,
-    initialOnHand: 18,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-013',
@@ -1291,7 +1543,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/squeeze-bottle.jpg',
     description: '3-pack polyethylene bottles for ketchup, mustard, oil.',
     sortOrder: 105,
-    initialOnHand: 30,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-014',
@@ -1303,7 +1555,7 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/salt-pepper.jpg',
     description: 'Glass body with stainless screw tops for tables.',
     sortOrder: 106,
-    initialOnHand: 60,
+    initialOnHand: 0,
   },
   {
     code: 'MAT-CNT-015',
@@ -1315,7 +1567,43 @@ export const DEFAULT_MATERIALS_CATALOG: DefaultMaterialDefinition[] = [
     imageUrl: '/images/materials/salt-pepper.jpg',
     description: 'Sanitary press-top toothpick holder for table service.',
     sortOrder: 107,
-    initialOnHand: 45,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CNT-016',
+    name: 'Bar Service Spill Mat (Rubber)',
+    amharicName: 'የባር ጎማ ምንጣፍ',
+    category: 'CONTAINERS',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/bar-mat.jpg',
+    description: 'Non-slip heavy rubber bar service spill runner mat.',
+    sortOrder: 129,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CNT-017',
+    name: 'Bar Garnish Station (6-Compartment)',
+    amharicName: 'የፍራፍሬ እና ማስዋቢያ ማስቀመጫ',
+    category: 'CONTAINERS',
+    unit: 'pcs',
+    isReusable: true,
+    imageUrl: '/images/materials/bar-garnish-center.jpg',
+    description: 'Stainless steel caddy with 6 removable inserts and transparent lid.',
+    sortOrder: 130,
+    initialOnHand: 0,
+  },
+  {
+    code: 'MAT-CNT-018',
+    name: 'Liquor Speed Pour Spout Set',
+    amharicName: 'የመጠጥ ጠርሙስ ማፍሰሻ',
+    category: 'CONTAINERS',
+    unit: 'set',
+    isReusable: true,
+    imageUrl: '/images/materials/speed-pourer.jpg',
+    description: 'Stainless steel tapered liquor bottle speed pourers with rubber seal.',
+    sortOrder: 131,
+    initialOnHand: 0,
   },
 ];
 
