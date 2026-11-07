@@ -60,6 +60,7 @@ import { FinanceModule } from './finance/finance.module';
 import { BiometricsModule } from './biometrics/biometrics.module';
 import { AiModule } from './ai/ai.module';
 import { BackupModule } from './backup/backup.module';
+import { SyncModule } from './sync/sync.module';
 
 @Module({
   imports: [
@@ -171,6 +172,7 @@ import { BackupModule } from './backup/backup.module';
     BiometricsModule,
     AiModule,
     BackupModule,
+    SyncModule,
   ],
   providers: [
     {

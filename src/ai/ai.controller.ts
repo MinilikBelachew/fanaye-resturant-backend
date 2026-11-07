@@ -76,16 +76,20 @@ export class AiController {
     }
 
     let result: ChatResponseDto;
-    if (dto.engine === 'tools') {
-      result = await this.aiService.processOwnerChat(tenantId, dto);
-    } else {
+    // Function calling tools engine is the default; text-to-sql is preserved if explicitly requested
+    if (dto.engine === 'sql') {
       result = await this.textToSqlService.processChat(tenantId, dto);
+    } else {
+      result = await this.aiService.processOwnerChat(tenantId, dto);
     }
 
     // Automatically synthesize voice audio unless explicitly opted out
     if (dto.voiceResponse !== false && result.reply) {
       try {
-        result.audioBase64 = await this.voiceService.synthesizeSpeech(result.reply);
+        result.audioBase64 = await this.voiceService.synthesizeSpeech(
+          result.reply,
+          dto.voice,
+        );
       } catch {
         // audio synthesis failure does not break text response
       }

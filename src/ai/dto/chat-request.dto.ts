@@ -46,6 +46,11 @@ export class ChatRequestDto {
   @ApiPropertyOptional({ default: true, description: 'Whether to return synthesized spoken audio' })
   @IsOptional()
   voiceResponse?: boolean;
+
+  @ApiPropertyOptional({ default: 'alloy', description: 'TTS voice name (alloy, echo, fable, onyx, nova, shimmer)' })
+  @IsString()
+  @IsOptional()
+  voice?: string;
 }
 
 export class ChatResponseDto {
