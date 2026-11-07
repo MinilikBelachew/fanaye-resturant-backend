@@ -25,6 +25,7 @@ import {
   BillDto,
   BillRequestCreatedDto,
   CashierBillRequestsResponseDto,
+  CashierActiveBillsResponseDto,
 } from './dto/billing-response.dto';
 
 @ApiTags('Billing')
@@ -79,5 +80,11 @@ export class CashierBillingController {
   @ApiOkResponse({ type: CashierBillRequestsResponseDto })
   list(@Request() request): Promise<CashierBillRequestsResponseDto> {
     return this.billingService.listCashierBillRequests(String(request.user.id));
+  }
+
+  @Get('active-bills')
+  @ApiOkResponse({ type: CashierActiveBillsResponseDto })
+  activeBills(@Request() request): Promise<CashierActiveBillsResponseDto> {
+    return this.billingService.listCashierActiveBills(String(request.user.id));
   }
 }

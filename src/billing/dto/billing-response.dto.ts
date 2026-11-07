@@ -64,6 +64,10 @@ export class BillDto {
   @Expose()
   phone?: string | null;
 
+  @ApiPropertyOptional()
+  @Expose()
+  cashierName?: string | null;
+
   @ApiPropertyOptional({
     description: 'True when seating was VIP (prices already include VIP %)',
   })
@@ -185,6 +189,27 @@ export class CashierBillRequestsResponseDto {
   @Expose()
   @Type(() => CashierBillRequestDto)
   data: CashierBillRequestDto[];
+}
+
+export class CashierActiveBillDto extends BillDto {
+  @ApiProperty()
+  @Expose()
+  tableDisplayName: string;
+
+  @ApiProperty()
+  @Expose()
+  waiterName: string;
+
+  @ApiPropertyOptional()
+  @Expose()
+  tableSessionVersion?: number;
+}
+
+export class CashierActiveBillsResponseDto {
+  @ApiProperty({ type: () => [CashierActiveBillDto] })
+  @Expose()
+  @Type(() => CashierActiveBillDto)
+  data: CashierActiveBillDto[];
 }
 
 export class PaymentDto {

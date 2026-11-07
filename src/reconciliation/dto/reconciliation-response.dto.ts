@@ -43,6 +43,25 @@ export class ReconciliationPreviewDto {
   /** True when more cash arrived after the last submit — cashier must count again. */
   @ApiPropertyOptional()
   needsResubmit?: boolean;
+
+  /** Bills breakdown for this cashier's session */
+  @ApiPropertyOptional()
+  billsCount?: number;
+
+  @ApiPropertyOptional()
+  billsTotalCash?: string;
+
+  @ApiPropertyOptional()
+  billsTotalDigital?: string;
+
+  @ApiPropertyOptional()
+  billsGrandTotal?: string;
+
+  @ApiPropertyOptional()
+  digitalVerified?: string;
+
+  @ApiPropertyOptional()
+  digitalPending?: string;
 }
 
 export class ReconciliationPreviewResponseDto {

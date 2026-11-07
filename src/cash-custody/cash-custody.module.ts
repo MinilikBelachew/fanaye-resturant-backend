@@ -5,6 +5,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
 import { CashCustodyService } from './cash-custody.service';
 import {
   CashDropDisputesController,
+  CashCustodyOverviewController,
   CashDropsController,
   CashierCashDropsController,
   WaiterCashController,
@@ -17,6 +18,7 @@ import {
     CashDropsController,
     CashierCashDropsController,
     CashDropDisputesController,
+  CashCustodyOverviewController,
   ],
   providers: [CashCustodyService],
   exports: [CashCustodyService],

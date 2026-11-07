@@ -63,6 +63,8 @@ const UI_ROLE_TO_CODE: Record<string, string> = {
   STATION_OPERATOR: 'STATION_OPERATOR',
   DISPATCHER: 'DISPATCHER',
   STORE_MANAGER: 'STORE_MANAGER',
+  receptionist: 'RECEPTIONIST',
+  RECEPTIONIST: 'RECEPTIONIST',
 };
 
 const UI_ROLE_TO_STATION_CODE: Record<string, string> = {
@@ -1043,6 +1045,15 @@ export class StaffCoverageService {
           branchId: context.branchId!,
           shiftDefinitionId: shift.id,
           dayCode: effectiveDayCode,
+          waiter: {
+            status: 'ACTIVE',
+            dayShifts: {
+              some: {
+                dayCode: effectiveDayCode,
+                shiftDefinitionId: shift.id,
+              },
+            },
+          },
         },
         include: { waiter: true },
       }),
@@ -1869,6 +1880,27 @@ export class StaffCoverageService {
       },
       data: { status: 'CANCELLED' },
     });
+
+    // Clean up any table coverages for this waiter on days or shifts they are no longer scheduled for
+    const existingCoverages = await tx.diningTableShiftCoverage.findMany({
+      where: { waiterMembershipId: membershipId },
+      select: { id: true, dayCode: true, shiftDefinitionId: true },
+    });
+    const orphanCoverageIds = existingCoverages
+      .filter(
+        (c) =>
+          !planned.some(
+            (p) =>
+              p.dayCode === c.dayCode &&
+              p.shiftDefinitionId === c.shiftDefinitionId,
+          ),
+      )
+      .map((c) => c.id);
+    if (orphanCoverageIds.length > 0) {
+      await tx.diningTableShiftCoverage.deleteMany({
+        where: { id: { in: orphanCoverageIds } },
+      });
+    }
 
     if (uniqueShiftIds.length === 0) {
       return;

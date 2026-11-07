@@ -1,3 +1,4 @@
+import { CashCustodyOverviewResponseDto } from './dto/cash-custody-overview.dto';
 import {
   Body,
   Controller,
@@ -150,6 +151,36 @@ export class CashDropDisputesController {
       id,
       dto,
       idempotencyKey,
+    );
+  }
+}
+
+
+@ApiTags('Cash custody')
+@ApiBearerAuth()
+@UseGuards(AuthGuard('jwt'))
+@Controller({
+  path: 'cash-custody',
+  version: '1',
+})
+export class CashCustodyOverviewController {
+  constructor(private readonly cashCustody: CashCustodyService) {}
+
+  @Get('overview')
+  @ApiOkResponse({ type: CashCustodyOverviewResponseDto })
+  overview(
+    @Request() request,
+    @Query('branchId') branchId?: string,
+    @Query('dateFilter') dateFilter?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+  ): Promise<CashCustodyOverviewResponseDto> {
+    return this.cashCustody.getCashCustodyOverview(
+      String(request.user.id),
+      branchId,
+      dateFilter,
+      fromDate,
+      toDate,
     );
   }
 }

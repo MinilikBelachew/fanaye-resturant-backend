@@ -40,6 +40,7 @@ export const OpsEventType = {
   OUTSIDE_ORDER_OPENED: 'outside_order.opened',
   OUTSIDE_ORDER_CLOSED: 'outside_order.closed',
   CUSTOMER_ARRIVED: 'customer.arrived',
+  PAYMENT_SETTLED: 'payment.settled',
 } as const;
 
 export type OpsEventTypeName = (typeof OpsEventType)[keyof typeof OpsEventType];

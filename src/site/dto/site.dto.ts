@@ -258,6 +258,26 @@ export class UpdateSiteDto {
   @ApiPropertyOptional({ example: false })
   @IsOptional()
   requireDriverForDispatch?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  featureInventory?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  featureCentralWarehouse?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  featureTelegramBackup?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  featureAiAdvisor?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  featureOutsideOrders?: boolean;
 }
 
 export class SiteResponseDto {
@@ -314,6 +334,21 @@ export class SiteResponseDto {
 
   @ApiPropertyOptional({ example: false })
   requireDriverForDispatch?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  featureInventory?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  featureCentralWarehouse?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  featureTelegramBackup?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  featureAiAdvisor?: boolean;
+
+  @ApiPropertyOptional({ example: true })
+  featureOutsideOrders?: boolean;
 }
 
 export class SiteSingleResponseDto {

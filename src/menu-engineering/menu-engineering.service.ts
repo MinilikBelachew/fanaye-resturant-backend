@@ -750,10 +750,10 @@ export class MenuEngineeringService {
     if (fromUnit === toUnit) return qty;
 
     const direct = conversionMap.get(`${fromUnit}|${toUnit}`);
-    if (direct != null && direct !== 0) return qty / direct;
+    if (direct != null) return qty * direct;
 
     const reverse = conversionMap.get(`${toUnit}|${fromUnit}`);
-    if (reverse != null) return qty * reverse;
+    if (reverse != null && reverse !== 0) return qty / reverse;
 
     const builtIn = builtInFactor(fromUnit, toUnit);
     if (builtIn != null) return qty * builtIn;

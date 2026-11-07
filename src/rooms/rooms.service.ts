@@ -6,6 +6,11 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { CaslService } from '../casl/casl.service';
+import {
+  businessDateUtc,
+  calendarYmd,
+  DEFAULT_BRANCH_TIMEZONE,
+} from '../common/business-date';
 import { PrismaService } from '../database/prisma.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { IdentityContextService } from '../identity/identity-context.service';
@@ -226,7 +231,7 @@ export class RoomsService {
       include: {
         hotelRoom: true,
         entitlements: {
-          where: { businessDate: startOfLocalDay() },
+          where: { businessDate: businessDateUtc() },
         },
       },
       orderBy: { checkInAt: 'desc' },
@@ -295,6 +300,7 @@ export class RoomsService {
           status: 'IN_HOUSE',
           checkInAt,
           plannedCheckOutAt,
+          guestIdImageUrl: dto.guestIdImageUrl?.trim() || null,
           checkedInByMembershipId: context.staffMembershipId!,
         },
       });
@@ -684,7 +690,7 @@ export class RoomsService {
         branchId: context.branchId!,
         hotelRoomId: stay.hotelRoomId,
         roomStayId: stay.id,
-        businessDate: startOfLocalDay(),
+        businessDate: businessDateUtc(),
         primaryWaiterMembershipId: context.staffMembershipId,
         primaryWaiterShiftSessionId: context.shiftSessionId,
         guestCount: dto.guestCount ?? stay.adults + stay.kids,
@@ -764,7 +770,7 @@ export class RoomsService {
       );
     }
     const qty = dto.quantity ?? 1;
-    const today = startOfLocalDay();
+    const today = businessDateUtc();
     const entitlement = await this.prisma.stayMealEntitlement.findFirst({
       where: {
         roomStayId: dto.roomStayId,
@@ -931,6 +937,7 @@ export class RoomsService {
       checkInAt: row.checkInAt,
       plannedCheckOutAt: row.plannedCheckOutAt,
       checkedOutAt: row.checkedOutAt,
+      guestIdImageUrl: (row as Record<string, unknown>).guestIdImageUrl as string | null ?? null,
       entitlements: (row.entitlements ?? []).map((e) => ({
         id: e.id,
         mealType: e.mealType,
@@ -943,17 +950,18 @@ export class RoomsService {
   }
 }
 
-function startOfLocalDay(date = new Date()): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+function startOfLocalDay(
+  date = new Date(),
+  timeZone = DEFAULT_BRANCH_TIMEZONE,
+): Date {
+  return businessDateUtc(date, timeZone);
 }
 
-function localYmd(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+function localYmd(date: Date, timeZone = DEFAULT_BRANCH_TIMEZONE): string {
+  if (date instanceof Date && !isNaN(date.getTime())) {
+    return date.toISOString().slice(0, 10);
+  }
+  return calendarYmd(new Date(), timeZone);
 }
 
 function parseCheckout(raw: string): Date {

@@ -58,6 +58,8 @@ import { CaslModule } from './casl/casl.module';
 import { OutsideOrdersModule } from './outside-orders/outside-orders.module';
 import { FinanceModule } from './finance/finance.module';
 import { BiometricsModule } from './biometrics/biometrics.module';
+import { AiModule } from './ai/ai.module';
+import { BackupModule } from './backup/backup.module';
 
 @Module({
   imports: [
@@ -167,6 +169,8 @@ import { BiometricsModule } from './biometrics/biometrics.module';
     OutsideOrdersModule,
     FinanceModule,
     BiometricsModule,
+    AiModule,
+    BackupModule,
   ],
   providers: [
     {

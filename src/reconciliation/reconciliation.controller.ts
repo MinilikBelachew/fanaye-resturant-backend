@@ -8,6 +8,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -41,8 +42,12 @@ export class CashierReconciliationController {
 
   @Get('reconciliation/preview')
   @ApiOkResponse({ type: ReconciliationPreviewResponseDto })
-  preview(@Request() request): Promise<ReconciliationPreviewResponseDto> {
-    return this.reconciliation.preview(String(request.user.id));
+  preview(
+    @Request() request,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<ReconciliationPreviewResponseDto> {
+    return this.reconciliation.preview(String(request.user.id), from, to);
   }
 
   @Post('reconciliations')

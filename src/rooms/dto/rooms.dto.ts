@@ -126,6 +126,12 @@ export class CheckInRoomStayDto {
   })
   @IsString()
   plannedCheckOutAt: string;
+
+  @ApiPropertyOptional({ description: 'URL of uploaded guest ID image' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  guestIdImageUrl?: string;
 }
 
 export class OpenRoomSessionDto {

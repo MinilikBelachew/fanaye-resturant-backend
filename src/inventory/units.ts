@@ -63,15 +63,17 @@ export async function toBaseQty(
   if (fromUnit == null || fromUnit === '') return qty;
   if (fromUnit === baseUnit) return qty;
 
+  // Direct: 1 fromUnit = factor baseUnit (e.g. 1 crate = 24 bottle, converting crate -> bottle: multiply)
   const direct = await db.inventoryUnitConversion.findFirst({
     where: { tenantId, fromUnit, toUnit: baseUnit, status: 'ACTIVE' },
   });
-  if (direct) return qty / Number(direct.factor);
+  if (direct) return qty * Number(direct.factor);
 
+  // Reverse: 1 baseUnit = factor fromUnit (e.g. 1 crate = 24 bottle, converting bottle -> crate: divide)
   const reverse = await db.inventoryUnitConversion.findFirst({
     where: { tenantId, fromUnit: baseUnit, toUnit: fromUnit, status: 'ACTIVE' },
   });
-  if (reverse) return qty * Number(reverse.factor);
+  if (reverse && Number(reverse.factor) !== 0) return qty / Number(reverse.factor);
 
   const builtIn = builtInFactor(fromUnit, baseUnit);
   if (builtIn != null) return qty * builtIn;

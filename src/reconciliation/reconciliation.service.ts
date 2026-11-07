@@ -32,7 +32,11 @@ export class ReconciliationService {
     private readonly casl: CaslService,
   ) {}
 
-  async preview(userId: string): Promise<ReconciliationPreviewResponseDto> {
+  async preview(
+    userId: string,
+    fromDate?: string,
+    toDate?: string,
+  ): Promise<ReconciliationPreviewResponseDto> {
     const context = await this.requireCashierOnShift(userId);
     let session = await this.ensureOpenSession(context);
     const totals = await this.computeExpected(
@@ -65,6 +69,14 @@ export class ReconciliationService {
       ['OPEN', 'RECONCILIATION_PENDING'].includes(session.status),
     );
 
+    const bills = await this.computeBillsBreakdown(
+      context.staffMembershipId!,
+      context.branchId!,
+      session.businessDate,
+      fromDate,
+      toDate,
+    );
+
     return {
       data: {
         cashierFinancialSessionId: session.id,
@@ -76,15 +88,17 @@ export class ReconciliationService {
         currencyCode: session.currencyCode,
         existingReconciliationId: existing?.id ?? null,
         existingStatus: existing?.status ?? null,
-        existingCountedCash: existing
-          ? money(existing.countedCashAmount)
-          : null,
+        existingCountedCash: existing ? money(existing.countedCashAmount) : null,
         existingVariance: existing ? money(existing.varianceAmount) : null,
-        existingExpectedCash: existing
-          ? money(existing.expectedCashAmount)
-          : null,
+        existingExpectedCash: existing ? money(existing.expectedCashAmount) : null,
         sessionStatus: session.status,
         needsResubmit,
+        billsCount: bills.billsCount,
+        billsTotalCash: money(bills.billsTotalCash),
+        billsTotalDigital: money(bills.billsTotalDigital),
+        billsGrandTotal: money(bills.billsGrandTotal),
+        digitalVerified: money(bills.digitalVerified),
+        digitalPending: money(bills.digitalPending),
       },
     };
   }
@@ -362,6 +376,94 @@ export class ReconciliationService {
       otherInflows,
       otherOutflows,
       expectedCash,
+    };
+  }
+
+  private async computeBillsBreakdown(
+    cashierMembershipId: string,
+    branchId: string,
+    sessionBusinessDate: Date,
+    fromDate?: string,
+    toDate?: string,
+  ) {
+    const startDate = fromDate
+      ? new Date(`${fromDate}T00:00:00.000Z`)
+      : sessionBusinessDate;
+    const endDate = toDate
+      ? new Date(`${toDate}T23:59:59.999Z`)
+      : new Date(sessionBusinessDate.getTime() + 86400000 - 1);
+
+    // Bills relevant to this cashier / branch in the date window
+    const bills = await this.prisma.bill.findMany({
+      where: {
+        branchId,
+        generatedAt: { gte: startDate, lte: endDate },
+        status: { not: 'VOID' },
+        OR: [
+          { generatedByMembershipId: cashierMembershipId },
+          { closedByMembershipId: cashierMembershipId },
+          {
+            payments: {
+              some: { collectorMembershipId: cashierMembershipId },
+            },
+          },
+        ],
+      },
+      include: {
+        payments: {
+          where: {
+            status: {
+              in: [
+                'COLLECTED',
+                'VERIFIED',
+                'APPROVED',
+                'SETTLED',
+                'PENDING',
+                'VERIFICATION_PENDING',
+                'SUBMITTED',
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    let cashTotal = new Prisma.Decimal(0);
+    let digitalVerified = new Prisma.Decimal(0);
+    let digitalPending = new Prisma.Decimal(0);
+
+    for (const bill of bills) {
+      for (const payment of bill.payments) {
+        const amount = new Prisma.Decimal(payment.amount ?? 0);
+        if (payment.method === 'CASH') {
+          if (['COLLECTED', 'SETTLED', 'APPROVED'].includes(payment.status)) {
+            cashTotal = cashTotal.plus(amount);
+          }
+        } else {
+          // TRANSFER / TELEBIRR / CARD etc.
+          const isVerified = [
+            'SETTLED',
+            'VERIFIED',
+            'APPROVED',
+          ].includes(payment.status);
+          if (isVerified) {
+            digitalVerified = digitalVerified.plus(amount);
+          } else {
+            digitalPending = digitalPending.plus(amount);
+          }
+        }
+      }
+    }
+
+    const grandTotal = cashTotal.plus(digitalVerified).plus(digitalPending);
+
+    return {
+      billsCount: bills.length,
+      billsTotalCash: cashTotal,
+      billsTotalDigital: digitalVerified.plus(digitalPending),
+      billsGrandTotal: grandTotal,
+      digitalVerified,
+      digitalPending,
     };
   }
 

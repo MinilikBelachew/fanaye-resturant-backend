@@ -32,6 +32,7 @@ import {
   BillRequestCreatedDto,
   CashierBillRequestDto,
   CashierBillRequestsResponseDto,
+  CashierActiveBillsResponseDto,
   CashPaymentResponseDto,
   PaymentDto,
   PublicReceiptDto,
@@ -504,6 +505,81 @@ export class BillingService {
     return { data };
   }
 
+  async listCashierActiveBills(
+    userId: string,
+  ): Promise<CashierActiveBillsResponseDto> {
+    const context = await this.requireBranch(userId);
+    this.casl.assertCan(
+      context,
+      'read',
+      'BillQueue',
+      'Bill queue is for cashiers.',
+    );
+
+    const bills = await this.prisma.bill.findMany({
+      where: {
+        branchId: context.branchId!,
+        status: { in: ['GENERATED', 'PAYMENT_PENDING'] },
+      },
+      include: {
+        tenant: {
+          include: {
+            entitlements: {
+              where: { entitlementKey: 'TENANT_PROFILE' },
+            },
+          },
+        },
+        branch: true,
+        generatedBy: { include: { user: true } },
+        tableSession: {
+          include: {
+            table: true,
+            primaryWaiter: { include: { user: true } },
+          },
+        },
+        roomSession: {
+          include: {
+            hotelRoom: true,
+            primaryWaiter: { include: { user: true } },
+          },
+        },
+        lines: {
+          where: { chargeStatus: { not: 'CANCELLED_NO_CHARGE' } },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+      orderBy: { generatedAt: 'desc' },
+      take: 100,
+    });
+
+    return {
+      data: bills.map((bill) => {
+        const table = bill.tableSession?.table;
+        const room = bill.roomSession?.hotelRoom;
+        const waiter =
+          bill.tableSession?.primaryWaiter?.employeeDisplayName ??
+          bill.tableSession?.primaryWaiter?.user?.displayName ??
+          bill.roomSession?.primaryWaiter?.employeeDisplayName ??
+          bill.roomSession?.primaryWaiter?.user?.displayName ??
+          'Server';
+
+        const tableDisplayName = table
+          ? (table.displayNumber ?? table.displayName.replace(/^Table\s+/i, ''))
+          : room
+            ? ('Room ' + room.roomNumber)
+            : 'Counter';
+
+        return {
+          ...toBillDto(bill),
+          tableDisplayName,
+          waiterName: waiter,
+          tableSessionVersion:
+            bill.tableSession?.version ?? bill.roomSession?.version ?? 1,
+        };
+      }),
+    };
+  }
+
   async createCounterSale(
     userId: string,
     dto: CounterSaleDto,
@@ -686,6 +762,7 @@ export class BillingService {
             },
           },
           branch: true,
+          generatedBy: { include: { user: true } },
         },
       });
 
@@ -838,7 +915,7 @@ export class BillingService {
     const billNumber = `${prefix}-${day}-${String(sequence + 1).padStart(4, '0')}`;
 
     const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       let subtotal = new Prisma.Decimal(0);
       const lineData = items.map((item, sortOrder) => {
         const total = lineTotal(item);
@@ -887,6 +964,7 @@ export class BillingService {
             },
           },
           branch: true,
+          generatedBy: { include: { user: true } },
         },
       });
 
@@ -926,6 +1004,8 @@ export class BillingService {
       );
       return payload;
     });
+
+    return result;
   }
 
   async getSessionBill(
@@ -945,6 +1025,7 @@ export class BillingService {
               },
             },
             branch: true,
+            generatedBy: { include: { user: true } },
           },
         },
         billRequests: {
@@ -1040,6 +1121,7 @@ export class BillingService {
           },
         },
         branch: true,
+        generatedBy: { include: { user: true } },
         tableSession: {
           include: { table: { include: { location: true } } },
         },
@@ -1250,7 +1332,7 @@ export class BillingService {
     const change = tendered.minus(amount);
     const now = new Date();
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const applied = await this.applyPartialBillPayment(
         tx,
         bill,
@@ -1318,6 +1400,19 @@ export class BillingService {
       );
       return payload;
     });
+
+    await this.opsNotify.notifyCashiers({
+      type: OpsEventType.PAYMENT_SETTLED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'INFO',
+      title: 'Payment settled',
+      body: `Cash payment of ETB ${result.payment.amount} settled.`,
+      relatedEntityType: 'Payment',
+      relatedEntityId: result.payment.paymentId,
+    }).catch(() => {});
+
+    return result;
   }
 
   async payTransfer(
@@ -1539,7 +1634,7 @@ export class BillingService {
     }
 
     const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const applied = await this.applyPartialBillPayment(
         tx,
         bill,
@@ -1675,6 +1770,19 @@ export class BillingService {
 
       return payload;
     });
+
+    await this.opsNotify.notifyCashiers({
+      type: OpsEventType.PAYMENT_SETTLED,
+      tenantId: context.tenantId!,
+      branchId: context.branchId!,
+      severity: 'INFO',
+      title: 'Payment settled',
+      body: `Transfer payment of ETB ${result.payment.amount} settled.`,
+      relatedEntityType: 'Payment',
+      relatedEntityId: result.payment.paymentId,
+    }).catch(() => {});
+
+    return result;
   }
 
   async listPayments(
@@ -1710,7 +1818,7 @@ export class BillingService {
         ? {
             businessDate: {
               gte: new Date(`${fromYmd}T00:00:00.000Z`),
-              lte: new Date(`${toYmd}T00:00:00.000Z`),
+              lte: new Date(`${toYmd}T23:59:59.999Z`),
             },
           }
         : {};
@@ -2249,6 +2357,10 @@ function toBillDto(
       entitlements?: Array<{ entitlementKey: string; valueJson: unknown }>;
     } | null;
     branch?: { name: string } | null;
+    generatedBy?: {
+      employeeDisplayName?: string;
+      user?: { displayName?: string };
+    } | null;
     lines: Array<{
       id: string;
       orderItemId: string | null;
@@ -2278,6 +2390,7 @@ function toBillDto(
     branchName: bill.branch?.name,
     address: profile.address ?? null,
     phone: profile.contactPhone ?? null,
+    cashierName: bill.generatedBy?.employeeDisplayName || bill.generatedBy?.user?.displayName || null,
     subtotal: money(bill.subtotalAmount),
     total: money(bill.totalAmount),
     amountPaid: money(bill.amountPaid),

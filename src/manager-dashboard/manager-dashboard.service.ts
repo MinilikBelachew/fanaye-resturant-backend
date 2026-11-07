@@ -4,6 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { CaslService } from '../casl/casl.service';
+import {
+  businessDateUtc,
+  calendarYmd,
+  DEFAULT_BRANCH_TIMEZONE,
+} from '../common/business-date';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import {
@@ -40,26 +45,32 @@ const READY_STALE_MS = 5 * 60 * 1000;
 export type BranchRevenuePeriod = 'month' | 'quarter' | 'year';
 
 /** Local calendar day — matches floor/shifts businessDate storage. */
-function startOfLocalDay(date = new Date()): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+function startOfLocalDay(
+  date = new Date(),
+  timeZone = DEFAULT_BRANCH_TIMEZONE,
+): Date {
+  return businessDateUtc(date, timeZone);
 }
 
-function localYmd(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+function localYmd(date: Date, timeZone = DEFAULT_BRANCH_TIMEZONE): string {
+  if (date instanceof Date && !isNaN(date.getTime())) {
+    return date.toISOString().slice(0, 10);
+  }
+  return calendarYmd(new Date(), timeZone);
 }
 
-function parseBusinessDate(raw?: string): Date {
-  if (!raw) return startOfLocalDay();
-  const [y, m, d] = raw.split('-').map(Number);
-  if (!y || !m || !d) return startOfLocalDay();
-  const date = new Date(y, m - 1, d);
-  date.setHours(0, 0, 0, 0);
-  return date;
+function parseBusinessDate(
+  raw?: string,
+  timeZone = DEFAULT_BRANCH_TIMEZONE,
+): Date {
+  if (!raw) return businessDateUtc(new Date(), timeZone);
+  const trimmed = raw.trim();
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(trimmed);
+  if (!match) return businessDateUtc(new Date(), timeZone);
+  const y = match[1];
+  const m = match[2].padStart(2, '0');
+  const d = match[3].padStart(2, '0');
+  return new Date(`${y}-${m}-${d}T00:00:00.000Z`);
 }
 
 function formatK(val: number): string {
@@ -141,8 +152,8 @@ export type DashboardPeriod =
   | 'custom';
 
 function addLocalDays(date: Date, days: number): Date {
-  const d = startOfLocalDay(date);
-  d.setDate(d.getDate() + days);
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
   return d;
 }
 
@@ -158,7 +169,7 @@ function resolveDashboardRange(
   periodLabel: string;
   isSingleDay: boolean;
 } {
-  const today = startOfLocalDay();
+  const today = businessDateUtc();
   const anchor = businessDateRaw ? parseBusinessDate(businessDateRaw) : today;
   const period = (periodRaw || 'today').toLowerCase() as DashboardPeriod;
 
@@ -238,11 +249,11 @@ function resolveDashboardRange(
 
 function eachLocalDay(from: Date, to: Date): Date[] {
   const days: Date[] = [];
-  let cursor = startOfLocalDay(from);
-  const end = startOfLocalDay(to);
-  while (cursor <= end) {
+  const cursor = new Date(from);
+  const end = new Date(to);
+  while (cursor.getTime() <= end.getTime()) {
     days.push(new Date(cursor));
-    cursor = addLocalDays(cursor, 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
     if (days.length > 400) break;
   }
   return days;
@@ -387,7 +398,6 @@ export class ManagerDashboardService {
       this.prisma.tableSession.findMany({
         where: {
           branchId: bid,
-          businessDate: liveDate,
           status: { not: 'CLOSED' },
         },
         select: { id: true, tableId: true },
@@ -701,10 +711,27 @@ export class ManagerDashboardService {
       }
     }
 
+    let orderedTotal = 0;
+    for (const item of periodOrderItems) {
+      if (item.state !== 'CANCELLED' && !item.cancelledAt) {
+        orderedTotal +=
+          Number(item.unitPriceSnapshot || 0) * Math.max(1, item.quantity);
+      }
+    }
+
     const totalCollections = cashSales + verifiedTransferSales;
     const billedTotal =
-      periodNetRevenue > 0 ? periodNetRevenue : periodPaidOnBills;
-    const finalRevenue = billedTotal > 0 ? billedTotal : totalCollections;
+      periodNetRevenue > 0
+        ? periodNetRevenue
+        : periodPaidOnBills > 0
+          ? periodPaidOnBills
+          : orderedTotal;
+    const finalRevenue =
+      billedTotal > 0
+        ? billedTotal
+        : totalCollections > 0
+          ? totalCollections
+          : orderedTotal;
     const collectionGap = Math.max(0, billedTotal - totalCollections);
 
     const priorCollections = priorPayments
@@ -1407,14 +1434,28 @@ export class ManagerDashboardService {
           return ymd >= localYmd(start) && ymd <= localYmd(end);
         };
         const dayBills = periodBills.filter((b) => inWeek(b.businessDate));
-        const dayGross = dayBills.reduce(
-          (acc, b) => acc + Number(b.subtotalAmount ?? b.totalAmount),
-          0,
-        );
-        const dayNet = dayBills.reduce(
-          (acc, b) => acc + Number(b.totalAmount),
-          0,
-        );
+        const dayOrderRev = periodOrderItems
+          .filter((item) => {
+            if (item.state === 'CANCELLED' || item.cancelledAt) return false;
+            return inWeek(item.businessDate);
+          })
+          .reduce(
+            (sum, item) =>
+              sum +
+              Number(item.unitPriceSnapshot || 0) * Math.max(1, item.quantity),
+            0,
+          );
+        const dayGross =
+          dayBills.length > 0
+            ? dayBills.reduce(
+                (acc, b) => acc + Number(b.subtotalAmount ?? b.totalAmount),
+                0,
+              )
+            : dayOrderRev;
+        const dayNet =
+          dayBills.length > 0
+            ? dayBills.reduce((acc, b) => acc + Number(b.totalAmount), 0)
+            : dayOrderRev;
         const dayPayments = periodPayments.filter(
           (p) => inWeek(p.businessDate) && countsAsCollection(p),
         );
@@ -1555,6 +1596,20 @@ export class ManagerDashboardService {
         const slot = hourlyMap.get(h)!;
         slot.billed += Number(b.totalAmount);
       }
+      if (periodBills.length === 0 && periodOrderItems.length > 0) {
+        for (const item of periodOrderItems) {
+          if (item.state === 'CANCELLED' || item.cancelledAt) continue;
+          const when = item.confirmedAt ?? item.queuedAt ?? item.createdAt;
+          if (when) {
+            const h = hourInTimezone(new Date(when), branchTimezone);
+            const slot = hourlyMap.get(h);
+            if (slot) {
+              slot.billed +=
+                Number(item.unitPriceSnapshot || 0) * Math.max(1, item.quantity);
+            }
+          }
+        }
+      }
       for (const p of periodPayments) {
         if (!countsAsCollection(p)) continue;
         const when =
@@ -1580,8 +1635,18 @@ export class ManagerDashboardService {
       }
     }
 
-    // Live station ticket states (current open work — not completed volume)
+    // Live station ticket states (all active stations in branch)
     const stationMap = new Map<string, StationThroughputPointDto>();
+    for (const station of prepStations) {
+      stationMap.set(station.name, {
+        station: station.name,
+        queued: 0,
+        inPrep: 0,
+        ready: 0,
+        served: 0,
+        cancelled: 0,
+      });
+    }
     for (const item of liveOrderItems) {
       const station =
         item.currentStation?.name || item.stationNameSnapshot || 'Station';
@@ -1595,16 +1660,17 @@ export class ManagerDashboardService {
           served: 0,
           cancelled: 0,
         } satisfies StationThroughputPointDto);
+      const qty = item.quantity || 1;
       if (item.state === 'CANCELLED' || item.cancelledAt) {
-        row.cancelled += 1;
+        row.cancelled += qty;
       } else if (['QUEUED', 'ACKNOWLEDGED'].includes(item.state)) {
-        row.queued += 1;
+        row.queued += qty;
       } else if (item.state === 'IN_PREPARATION') {
-        row.inPrep += 1;
+        row.inPrep += qty;
       } else if (item.state === 'READY') {
-        row.ready += 1;
+        row.ready += qty;
       } else if (item.state === 'SERVED' || item.servedAt) {
-        row.served += 1;
+        row.served += qty;
       }
       stationMap.set(station, row);
     }

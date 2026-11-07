@@ -1,3 +1,4 @@
+import { CashCustodyOverviewResponseDto } from './dto/cash-custody-overview.dto';
 import {
   ConflictException,
   ForbiddenException,
@@ -804,6 +805,318 @@ export class CashCustodyService {
       });
     }
     return row.responseBodyJson;
+  }
+
+  async getCashCustodyOverview(
+    userId: string,
+    targetBranchId?: string,
+    dateFilter?: string,
+    fromDate?: string,
+    toDate?: string,
+  ): Promise<CashCustodyOverviewResponseDto> {
+    const context = await this.identity.getByUserId(userId);
+    if (!context.tenantId) {
+      throw new ForbiddenException('Tenant required.');
+    }
+
+    const isOwner =
+      context.roleCode === 'OWNER_ADMIN' ||
+      context.roleCode === 'STORE_MANAGER';
+
+    if (!isOwner && context.roleCode !== 'MANAGER') {
+      throw new ForbiddenException(
+        'Manager or Owner access required for cash custody overview.',
+      );
+    }
+
+    const allBranches = await this.prisma.branch.findMany({
+      where: { tenantId: context.tenantId, status: 'ACTIVE' },
+      select: { id: true, name: true, displayCode: true },
+      orderBy: { name: 'asc' },
+    });
+
+    let activeBranchIds: string[] = [];
+    let currentBranchId: string | null = null;
+
+    if (isOwner) {
+      if (targetBranchId && targetBranchId !== 'ALL') {
+        const found = allBranches.find((b) => b.id === targetBranchId);
+        if (found) {
+          activeBranchIds = [found.id];
+          currentBranchId = found.id;
+        } else {
+          activeBranchIds = allBranches.map((b) => b.id);
+          currentBranchId = null;
+        }
+      } else {
+        activeBranchIds = allBranches.map((b) => b.id);
+        currentBranchId = null;
+      }
+    } else {
+      const mgrBranchId = context.branchId || allBranches[0]?.id;
+      if (mgrBranchId) {
+        activeBranchIds = [mgrBranchId];
+        currentBranchId = mgrBranchId;
+      } else {
+        activeBranchIds = [];
+      }
+    }
+
+    if (activeBranchIds.length === 0) {
+      return {
+        summary: {
+          totalWaiterUndropped: '0.00',
+          totalCashierDrawer: '0.00',
+          totalDroppedToday: '0.00',
+          activeDisputesCount: 0,
+          activeWaitersCount: 0,
+          activeCashiersCount: 0,
+        },
+        waiters: [],
+        cashiers: [],
+        recentDrops: [],
+        branches: allBranches.map((b) => ({
+          id: b.id,
+          name: b.name,
+          displayCode: b.displayCode,
+        })),
+        currentBranchId,
+        isOwner,
+      };
+    }
+
+    // 1. Find all active/open waiter shifts
+    const openWaiterShifts = await this.prisma.shiftSession.findMany({
+      where: {
+        branchId: { in: activeBranchIds },
+        state: 'OPEN',
+        membership: {
+          roleAssignments: {
+            some: {
+              role: { code: 'WAITER' },
+              status: 'ACTIVE',
+            },
+          },
+        },
+      },
+      include: {
+        membership: {
+          include: {
+            user: {
+              include: { photo: { select: { path: true } } },
+            },
+          },
+        },
+        branch: { select: { id: true, name: true } },
+      },
+      orderBy: { clockInAt: 'desc' },
+    });
+
+    const waitersList = await Promise.all(
+      openWaiterShifts.map(async (shift) => {
+        const summary = await this.summaryForShift(
+          shift.branchId,
+          shift.staffMembershipId,
+          shift.id,
+        );
+        const undroppedNum = parseFloat(summary.undroppedCash);
+        let riskLevel: 'NORMAL' | 'ELEVATED' | 'CRITICAL' = 'NORMAL';
+        if (undroppedNum >= 5000) {
+          riskLevel = 'CRITICAL';
+        } else if (undroppedNum >= 2000) {
+          riskLevel = 'ELEVATED';
+        }
+
+        return {
+          membershipId: shift.staffMembershipId,
+          waiterName: shift.membership.employeeDisplayName,
+          photoUrl: shift.membership.user?.photo?.path ?? null,
+          branchId: shift.branchId,
+          branchName: shift.branch.name,
+          shiftSessionId: shift.id,
+          clockInAt: shift.clockInAt.toISOString(),
+          cashCollected: summary.cashCollected,
+          cashDropped: summary.cashDropped,
+          pendingDropAmount: summary.pendingCashDropAmount,
+          undroppedCash: summary.undroppedCash,
+          riskLevel,
+        };
+      }),
+    );
+
+    // 2. Find active cashiers & drawers
+    const openCashierShifts = await this.prisma.shiftSession.findMany({
+      where: {
+        branchId: { in: activeBranchIds },
+        state: 'OPEN',
+        membership: {
+          roleAssignments: {
+            some: {
+              role: { code: 'CASHIER' },
+              status: 'ACTIVE',
+            },
+          },
+        },
+      },
+      include: {
+        membership: true,
+        branch: { select: { id: true, name: true } },
+        cashierSession: {
+          include: {
+            cashDrops: {
+              where: { status: 'RECEIVED' },
+            },
+          },
+        },
+        payments: {
+          where: {
+            method: 'CASH',
+            status: 'SETTLED',
+          },
+        },
+      },
+      orderBy: { clockInAt: 'desc' },
+    });
+
+    const cashiersList = openCashierShifts.map((shift) => {
+      const session = shift.cashierSession;
+      const openingFloat = session
+        ? session.openingFloatAmount
+        : new Prisma.Decimal(0);
+
+      const dropsReceived = (session?.cashDrops ?? []).reduce(
+        (sum, d) => sum.plus(d.resolutionAmount ?? d.countedAmount ?? 0),
+        new Prisma.Decimal(0),
+      );
+
+      const directCashSales = (shift.payments ?? []).reduce(
+        (sum, p) => sum.plus(p.amount),
+        new Prisma.Decimal(0),
+      );
+
+      const expectedDrawerCash = openingFloat
+        .plus(dropsReceived)
+        .plus(directCashSales);
+
+      return {
+        sessionId: session?.id ?? shift.id,
+        cashierName: shift.membership.employeeDisplayName,
+        branchId: shift.branchId,
+        branchName: shift.branch.name,
+        openedAt: session?.openedAt?.toISOString() ?? shift.clockInAt.toISOString(),
+        openingFloat: money(openingFloat),
+        dropsReceived: money(dropsReceived),
+        directCashSales: money(directCashSales),
+        expectedDrawerCash: money(expectedDrawerCash),
+      };
+    });
+
+    // 3. Date window for cash drops stream
+    const df = (dateFilter || 'TODAY').trim().toUpperCase();
+    const todayYmd = calendarYmd();
+    let fromYmd: string = todayYmd;
+    let toYmd: string = todayYmd;
+    if (fromDate && toDate) {
+      fromYmd = fromDate;
+      toYmd = toDate;
+    } else if (fromDate && !toDate) {
+      fromYmd = fromDate;
+      toYmd = fromDate;
+    } else if (df.startsWith('CUSTOM:') || (df.includes(':') && df.length > 10)) {
+      const parts = df.replace('CUSTOM:', '').split(':');
+      fromYmd = parts[0] || todayYmd;
+      toYmd = parts[1] || fromYmd || todayYmd;
+    } else if (df === 'YESTERDAY') {
+      fromYmd = addCalendarDays(todayYmd, -1);
+      toYmd = fromYmd;
+    } else if (df === 'LAST_7_DAYS' || df === 'WEEK') {
+      fromYmd = addCalendarDays(todayYmd, -6);
+      toYmd = todayYmd;
+    } else if (df === 'ALL') {
+      fromYmd = '2000-01-01';
+      toYmd = '2099-12-31';
+    }
+
+    const fromRange = localDayRange(fromYmd);
+    const toRange = localDayRange(toYmd);
+
+    const drops = await this.prisma.cashDrop.findMany({
+      where: {
+        branchId: { in: activeBranchIds },
+        initiatedAt: {
+          gte: fromRange.start,
+          lte: toRange.end,
+        },
+      },
+      include: {
+        waiter: { select: { employeeDisplayName: true } },
+        receivedBy: { select: { employeeDisplayName: true } },
+        dispute: true,
+        branch: { select: { id: true, name: true } },
+      },
+      orderBy: { initiatedAt: 'desc' },
+      take: 100,
+    });
+
+    const recentDrops = drops.map((drop) => ({
+      id: drop.id,
+      branchId: drop.branchId,
+      branchName: drop.branch.name,
+      waiterName: drop.waiter?.employeeDisplayName ?? 'Unknown Waiter',
+      cashierName: drop.receivedBy?.employeeDisplayName ?? null,
+      declaredAmount: money(drop.declaredAmount),
+      countedAmount: drop.countedAmount ? money(drop.countedAmount) : null,
+      variance: drop.dispute ? money(drop.dispute.variance) : null,
+      status: drop.status,
+      initiatedAt: drop.initiatedAt.toISOString(),
+      receivedAt: drop.receivedAt?.toISOString() ?? null,
+      disputeId: drop.dispute?.id ?? null,
+      disputeStatus: drop.dispute?.status ?? null,
+      disputeReason: drop.dispute?.cashierComment || drop.dispute?.waiterComment || null,
+    }));
+
+    // 4. Calculate summary totals
+    const totalWaiterUndropped = waitersList.reduce(
+      (sum, w) => sum.plus(new Prisma.Decimal(w.undroppedCash)),
+      new Prisma.Decimal(0),
+    );
+
+    const totalCashierDrawer = cashiersList.reduce(
+      (sum, c) => sum.plus(new Prisma.Decimal(c.expectedDrawerCash)),
+      new Prisma.Decimal(0),
+    );
+
+    const totalDroppedToday = drops
+      .filter((d) => d.status === 'RECEIVED')
+      .reduce(
+        (sum, d) => sum.plus(d.resolutionAmount ?? d.countedAmount ?? 0),
+        new Prisma.Decimal(0),
+      );
+
+    const activeDisputesCount = drops.filter(
+      (d) => d.status === 'DISPUTED' || d.dispute?.status === 'OPEN',
+    ).length;
+
+    return {
+      summary: {
+        totalWaiterUndropped: money(totalWaiterUndropped),
+        totalCashierDrawer: money(totalCashierDrawer),
+        totalDroppedToday: money(totalDroppedToday),
+        activeDisputesCount,
+        activeWaitersCount: waitersList.length,
+        activeCashiersCount: cashiersList.length,
+      },
+      waiters: waitersList,
+      cashiers: cashiersList,
+      recentDrops,
+      branches: allBranches.map((b) => ({
+        id: b.id,
+        name: b.name,
+        displayCode: b.displayCode,
+      })),
+      currentBranchId,
+      isOwner,
+    };
   }
 
   private async storeIdempotent(

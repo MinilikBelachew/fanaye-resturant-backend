@@ -7,6 +7,11 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { CaslService } from '../casl/casl.service';
+import {
+  businessDateUtc,
+  calendarYmd,
+  DEFAULT_BRANCH_TIMEZONE,
+} from '../common/business-date';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
@@ -606,7 +611,7 @@ export class StationsService {
           quantity: item.quantity,
           state: item.state,
           tableDisplayName,
-          waiterName: item.order.createdBy.employeeDisplayName ?? null,
+          waiterName: item.order?.createdBy?.employeeDisplayName ?? null,
           specialInstruction: item.specialInstruction,
           businessDate: localYmd(item.businessDate),
           confirmedAt: item.confirmedAt,
@@ -1458,31 +1463,37 @@ function slugify(text: string): string {
     .replace(/--+/g, '-');
 }
 
-function startOfLocalDay(date = new Date()): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+function startOfLocalDay(
+  date = new Date(),
+  timeZone = DEFAULT_BRANCH_TIMEZONE,
+): Date {
+  return businessDateUtc(date, timeZone);
 }
 
-function localYmd(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+function localYmd(date: Date, timeZone = DEFAULT_BRANCH_TIMEZONE): string {
+  if (date instanceof Date && !isNaN(date.getTime())) {
+    return date.toISOString().slice(0, 10);
+  }
+  return calendarYmd(new Date(), timeZone);
 }
 
-function parseBusinessDate(raw?: string): Date {
-  if (!raw) return startOfLocalDay();
-  const [y, m, d] = raw.split('-').map(Number);
-  if (!y || !m || !d) return startOfLocalDay();
-  const date = new Date(y, m - 1, d);
-  date.setHours(0, 0, 0, 0);
-  return date;
+function parseBusinessDate(
+  raw?: string,
+  timeZone = DEFAULT_BRANCH_TIMEZONE,
+): Date {
+  if (!raw) return businessDateUtc(new Date(), timeZone);
+  const trimmed = raw.trim();
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(trimmed);
+  if (!match) return businessDateUtc(new Date(), timeZone);
+  const y = match[1];
+  const m = match[2].padStart(2, '0');
+  const d = match[3].padStart(2, '0');
+  return new Date(`${y}-${m}-${d}T00:00:00.000Z`);
 }
 
 function addLocalDays(date: Date, days: number): Date {
-  const d = startOfLocalDay(date);
-  d.setDate(d.getDate() + days);
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
   return d;
 }
 
@@ -1496,7 +1507,7 @@ function resolveHistoryRange(
   rangeEnd: Date;
   periodLabel: string;
 } {
-  const today = startOfLocalDay();
+  const today = businessDateUtc();
   const period = (periodRaw || 'today').toLowerCase();
 
   if (period === 'custom' && fromRaw && toRaw) {

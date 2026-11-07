@@ -1355,6 +1355,7 @@ model RoomStay {
   mealPlan                 String    @default("NONE") @map("meal_plan") @db.VarChar(24)
   /// IN_HOUSE | CHECKED_OUT | CANCELLED
   status                   String    @default("IN_HOUSE") @db.VarChar(24)
+  guestIdImageUrl          String?   @map("guest_id_image_url") @db.VarChar(500)
   checkInAt                DateTime  @map("check_in_at") @db.Timestamptz(6)
   plannedCheckOutAt        DateTime  @map("planned_check_out_at") @db.Timestamptz(6)
   checkedOutAt             DateTime? @map("checked_out_at") @db.Timestamptz(6)

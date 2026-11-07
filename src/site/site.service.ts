@@ -43,6 +43,11 @@ type ProfileJson = {
   facebook?: string;
   tiktok?: string;
   telegram?: string;
+  featureInventory?: boolean;
+  featureCentralWarehouse?: boolean;
+  featureTelegramBackup?: boolean;
+  featureAiAdvisor?: boolean;
+  featureOutsideOrders?: boolean;
 };
 
 @Injectable()
@@ -271,6 +276,11 @@ export class SiteService {
       calendarPreference: calendarPreference ?? 'ETHIOPIAN',
       autoApproveSupplyRequests: settings?.autoApproveSupplyRequests ?? false,
       requireDriverForDispatch: settings?.requireDriverForDispatch ?? false,
+      featureInventory: profile?.featureInventory !== false,
+      featureCentralWarehouse: profile?.featureCentralWarehouse !== false,
+      featureTelegramBackup: profile?.featureTelegramBackup !== false,
+      featureAiAdvisor: profile?.featureAiAdvisor !== false,
+      featureOutsideOrders: profile?.featureOutsideOrders !== false,
     };
   }
 
@@ -447,6 +457,53 @@ export class SiteService {
           : {}),
       },
     });
+
+    const hasFeatureUpdates =
+      dto.featureInventory !== undefined ||
+      dto.featureCentralWarehouse !== undefined ||
+      dto.featureTelegramBackup !== undefined ||
+      dto.featureAiAdvisor !== undefined ||
+      dto.featureOutsideOrders !== undefined;
+
+    if (hasFeatureUpdates) {
+      const existing = await this.readProfile(context.tenantId!);
+      const nextProfile: ProfileJson = {
+        ...existing,
+        ...(dto.featureInventory !== undefined ? { featureInventory: dto.featureInventory } : {}),
+        ...(dto.featureCentralWarehouse !== undefined ? { featureCentralWarehouse: dto.featureCentralWarehouse } : {}),
+        ...(dto.featureTelegramBackup !== undefined ? { featureTelegramBackup: dto.featureTelegramBackup } : {}),
+        ...(dto.featureAiAdvisor !== undefined ? { featureAiAdvisor: dto.featureAiAdvisor } : {}),
+        ...(dto.featureOutsideOrders !== undefined ? { featureOutsideOrders: dto.featureOutsideOrders } : {}),
+      };
+
+      const existingEntitlement = await this.prisma.tenantEntitlement.findFirst({
+        where: {
+          tenantId: context.tenantId!,
+          entitlementKey: TENANT_PROFILE_KEY,
+          effectiveTo: null,
+        },
+      });
+
+      if (existingEntitlement) {
+        await this.prisma.tenantEntitlement.update({
+          where: { id: existingEntitlement.id },
+          data: {
+            valueJson: nextProfile,
+            changedByUserId: userId,
+          },
+        });
+      } else {
+        await this.prisma.tenantEntitlement.create({
+          data: {
+            tenantId: context.tenantId!,
+            entitlementKey: TENANT_PROFILE_KEY,
+            valueJson: nextProfile,
+            effectiveFrom: new Date(),
+            changedByUserId: userId,
+          },
+        });
+      }
+    }
 
     if (dto.profile) {
       const existing = await this.readProfile(context.tenantId!);
