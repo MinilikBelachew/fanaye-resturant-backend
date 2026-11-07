@@ -89,7 +89,17 @@ export class TenantExporterService {
     // 1. Export Tenant Master Row
     appendTableInserts('tenants', tenantRows);
 
-    // 2. Export App Users & Credentials associated with this restaurant
+    // 2. Export Branches first (so app_users.preferred_branch_id FK is satisfied)
+    try {
+      const branches: any[] = await this.prisma.$queryRawUnsafe(`
+        SELECT * FROM public.branches WHERE tenant_id = '${tenantId}'::uuid;
+      `);
+      appendTableInserts('branches', branches);
+    } catch (err: any) {
+      this.logger.warn(`Could not export branches: ${err.message}`);
+    }
+
+    // 3. Export App Users & Credentials associated with this restaurant
     try {
       const users: any[] = await this.prisma.$queryRawUnsafe(`
         SELECT DISTINCT u.* FROM public.app_users u
@@ -108,39 +118,38 @@ export class TenantExporterService {
       this.logger.warn(`Could not export users/credentials: ${err.message}`);
     }
 
-    // 3. Discover all tables in PostgreSQL having tenant_id
+    // 4. Discover all tables in PostgreSQL having tenant_id (excluding branches which were exported above)
     const tenantTables: { table_name: string }[] = await this.prisma.$queryRawUnsafe(`
       SELECT table_name 
       FROM information_schema.columns 
       WHERE table_schema = 'public' 
         AND column_name = 'tenant_id'
-        AND table_name != 'tenants'
+        AND table_name NOT IN ('tenants', 'branches')
       ORDER BY 
         CASE 
           WHEN table_name = 'tenant_settings' THEN 1
           WHEN table_name = 'tenant_entitlements' THEN 2
-          WHEN table_name = 'branches' THEN 3
-          WHEN table_name = 'tenant_staff_memberships' THEN 4
-          WHEN table_name = 'branch_staff_memberships' THEN 5
-          WHEN table_name = 'menus' THEN 6
-          WHEN table_name = 'menu_categories' THEN 7
-          WHEN table_name = 'preparation_stations' THEN 8
-          WHEN table_name = 'menu_items' THEN 9
-          WHEN table_name = 'dining_tables' THEN 10
-          WHEN table_name = 'inventory_ingredients' THEN 11
-          WHEN table_name = 'inventory_stock_balances' THEN 12
-          WHEN table_name = 'inventory_recipes' THEN 13
-          WHEN table_name = 'orders' THEN 14
-          WHEN table_name = 'order_items' THEN 15
-          WHEN table_name = 'bills' THEN 16
-          WHEN table_name = 'bill_lines' THEN 17
-          WHEN table_name = 'payments' THEN 18
+          WHEN table_name = 'tenant_staff_memberships' THEN 3
+          WHEN table_name = 'branch_staff_memberships' THEN 4
+          WHEN table_name = 'menus' THEN 5
+          WHEN table_name = 'menu_categories' THEN 6
+          WHEN table_name = 'preparation_stations' THEN 7
+          WHEN table_name = 'menu_items' THEN 8
+          WHEN table_name = 'dining_tables' THEN 9
+          WHEN table_name = 'inventory_ingredients' THEN 10
+          WHEN table_name = 'inventory_stock_balances' THEN 11
+          WHEN table_name = 'inventory_recipes' THEN 12
+          WHEN table_name = 'orders' THEN 13
+          WHEN table_name = 'order_items' THEN 14
+          WHEN table_name = 'bills' THEN 15
+          WHEN table_name = 'bill_lines' THEN 16
+          WHEN table_name = 'payments' THEN 17
           ELSE 50
         END,
         table_name ASC;
     `);
 
-    // 4. Query each table's rows for this tenant
+    // 5. Query each table's rows for this tenant
     for (const { table_name } of tenantTables) {
       try {
         const rows: any[] = await this.prisma.$queryRawUnsafe(

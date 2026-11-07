@@ -84,7 +84,10 @@ export class TenantRestorerService {
     try {
       await this.prisma.$transaction(
         async (tx) => {
-          // Disable FK checks temporarily for transaction if needed or run in order
+          // Defer foreign key checks for the duration of the transaction
+          // so records can be inserted regardless of table dependency order
+          await tx.$executeRawUnsafe(`SET CONSTRAINTS ALL DEFERRED;`);
+
           for (const stmt of statements) {
             await tx.$executeRawUnsafe(stmt);
           }
