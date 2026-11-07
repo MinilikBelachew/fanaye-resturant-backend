@@ -14,6 +14,7 @@ import {
   Matches,
   MaxLength,
   Min,
+  MinLength,
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
@@ -483,8 +484,16 @@ export class ResetAdminStaffPinDto {
 }
 
 export class ResetAdminStaffPasswordDto {
-  @ApiProperty({ example: 'Password123!', description: 'Minimum 6 characters' })
+  @ApiProperty({
+    example: 'Password123!',
+    description: 'Minimum 8 characters with uppercase, lowercase, and number',
+  })
   @IsString()
+  @MinLength(8, { message: 'Password must be at least 8 characters long.' })
   @MaxLength(72)
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, {
+    message:
+      'Password must contain at least one uppercase letter, one lowercase letter, and one number.',
+  })
   password: string;
 }

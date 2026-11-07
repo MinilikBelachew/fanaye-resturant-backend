@@ -1,3 +1,19 @@
+
+function validateStrongPassword(password: string): string | null {
+  if (password.length < 8) {
+    return 'Password must be at least 8 characters long.';
+  }
+  if (!/[A-Z]/.test(password)) {
+    return 'Password must contain at least one uppercase letter (A-Z).';
+  }
+  if (!/[a-z]/.test(password)) {
+    return 'Password must contain at least one lowercase letter (a-z).';
+  }
+  if (!/[0-9]/.test(password)) {
+    return 'Password must contain at least one number (0-9).';
+  }
+  return null;
+}
 import {
   ConflictException,
   ForbiddenException,
@@ -358,11 +374,30 @@ export class StaffCoverageService {
           )
         : null;
 
-    const rawPin = dto.pin?.trim() || '1234';
-    await this.verifyPinUniqueInTenant(context.tenantId!, rawPin);
-
-    const password = rawPin.slice(0, 72);
-    const passwordHash = await bcrypt.hash(password, 10);
+    let passwordHash: string;
+    if (['MANAGER', 'OWNER_ADMIN'].includes(roleCode)) {
+      const rawPassword = dto.password?.trim();
+      if (!rawPassword) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          errors: {
+            password: 'A password is required for Manager and Owner accounts.',
+          },
+        });
+      }
+      const strongErr = validateStrongPassword(rawPassword);
+      if (strongErr) {
+        throw new UnprocessableEntityException({
+          status: 422,
+          errors: { password: strongErr },
+        });
+      }
+      passwordHash = await bcrypt.hash(rawPassword.slice(0, 72), 10);
+    } else {
+      const rawPin = dto.pin?.trim() || '1234';
+      await this.verifyPinUniqueInTenant(context.tenantId!, rawPin);
+      passwordHash = await bcrypt.hash(rawPin.slice(0, 72), 10);
+    }
 
     const plannedDayShifts =
       dto.dayShifts !== undefined
@@ -762,47 +797,56 @@ export class StaffCoverageService {
         });
       }
 
-      if (dto.password?.trim()) {
-        const passwordHash = await bcrypt.hash(
-          dto.password.trim().slice(0, 72),
-          10,
-        );
-        if (existing.user.credential) {
-          await tx.userCredential.update({
-            where: { userId: existing.userId },
-            data: { passwordHash },
-          });
-        } else {
-          await tx.userCredential.create({
-            data: {
-              userId: existing.userId,
-              passwordHash,
-              authProvider: 'email',
-            },
-          });
+      if (['MANAGER', 'OWNER_ADMIN'].includes(nextRoleCode)) {
+        if (dto.password?.trim()) {
+          const strongErr = validateStrongPassword(dto.password.trim());
+          if (strongErr) {
+            throw new UnprocessableEntityException({
+              status: 422,
+              errors: { password: strongErr },
+            });
+          }
+          const passwordHash = await bcrypt.hash(
+            dto.password.trim().slice(0, 72),
+            10,
+          );
+          if (existing.user.credential) {
+            await tx.userCredential.update({
+              where: { userId: existing.userId },
+              data: { passwordHash },
+            });
+          } else {
+            await tx.userCredential.create({
+              data: {
+                userId: existing.userId,
+                passwordHash,
+                authProvider: 'email',
+              },
+            });
+          }
         }
-      }
-
-      if (dto.pin?.trim()) {
-        await this.verifyPinUniqueInTenant(
-          context.tenantId!,
-          dto.pin,
-          existing.userId,
-        );
-        const passwordHash = await bcrypt.hash(dto.pin.trim().slice(0, 72), 10);
-        if (existing.user.credential) {
-          await tx.userCredential.update({
-            where: { userId: existing.userId },
-            data: { passwordHash },
-          });
-        } else {
-          await tx.userCredential.create({
-            data: {
-              userId: existing.userId,
-              passwordHash,
-              authProvider: 'email',
-            },
-          });
+      } else {
+        if (dto.pin?.trim()) {
+          await this.verifyPinUniqueInTenant(
+            context.tenantId!,
+            dto.pin,
+            existing.userId,
+          );
+          const passwordHash = await bcrypt.hash(dto.pin.trim().slice(0, 72), 10);
+          if (existing.user.credential) {
+            await tx.userCredential.update({
+              where: { userId: existing.userId },
+              data: { passwordHash },
+            });
+          } else {
+            await tx.userCredential.create({
+              data: {
+                userId: existing.userId,
+                passwordHash,
+                authProvider: 'email',
+              },
+            });
+          }
         }
       }
 
@@ -1536,10 +1580,25 @@ export class StaffCoverageService {
         id: membershipId,
         tenantId: context.tenantId!,
       },
-      include: { user: true },
+      include: {
+        user: true,
+        roleAssignments: { include: { role: true } },
+      },
     });
     if (!membership) {
       throw new NotFoundException('Staff member not found');
+    }
+    if (
+      membership.roleAssignments.some((ra) =>
+        ['MANAGER', 'OWNER_ADMIN'].includes(ra.role.code),
+      )
+    ) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: {
+          pin: 'PIN login is for floor staff. Managers and Owners must use password.',
+        },
+      });
     }
 
     await this.verifyPinUniqueInTenant(
@@ -1610,10 +1669,17 @@ export class StaffCoverageService {
       membershipId,
     );
     const password = dto.password?.trim();
-    if (!password || password.length < 6) {
+    if (!password) {
       throw new UnprocessableEntityException({
         status: 422,
-        errors: { password: 'Password must be at least 6 characters.' },
+        errors: { password: 'Password cannot be empty.' },
+      });
+    }
+    const strongErr = validateStrongPassword(password);
+    if (strongErr) {
+      throw new UnprocessableEntityException({
+        status: 422,
+        errors: { password: strongErr },
       });
     }
 
