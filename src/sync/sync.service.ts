@@ -6,6 +6,7 @@ import { TenantRestorerService } from '../backup/tenant-restorer.service';
 import { AuthService } from '../auth/auth.service';
 import { AuthCookiesService } from '../auth/auth-cookies.service';
 import { Response as ExpressResponse } from 'express';
+import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -518,6 +519,27 @@ export class SyncService {
       lastSyncedAt: this.lastSyncedAt ? this.lastSyncedAt.toISOString() : null,
       pendingOrdersCount,
       pendingBillsCount,
+      localServerIp: this.getLocalIpAddress(),
+      availableIps: this.getAllLocalIpAddresses(),
     };
+  }
+
+  getLocalIpAddress(): string {
+    const all = this.getAllLocalIpAddresses();
+    return all.length > 0 ? all[0].ip : 'localhost';
+  }
+
+  getAllLocalIpAddresses(): { name: string; ip: string }[] {
+    const list: { name: string; ip: string }[] = [];
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      const ifaceList = interfaces[name] || [];
+      for (const iface of ifaceList) {
+        if (iface.family === 'IPv4' && !iface.internal && !iface.address.startsWith('169.254.')) {
+          list.push({ name, ip: iface.address });
+        }
+      }
+    }
+    return list;
   }
 }
