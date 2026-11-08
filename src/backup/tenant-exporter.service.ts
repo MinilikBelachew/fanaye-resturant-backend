@@ -56,7 +56,19 @@ export class TenantExporterService {
       if (val === null || val === undefined) return 'NULL';
       if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
       if (typeof val === 'number') return String(val);
+      if (typeof val === 'bigint') return String(val);
       if (val instanceof Date) return `'${val.toISOString()}'::timestamptz`;
+
+      // Check if it's a Prisma.Decimal or any Decimal-like object
+      if (
+        typeof val === 'object' &&
+        (typeof val.toNumber === 'function' ||
+          typeof val.toFixed === 'function' ||
+          (val.d !== undefined && val.e !== undefined && val.s !== undefined))
+      ) {
+        return String(val);
+      }
+
       if (typeof val === 'object') {
         const jsonStr = JSON.stringify(val).replace(/'/g, "''");
         return `'${jsonStr}'::jsonb`;
