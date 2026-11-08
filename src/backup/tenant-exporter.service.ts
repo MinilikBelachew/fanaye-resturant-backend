@@ -69,6 +69,20 @@ export class TenantExporterService {
         return String(val);
       }
 
+      // Handle PostgreSQL native arrays (text[], int[], etc.)
+      if (Array.isArray(val)) {
+        if (val.length === 0) return "'{}'";
+        // If elements are primitive strings, numbers, or booleans -> format as ARRAY[...]
+        const isPrimitive = val.every((item) => ['string', 'number', 'boolean'].includes(typeof item));
+        if (isPrimitive) {
+          const formattedItems = val.map((item) => {
+            if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+            return `'${String(item).replace(/'/g, "''")}'`;
+          });
+          return `ARRAY[${formattedItems.join(', ')}]`;
+        }
+      }
+
       if (typeof val === 'object') {
         const jsonStr = JSON.stringify(val).replace(/'/g, "''");
         return `'${jsonStr}'::jsonb`;
