@@ -86,14 +86,44 @@ export class TenantExporterService {
       const columns = Object.keys(records[0]);
       const colList = columns.map((c) => `"${c}"`).join(', ');
 
+      // Determine primary key / unique conflict target
+      let conflictTarget = '"id"';
+      if (!columns.includes('id')) {
+        if (tableName === 'tenant_settings') {
+          conflictTarget = '"tenant_id"';
+        } else if (tableName === 'branch_settings') {
+          conflictTarget = '"branch_id"';
+        } else if (tableName === 'menu_item_period_assignments') {
+          conflictTarget = '"menu_item_id", "menu_period_id"';
+        } else if (tableName === 'role_permissions') {
+          conflictTarget = '"role_id", "permission_id"';
+        } else {
+          // If no known ID column, fall back to plain INSERT without ON CONFLICT
+          conflictTarget = '';
+        }
+      }
+
       for (const rec of records) {
         const valList = columns.map((c) => formatSqlValue(rec[c])).join(', ');
-        sqlChunks.push(
-          `INSERT INTO public."${tableName}" (${colList}) VALUES (${valList}) ON CONFLICT ("id") DO UPDATE SET ${columns
-            .filter((c) => c !== 'id')
+        if (conflictTarget) {
+          const conflictCols = conflictTarget.replace(/"/g, '').split(',').map((s) => s.trim());
+          const updateAssignments = columns
+            .filter((c) => !conflictCols.includes(c))
             .map((c) => `"${c}" = EXCLUDED."${c}"`)
-            .join(', ')};`,
-        );
+            .join(', ');
+
+          if (updateAssignments.length > 0) {
+            sqlChunks.push(
+              `INSERT INTO public."${tableName}" (${colList}) VALUES (${valList}) ON CONFLICT (${conflictTarget}) DO UPDATE SET ${updateAssignments};`,
+            );
+          } else {
+            sqlChunks.push(
+              `INSERT INTO public."${tableName}" (${colList}) VALUES (${valList}) ON CONFLICT (${conflictTarget}) DO NOTHING;`,
+            );
+          }
+        } else {
+          sqlChunks.push(`INSERT INTO public."${tableName}" (${colList}) VALUES (${valList});`);
+        }
       }
       sqlChunks.push('');
     };
