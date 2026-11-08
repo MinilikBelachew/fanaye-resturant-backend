@@ -145,7 +145,22 @@ export class TenantExporterService {
     // 1. Export Tenant Master Row
     appendTableInserts('tenants', tenantRows);
 
-    // 2. Export Branches first (so app_users.preferred_branch_id FK is satisfied)
+    // 2. Export Files (dish images, staff photos, receipts) linked to this tenant
+    try {
+      const files: any[] = await this.prisma.$queryRawUnsafe(`
+        SELECT DISTINCT f.* FROM public.file f
+        WHERE f.id IN (
+          SELECT image_file_id FROM public.menu_items WHERE tenant_id = '${tenantId}'::uuid AND image_file_id IS NOT NULL
+          UNION
+          SELECT photo_id FROM public.app_users u JOIN public.tenant_staff_memberships tsm ON tsm.user_id = u.id WHERE tsm.tenant_id = '${tenantId}'::uuid AND photo_id IS NOT NULL
+        );
+      `);
+      appendTableInserts('file', files);
+    } catch (err: any) {
+      this.logger.warn(`Could not export files: ${err.message}`);
+    }
+
+    // 3. Export Branches first (so app_users.preferred_branch_id FK is satisfied)
     try {
       const branches: any[] = await this.prisma.$queryRawUnsafe(`
         SELECT * FROM public.branches WHERE tenant_id = '${tenantId}'::uuid;

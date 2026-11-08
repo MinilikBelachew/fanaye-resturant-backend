@@ -84,15 +84,19 @@ export class TenantRestorerService {
     try {
       await this.prisma.$transaction(
         async (tx) => {
-          // Defer foreign key checks for the duration of the transaction
-          // so records can be inserted regardless of table dependency order
-          await tx.$executeRawUnsafe(`SET CONSTRAINTS ALL DEFERRED;`);
+          // Disable all foreign key triggers and constraint checks during bulk restore
+          await tx.$executeRawUnsafe(`SET session_replication_role = 'replica';`);
 
-          for (const stmt of statements) {
-            await tx.$executeRawUnsafe(stmt);
+          try {
+            for (const stmt of statements) {
+              await tx.$executeRawUnsafe(stmt);
+            }
+          } finally {
+            // Restore normal trigger and foreign key behavior
+            await tx.$executeRawUnsafe(`SET session_replication_role = 'origin';`);
           }
         },
-        { timeout: 60000 }, // 60s timeout for large restores
+        { timeout: 120000 }, // 120s timeout for large restores
       );
 
       this.logger.log(
