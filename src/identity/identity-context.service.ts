@@ -78,7 +78,7 @@ export class IdentityContextService {
     const openShift = membership?.shiftSessions[0] ?? null;
     const roleCode = isPlatformAdmin
       ? PLATFORM_ROLE_CODE
-      : (roleAssignment?.role.code ?? 'NONE');
+      : (roleAssignment?.role?.code ?? 'NONE');
 
     let branchId = branchAssignment?.branchId ?? null;
     let branchName =
@@ -126,7 +126,7 @@ export class IdentityContextService {
       });
     }
     for (const entry of user.staffMemberships) {
-      const code = entry.roleAssignments[0]?.role.code ?? 'NONE';
+      const code = entry.roleAssignments[0]?.role?.code ?? 'NONE';
       let entryBranchId = entry.branchAssignments[0]?.branchId ?? null;
       if (!entryBranchId && entry.tenantId) {
         const defaultBranch = await this.prisma.branch.findFirst({
@@ -147,7 +147,7 @@ export class IdentityContextService {
     }
 
     const permissions =
-      roleAssignment?.role.permissions.map((item) => item.permission.code) ??
+      roleAssignment?.role?.permissions?.map((item) => item.permission?.code)?.filter(Boolean) ??
       [];
 
     let roomsEnabled = false;
@@ -187,8 +187,8 @@ export class IdentityContextService {
       staffMembershipId: membership?.id ?? null,
       roleCode,
       stationId: stationAssignment?.stationId ?? null,
-      stationCode: stationAssignment?.station.code ?? null,
-      stationName: stationAssignment?.station.name ?? null,
+      stationCode: stationAssignment?.station?.code ?? null,
+      stationName: stationAssignment?.station?.name ?? null,
       shiftSessionId: openShift?.id ?? null,
       permissions,
       workspaces,
@@ -456,9 +456,37 @@ export class IdentityContextService {
     return null;
   }
 
-  async verifyTenant(identifier: string) {
+  async verifyTenant(identifier?: string) {
     const trimmed = identifier?.trim();
+
+    // Case 1: If no identifier provided, check if there's only 1 active restaurant on this offline server!
     if (!trimmed) {
+      const activeTenants = await this.prisma.tenant.findMany({
+        where: { status: 'ACTIVE' },
+        take: 2,
+        select: {
+          id: true,
+          displayName: true,
+          legalName: true,
+          sites: { select: { slug: true }, take: 1 },
+        },
+      });
+
+      if (activeTenants.length === 1) {
+        const singleTenant = activeTenants[0];
+        return {
+          tenant: {
+            id: singleTenant.id,
+            name: singleTenant.displayName || singleTenant.legalName || 'Restaurant',
+            slug:
+              singleTenant.sites?.[0]?.slug ||
+              (singleTenant.displayName
+                ? singleTenant.displayName.toLowerCase().replace(/\s+/g, '-')
+                : singleTenant.id),
+          },
+        };
+      }
+
       throw new NotFoundException('Please provide a restaurant name or code.');
     }
 
@@ -467,7 +495,8 @@ export class IdentityContextService {
         trimmed,
       );
 
-    const tenant = await this.prisma.tenant.findFirst({
+    // 1. Exact match attempt
+    let tenant = await this.prisma.tenant.findFirst({
       where: {
         status: 'ACTIVE',
         OR: [
@@ -491,6 +520,22 @@ export class IdentityContextService {
         },
       },
     });
+
+    // 2. Remote Cloud fallback (if cloud sync URL is configured)
+    if (!tenant) {
+      const cloudUrl = (process.env.CLOUD_SYNC_URL || '').replace(/\/+$/, '');
+      if (cloudUrl) {
+        try {
+          const cloudRes = await fetch(`${cloudUrl}/backend/v1/auth/verify-tenant?identifier=${encodeURIComponent(trimmed)}`);
+          if (cloudRes.ok) {
+            const data: any = await cloudRes.json();
+            if (data?.tenant) {
+              return data;
+            }
+          }
+        } catch {}
+      }
+    }
 
     if (!tenant) {
       throw new NotFoundException(

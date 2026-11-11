@@ -346,6 +346,15 @@ export class TenantDetailDto {
   @ApiPropertyOptional({ example: '+251 91 123 4567' })
   managerPhone?: string;
 
+  @ApiPropertyOptional({ example: 'Almaz Tefera' })
+  owner?: string;
+
+  @ApiPropertyOptional({ example: 'owner@fanaye.et' })
+  ownerEmail?: string;
+
+  @ApiPropertyOptional({ example: '+251 91 987 6543' })
+  ownerPhone?: string;
+
   @ApiProperty({ example: '10:00 – 23:00' })
   hours: string;
 
@@ -664,6 +673,52 @@ export class UpdateTenantDto {
   @MinLength(6)
   @MaxLength(72)
   managerPassword?: string;
+
+  @ApiPropertyOptional({
+    example: false,
+    description: 'If true, deactivates and removes the manager assignment.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  removeManager?: boolean;
+
+  @ApiPropertyOptional({ example: 'Almaz Tefera' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  ownerName?: string;
+
+  @ApiPropertyOptional({ example: '+251 91 123 4567' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  ownerPhone?: string;
+
+  @ApiPropertyOptional({ example: 'owner@abyssinia.et' })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
+  ownerEmail?: string;
+
+  @ApiPropertyOptional({
+    example: 'Password123!',
+    description: 'Leave empty to keep the current owner password.',
+  })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  @MaxLength(72)
+  ownerPassword?: string;
+
+  @ApiPropertyOptional({
+    example: false,
+    description: 'If true, deactivates and removes the owner assignment.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  removeOwner?: boolean;
 
   @ApiPropertyOptional({ example: 'Bole Flagship' })
   @IsOptional()

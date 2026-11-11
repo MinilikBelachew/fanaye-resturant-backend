@@ -249,10 +249,17 @@ export class SuperAdminService {
         tenantId,
         staffMembershipId: membershipId,
         roleId: role.id,
-        status: 'ACTIVE',
       },
     });
-    if (existing) return;
+    if (existing) {
+      if (existing.status !== 'ACTIVE' || existing.branchId !== branchId) {
+        await tx.staffRoleAssignment.update({
+          where: { id: existing.id },
+          data: { status: 'ACTIVE', branchId, revokedAt: null },
+        });
+      }
+      return;
+    }
 
     await tx.staffRoleAssignment.create({
       data: {
@@ -275,17 +282,43 @@ export class SuperAdminService {
       } | null;
       employeeDisplayName?: string | null;
       userId?: string;
+      status?: string;
     },
   >(memberships: T[]): T | undefined {
     return (
+      memberships.find(
+        (m) =>
+          (m.status === 'ACTIVE' || !m.status) &&
+          m.roleAssignments?.some((r) => r.role?.code === 'MANAGER'),
+      ) ||
       memberships.find((m) =>
         m.roleAssignments?.some((r) => r.role?.code === 'MANAGER'),
-      ) ||
+      )
+    );
+  }
+
+  private pickOwnerMembership<
+    T extends {
+      roleAssignments?: { role?: { code: string } | null }[] | null;
+      user?: {
+        displayName?: string | null;
+        email?: string | null;
+        phone?: string | null;
+      } | null;
+      employeeDisplayName?: string | null;
+      userId?: string;
+      status?: string;
+    },
+  >(memberships: T[]): T | undefined {
+    return (
       memberships.find(
-        (m) => !m.roleAssignments?.some((r) => r.role?.code === 'OWNER_ADMIN'),
+        (m) =>
+          (m.status === 'ACTIVE' || !m.status) &&
+          m.roleAssignments?.some((r) => r.role?.code === 'OWNER_ADMIN'),
       ) ||
-      memberships.find((m) => m.user?.displayName) ||
-      memberships[0]
+      memberships.find((m) =>
+        m.roleAssignments?.some((r) => r.role?.code === 'OWNER_ADMIN'),
+      )
     );
   }
 
@@ -304,10 +337,17 @@ export class SuperAdminService {
         tenantId,
         staffMembershipId: membershipId,
         roleId: role.id,
-        status: 'ACTIVE',
       },
     });
-    if (existing) return;
+    if (existing) {
+      if (existing.status !== 'ACTIVE') {
+        await tx.staffRoleAssignment.update({
+          where: { id: existing.id },
+          data: { status: 'ACTIVE', revokedAt: null },
+        });
+      }
+      return;
+    }
 
     await tx.staffRoleAssignment.create({
       data: {
@@ -1077,6 +1117,16 @@ export class SuperAdminService {
       const managerEmail = managerMembership?.user?.email || '';
       const managerPhone = managerMembership?.user?.phone || '';
 
+      const ownerMembership = this.pickOwnerMembership(
+        t.staffMemberships || [],
+      );
+      const ownerName =
+        ownerMembership?.employeeDisplayName ||
+        ownerMembership?.user?.displayName ||
+        '';
+      const ownerEmail = ownerMembership?.user?.email || '';
+      const ownerPhone = ownerMembership?.user?.phone || '';
+
       const branchesList = (t.branches || []).map((b: any) => ({
         id: b.id,
         name: b.name,
@@ -1107,6 +1157,9 @@ export class SuperAdminService {
         manager: managerName,
         managerEmail: managerEmail || undefined,
         managerPhone: managerPhone || undefined,
+        owner: ownerName || undefined,
+        ownerEmail: ownerEmail || undefined,
+        ownerPhone: ownerPhone || undefined,
         hours: profile.hours || '—',
         concept: profile.concept || '—',
         branches: t.branches?.length || 0,
@@ -1196,6 +1249,15 @@ export class SuperAdminService {
         .replace(/^-|-$/g, '');
       const managerEmail = managerMembership?.user?.email || '';
       const managerPhone = managerMembership?.user?.phone || '';
+      const ownerMembership = this.pickOwnerMembership(
+        dbTenant.staffMemberships || [],
+      );
+      const ownerName =
+        ownerMembership?.employeeDisplayName ||
+        ownerMembership?.user?.displayName ||
+        '';
+      const ownerEmail = ownerMembership?.user?.email || '';
+      const ownerPhone = ownerMembership?.user?.phone || '';
       const detail: TenantDetailDto = {
         id: dbTenant.id,
         name: dbTenant.displayName || dbTenant.legalName || 'Restaurant',
@@ -1213,6 +1275,9 @@ export class SuperAdminService {
           '—',
         managerEmail: managerEmail || undefined,
         managerPhone: managerPhone || undefined,
+        owner: ownerName || undefined,
+        ownerEmail: ownerEmail || undefined,
+        ownerPhone: ownerPhone || undefined,
         hours: profile.hours || '—',
         concept: profile.concept || '—',
         branches: dbTenant.branches.length,
@@ -1807,149 +1872,337 @@ export class SuperAdminService {
           contactEmail: dto.email,
         });
 
-        const wantsManagerUpdate =
-          dto.managerName ||
-          dto.managerEmail ||
-          dto.managerPhone ||
-          dto.managerPassword;
-
-        if (wantsManagerUpdate) {
+        if (dto.removeManager) {
           const membership = this.pickManagerMembership(
             existing.staffMemberships,
           );
-          const managerName =
-            dto.managerName?.trim() ||
-            membership?.employeeDisplayName ||
-            membership?.user?.displayName ||
-            'Restaurant Manager';
-          const managerEmail =
-            dto.managerEmail?.trim() ||
-            membership?.user?.email ||
-            `manager.${tenantId.slice(0, 6)}@restaurant.et`;
-          const managerPhone =
-            dto.managerPhone?.trim() || membership?.user?.phone || undefined;
-
-          if (dto.managerEmail?.trim()) {
-            const emailTaken = await tx.appUser.findFirst({
-              where: {
-                email: dto.managerEmail.trim(),
-                NOT: membership?.userId ? { id: membership.userId } : undefined,
-              },
+          if (membership) {
+            await tx.staffRoleAssignment.updateMany({
+              where: { staffMembershipId: membership.id, status: 'ACTIVE' },
+              data: { status: 'INACTIVE', revokedAt: new Date() },
             });
-            if (emailTaken) {
-              throw new ConflictException({
-                message:
-                  'That manager email is already used by another account.',
-                field: 'managerEmail',
-              });
-            }
-          }
-
-          if (managerPhone) {
-            const phoneTaken = await tx.appUser.findFirst({
-              where: {
-                phone: managerPhone,
-                NOT: membership?.userId ? { id: membership.userId } : undefined,
-              },
+            await tx.branchStaffAssignment.updateMany({
+              where: { staffMembershipId: membership.id, status: 'ACTIVE' },
+              data: { status: 'INACTIVE', releasedAt: new Date() },
             });
-            if (phoneTaken) {
-              throw new ConflictException({
-                message:
-                  'That manager phone is already used by another account.',
-                field: 'managerPhone',
-              });
-            }
-          }
-
-          if (!membership) {
-            let managerUser = await tx.appUser.findFirst({
-              where: { email: managerEmail },
-            });
-            if (!managerUser) {
-              managerUser = await tx.appUser.create({
-                data: {
-                  displayName: managerName,
-                  email: managerEmail,
-                  phone: managerPhone,
-                  accountStatus: 'ACTIVE',
-                },
-              });
-            } else {
-              managerUser = await tx.appUser.update({
-                where: { id: managerUser.id },
-                data: {
-                  displayName: managerName,
-                  phone: managerPhone || managerUser.phone,
-                },
-              });
-            }
-
-            const createdMembership = await tx.tenantStaffMembership.create({
-              data: {
-                tenantId,
-                userId: managerUser.id,
-                employeeDisplayName: managerName,
-                status: 'ACTIVE',
-                joinedAt: new Date(),
-              },
-            });
-
-            if (primaryBranch) {
-              await tx.branchStaffAssignment.create({
-                data: {
-                  tenantId,
-                  branchId: primaryBranch.id,
-                  staffMembershipId: createdMembership.id,
-                  status: 'ACTIVE',
-                },
-              });
-              await this.ensureManagerRole(
-                tx,
-                tenantId,
-                primaryBranch.id,
-                createdMembership.id,
-              );
-            }
-
-            if (dto.managerPassword?.trim()) {
-              await this.upsertUserPassword(
-                tx,
-                managerUser.id,
-                dto.managerPassword.trim(),
-              );
-            }
-          } else {
-            await tx.appUser.update({
-              where: { id: membership.userId },
-              data: {
-                displayName: managerName,
-                ...(dto.managerEmail?.trim()
-                  ? { email: dto.managerEmail.trim() }
-                  : {}),
-                ...(managerPhone ? { phone: managerPhone } : {}),
-              },
-            });
-
             await tx.tenantStaffMembership.update({
               where: { id: membership.id },
-              data: { employeeDisplayName: managerName },
+              data: { status: 'INACTIVE', deactivatedAt: new Date() },
             });
+          }
+        } else {
+          const wantsManagerUpdate =
+            dto.managerName ||
+            dto.managerEmail ||
+            dto.managerPhone ||
+            dto.managerPassword;
 
-            if (dto.managerPassword?.trim()) {
-              await this.upsertUserPassword(
-                tx,
-                membership.userId,
-                dto.managerPassword.trim(),
-              );
+          if (wantsManagerUpdate) {
+            const membership = this.pickManagerMembership(
+              existing.staffMemberships,
+            );
+            const managerName =
+              dto.managerName?.trim() ||
+              membership?.employeeDisplayName ||
+              membership?.user?.displayName ||
+              'Restaurant Manager';
+            const managerEmail =
+              dto.managerEmail?.trim() ||
+              membership?.user?.email ||
+              `manager.${tenantId.slice(0, 6)}@restaurant.et`;
+            const managerPhone =
+              dto.managerPhone?.trim() || membership?.user?.phone || undefined;
+
+            if (dto.managerEmail?.trim()) {
+              const emailTaken = await tx.appUser.findFirst({
+                where: {
+                  email: dto.managerEmail.trim(),
+                  NOT: membership?.userId ? { id: membership.userId } : undefined,
+                },
+              });
+              if (emailTaken) {
+                throw new ConflictException({
+                  message:
+                    'That manager email is already used by another account.',
+                  field: 'managerEmail',
+                });
+              }
             }
 
-            if (primaryBranch) {
-              await this.ensureManagerRole(
-                tx,
-                tenantId,
-                primaryBranch.id,
-                membership.id,
-              );
+            if (managerPhone) {
+              const phoneTaken = await tx.appUser.findFirst({
+                where: {
+                  phone: managerPhone,
+                  NOT: membership?.userId ? { id: membership.userId } : undefined,
+                },
+              });
+              if (phoneTaken) {
+                throw new ConflictException({
+                  message:
+                    'That manager phone is already used by another account.',
+                  field: 'managerPhone',
+                });
+              }
+            }
+
+            if (!membership) {
+              let managerUser = await tx.appUser.findFirst({
+                where: { email: managerEmail },
+              });
+              if (!managerUser) {
+                managerUser = await tx.appUser.create({
+                  data: {
+                    displayName: managerName,
+                    email: managerEmail,
+                    phone: managerPhone,
+                    accountStatus: 'ACTIVE',
+                  },
+                });
+              } else {
+                managerUser = await tx.appUser.update({
+                  where: { id: managerUser.id },
+                  data: {
+                    displayName: managerName,
+                    phone: managerPhone || managerUser.phone,
+                  },
+                });
+              }
+
+              const createdMembership = await tx.tenantStaffMembership.create({
+                data: {
+                  tenantId,
+                  userId: managerUser.id,
+                  employeeDisplayName: managerName,
+                  status: 'ACTIVE',
+                  joinedAt: new Date(),
+                },
+              });
+
+              if (primaryBranch) {
+                await tx.branchStaffAssignment.create({
+                  data: {
+                    tenantId,
+                    branchId: primaryBranch.id,
+                    staffMembershipId: createdMembership.id,
+                    status: 'ACTIVE',
+                  },
+                });
+                await this.ensureManagerRole(
+                  tx,
+                  tenantId,
+                  primaryBranch.id,
+                  createdMembership.id,
+                );
+              }
+
+              if (dto.managerPassword?.trim()) {
+                await this.upsertUserPassword(
+                  tx,
+                  managerUser.id,
+                  dto.managerPassword.trim(),
+                );
+              }
+            } else {
+              await tx.appUser.update({
+                where: { id: membership.userId },
+                data: {
+                  displayName: managerName,
+                  ...(dto.managerEmail?.trim()
+                    ? { email: dto.managerEmail.trim() }
+                    : {}),
+                  ...(managerPhone ? { phone: managerPhone } : {}),
+                },
+              });
+
+              await tx.tenantStaffMembership.update({
+                where: { id: membership.id },
+                data: {
+                  employeeDisplayName: managerName,
+                  status: 'ACTIVE',
+                  deactivatedAt: null,
+                },
+              });
+
+              if (primaryBranch) {
+                const activeBranchAssign =
+                  await tx.branchStaffAssignment.findFirst({
+                    where: {
+                      tenantId,
+                      branchId: primaryBranch.id,
+                      staffMembershipId: membership.id,
+                      status: 'ACTIVE',
+                    },
+                  });
+                if (!activeBranchAssign) {
+                  await tx.branchStaffAssignment.create({
+                    data: {
+                      tenantId,
+                      branchId: primaryBranch.id,
+                      staffMembershipId: membership.id,
+                      status: 'ACTIVE',
+                    },
+                  });
+                }
+                await this.ensureManagerRole(
+                  tx,
+                  tenantId,
+                  primaryBranch.id,
+                  membership.id,
+                );
+              }
+
+              if (dto.managerPassword?.trim()) {
+                await this.upsertUserPassword(
+                  tx,
+                  membership.userId,
+                  dto.managerPassword.trim(),
+                );
+              }
+            }
+          }
+        }
+
+        if (dto.removeOwner) {
+          const membership = this.pickOwnerMembership(
+            existing.staffMemberships,
+          );
+          if (membership) {
+            await tx.staffRoleAssignment.updateMany({
+              where: { staffMembershipId: membership.id, status: 'ACTIVE' },
+              data: { status: 'INACTIVE', revokedAt: new Date() },
+            });
+            await tx.tenantStaffMembership.update({
+              where: { id: membership.id },
+              data: { status: 'INACTIVE', deactivatedAt: new Date() },
+            });
+          }
+        } else {
+          const wantsOwnerUpdate =
+            dto.ownerName ||
+            dto.ownerEmail ||
+            dto.ownerPhone ||
+            dto.ownerPassword;
+
+          if (wantsOwnerUpdate) {
+            const membership = this.pickOwnerMembership(
+              existing.staffMemberships,
+            );
+            const ownerName =
+              dto.ownerName?.trim() ||
+              membership?.employeeDisplayName ||
+              membership?.user?.displayName ||
+              'Restaurant Owner';
+            const ownerEmail =
+              dto.ownerEmail?.trim() ||
+              membership?.user?.email ||
+              `owner.${tenantId.slice(0, 6)}@restaurant.et`;
+            const ownerPhone =
+              dto.ownerPhone?.trim() || membership?.user?.phone || undefined;
+
+            if (dto.ownerEmail?.trim()) {
+              const emailTaken = await tx.appUser.findFirst({
+                where: {
+                  email: dto.ownerEmail.trim(),
+                  NOT: membership?.userId ? { id: membership.userId } : undefined,
+                },
+              });
+              if (emailTaken) {
+                throw new ConflictException({
+                  message:
+                    'That owner email is already used by another account.',
+                  field: 'ownerEmail',
+                });
+              }
+            }
+
+            if (ownerPhone) {
+              const phoneTaken = await tx.appUser.findFirst({
+                where: {
+                  phone: ownerPhone,
+                  NOT: membership?.userId ? { id: membership.userId } : undefined,
+                },
+              });
+              if (phoneTaken) {
+                throw new ConflictException({
+                  message:
+                    'That owner phone is already used by another account.',
+                  field: 'ownerPhone',
+                });
+              }
+            }
+
+            if (!membership) {
+              let ownerUser = await tx.appUser.findFirst({
+                where: { email: ownerEmail },
+              });
+              if (!ownerUser) {
+                ownerUser = await tx.appUser.create({
+                  data: {
+                    displayName: ownerName,
+                    email: ownerEmail,
+                    phone: ownerPhone,
+                    accountStatus: 'ACTIVE',
+                  },
+                });
+              } else {
+                ownerUser = await tx.appUser.update({
+                  where: { id: ownerUser.id },
+                  data: {
+                    displayName: ownerName,
+                    phone: ownerPhone || ownerUser.phone,
+                  },
+                });
+              }
+
+              const createdMembership = await tx.tenantStaffMembership.create({
+                data: {
+                  tenantId,
+                  userId: ownerUser.id,
+                  employeeDisplayName: ownerName,
+                  status: 'ACTIVE',
+                  joinedAt: new Date(),
+                },
+              });
+
+              await this.ensureOwnerRole(tx, tenantId, createdMembership.id);
+
+              if (dto.ownerPassword?.trim()) {
+                await this.upsertUserPassword(
+                  tx,
+                  ownerUser.id,
+                  dto.ownerPassword.trim(),
+                );
+              }
+            } else {
+              await tx.appUser.update({
+                where: { id: membership.userId },
+                data: {
+                  displayName: ownerName,
+                  ...(dto.ownerEmail?.trim()
+                    ? { email: dto.ownerEmail.trim() }
+                    : {}),
+                  ...(ownerPhone ? { phone: ownerPhone } : {}),
+                },
+              });
+
+              await tx.tenantStaffMembership.update({
+                where: { id: membership.id },
+                data: {
+                  employeeDisplayName: ownerName,
+                  status: 'ACTIVE',
+                  deactivatedAt: null,
+                },
+              });
+
+              await this.ensureOwnerRole(tx, tenantId, membership.id);
+
+              if (dto.ownerPassword?.trim()) {
+                await this.upsertUserPassword(
+                  tx,
+                  membership.userId,
+                  dto.ownerPassword.trim(),
+                );
+              }
             }
           }
         }

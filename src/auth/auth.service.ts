@@ -181,7 +181,7 @@ export class AuthService {
     return { staff };
   }
 
-  async verifyTenant(identifier: string) {
+  async verifyTenant(identifier?: string) {
     return this.identityContextService.verifyTenant(identifier);
   }
 

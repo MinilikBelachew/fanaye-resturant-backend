@@ -693,6 +693,24 @@ export class StaffCoverageService {
         }
       }
 
+      if (dto.role) {
+        if (nextRoleCode !== 'WAITER') {
+          await tx.diningTableShiftCoverage.deleteMany({
+            where: { waiterMembershipId: membershipId },
+          });
+          await tx.diningTable.updateMany({
+            where: { assignedWaiterMembershipId: membershipId },
+            data: { assignedWaiterMembershipId: null },
+          });
+        }
+        if (nextRoleCode !== 'STATION_OPERATOR') {
+          await tx.stationStaffAssignment.updateMany({
+            where: { staffMembershipId: membershipId, status: 'ACTIVE' },
+            data: { status: 'INACTIVE', releasedAt: new Date() },
+          });
+        }
+      }
+
       if (dto.dayShifts !== undefined) {
         const planned = normalizeExplicitDayShifts(dto.dayShifts);
         const activeRole = existing.roleAssignments[0]?.role;
