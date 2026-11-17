@@ -64,8 +64,11 @@ function emptyClockInWindow(): ClockInWindow {
 }
 import {
   HandoverCandidateDto,
+  ShiftHandoverDetailDto,
   ShiftHandoverDto,
+  ShiftHandoverHistoryItemDto,
   ShiftHandoverResponseDto,
+  ShiftHandoversResponseDto,
   WaiterShiftHandoverDto,
   WaiterShiftHandoverResponseDto,
 } from './dto/shift-handover.dto';
@@ -1692,6 +1695,431 @@ export class ShiftsService {
     }
 
     return results;
+  }
+
+  async listManagerHandovers(
+    userId: string,
+    query: {
+      from?: string;
+      to?: string;
+      kind?: string;
+      search?: string;
+      page?: number;
+      limit?: number;
+    } = {},
+  ): Promise<ShiftHandoversResponseDto> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.branchId) {
+      throw new ForbiddenException('Branch context required.');
+    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Shift',
+      'Only managers can view shift handovers.',
+    );
+
+    const kind = (query.kind || 'ALL').toUpperCase();
+    const actions =
+      kind === 'CASHIER'
+        ? ['SHIFT_HANDOVER']
+        : kind === 'WAITER'
+          ? ['WAITER_SHIFT_HANDOVER']
+          : ['SHIFT_HANDOVER', 'WAITER_SHIFT_HANDOVER'];
+
+    const occurredAt: { gte?: Date; lte?: Date } = {};
+    if (query.from && /^\d{4}-\d{2}-\d{2}$/.test(query.from)) {
+      occurredAt.gte = new Date(`${query.from}T00:00:00+03:00`);
+    }
+    if (query.to && /^\d{4}-\d{2}-\d{2}$/.test(query.to)) {
+      occurredAt.lte = new Date(`${query.to}T23:59:59.999+03:00`);
+    }
+
+    const events = await this.prisma.auditEvent.findMany({
+      where: {
+        branchId: context.branchId,
+        action: { in: ['SHIFT_HANDOVER', 'WAITER_SHIFT_HANDOVER'] },
+        ...(Object.keys(occurredAt).length > 0 ? { occurredAt } : {}),
+      },
+      orderBy: { occurredAt: 'desc' },
+      take: 500,
+    });
+
+    const mappedAll: ShiftHandoverHistoryItemDto[] = events.map((ev) => {
+      const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
+      if (ev.action === 'WAITER_SHIFT_HANDOVER') {
+        const tables = Array.isArray(meta.tablesTransferred)
+          ? meta.tablesTransferred.map((t) => String(t))
+          : [];
+        return {
+          id: ev.id,
+          kind: 'WAITER',
+          handedOverAt: ev.occurredAt,
+          outgoingName: String(meta.outgoingWaiter ?? 'Waiter'),
+          incomingName: String(meta.incomingWaiter ?? 'Waiter'),
+          transferredCashAmount: String(meta.transferredCashAmount ?? '0'),
+          tablesTransferredCount: Number(
+            meta.tablesTransferredCount ?? tables.length,
+          ),
+          tablesTransferredNames: tables,
+          notes: typeof meta.notes === 'string' ? meta.notes : undefined,
+        };
+      }
+      return {
+        id: ev.id,
+        kind: 'CASHIER',
+        handedOverAt: ev.occurredAt,
+        outgoingName: String(meta.outgoingCashier ?? 'Cashier'),
+        incomingName: String(meta.incomingCashier ?? 'Cashier'),
+        countedAmount: String(meta.countedAmount ?? '0'),
+        floatForNextCashier: String(meta.floatForNextCashier ?? '0'),
+        safeDropAmount: String(meta.safeDropAmount ?? '0'),
+        varianceAmount: String(meta.varianceAmount ?? '0'),
+        notes: typeof meta.notes === 'string' ? meta.notes : undefined,
+      };
+    });
+
+    const summary = {
+      totalCount: mappedAll.length,
+      cashierCount: mappedAll.filter((h) => h.kind === 'CASHIER').length,
+      waiterCount: mappedAll.filter((h) => h.kind === 'WAITER').length,
+      varianceCount: mappedAll.filter(
+        (h) =>
+          h.kind === 'CASHIER' &&
+          Math.abs(Number(h.varianceAmount ?? 0)) > 0.01,
+      ).length,
+    };
+
+    const search = (query.search || '').trim().toLowerCase();
+    const filtered = mappedAll.filter((h) => {
+      if (actions.length === 1) {
+        if (kind === 'CASHIER' && h.kind !== 'CASHIER') return false;
+        if (kind === 'WAITER' && h.kind !== 'WAITER') return false;
+      }
+      if (!search) return true;
+      return (
+        h.outgoingName.toLowerCase().includes(search) ||
+        h.incomingName.toLowerCase().includes(search) ||
+        (h.notes ?? '').toLowerCase().includes(search) ||
+        (h.tablesTransferredNames ?? []).some((t) =>
+          t.toLowerCase().includes(search),
+        )
+      );
+    });
+
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 15));
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const page = Math.min(totalPages, Math.max(1, Number(query.page) || 1));
+    const start = (page - 1) * limit;
+
+    return {
+      items: filtered.slice(start, start + limit),
+      total,
+      page,
+      limit,
+      totalPages,
+      summary,
+    };
+  }
+
+  async getManagerHandoverDetail(
+    userId: string,
+    handoverId: string,
+  ): Promise<ShiftHandoverDetailDto> {
+    const context = await this.identityContext.getByUserId(userId);
+    if (!context.branchId) {
+      throw new ForbiddenException('Branch context required.');
+    }
+    this.casl.assertCan(
+      context,
+      'manage',
+      'Shift',
+      'Only managers can view shift handover details.',
+    );
+
+    const ev = await this.prisma.auditEvent.findFirst({
+      where: {
+        id: handoverId,
+        branchId: context.branchId,
+        action: { in: ['SHIFT_HANDOVER', 'WAITER_SHIFT_HANDOVER'] },
+      },
+    });
+    if (!ev) {
+      throw new NotFoundException('Shift handover record not found.');
+    }
+
+    const meta = (ev.metadataJson ?? {}) as Record<string, unknown>;
+    const stationMap = new Map<string, { itemCount: number; total: number }>();
+    const addStationItem = (
+      stationName: string,
+      qty: number,
+      lineTotal: number,
+    ) => {
+      const key = stationName || 'Other';
+      const cur = stationMap.get(key) ?? { itemCount: 0, total: 0 };
+      cur.itemCount += qty;
+      cur.total += lineTotal;
+      stationMap.set(key, cur);
+    };
+
+    if (ev.action === 'WAITER_SHIFT_HANDOVER') {
+      const shiftSessionId = ev.entityId ?? undefined;
+      const windowStart = new Date(ev.occurredAt.getTime() - 10_000);
+      const windowEnd = new Date(ev.occurredAt.getTime() + 10_000);
+
+      // Find TableAssignments released at handover or created with reason SHIFT_HANDOVER
+      const assignments = shiftSessionId
+        ? await this.prisma.tableAssignment.findMany({
+            where: {
+              branchId: context.branchId,
+              OR: [
+                {
+                  shiftSessionId,
+                  releasedAt: { gte: windowStart, lte: windowEnd },
+                },
+                {
+                  reason: 'SHIFT_HANDOVER',
+                  assignedAt: { gte: windowStart, lte: windowEnd },
+                  assignedByMembershipId: ev.actorStaffMembershipId ?? undefined,
+                },
+              ],
+            },
+            include: {
+              session: {
+                include: {
+                  table: { include: { location: true } },
+                  orders: { select: { id: true } },
+                  orderItems: {
+                    where: { state: { not: 'CANCELLED' } },
+                    orderBy: { createdAt: 'asc' },
+                  },
+                },
+              },
+            },
+          })
+        : [];
+
+      const seenSessionIds = new Set<string>();
+      const tables = [] as ShiftHandoverDetailDto['tables'];
+      let openTablesTotal = 0;
+
+      for (const a of assignments) {
+        const ts = a.session;
+        if (!ts || seenSessionIds.has(ts.id)) continue;
+        seenSessionIds.add(ts.id);
+
+        let tableTotal = 0;
+        let itemsCount = 0;
+        const items = ts.orderItems.map((oi) => {
+          const unit = Number(oi.unitPriceSnapshot);
+          const lineTotal = unit * oi.quantity;
+          tableTotal += lineTotal;
+          itemsCount += oi.quantity;
+          addStationItem(oi.stationNameSnapshot, oi.quantity, lineTotal);
+          return {
+            id: oi.id,
+            itemName: oi.itemNameSnapshot,
+            quantity: oi.quantity,
+            unitPrice: unit.toFixed(2),
+            totalPrice: lineTotal.toFixed(2),
+            stationName: oi.stationNameSnapshot,
+            state: oi.state,
+          };
+        });
+
+        openTablesTotal += tableTotal;
+        tables.push({
+          tableSessionId: ts.id,
+          tableName: ts.table.displayName,
+          locationName: ts.table.location?.name,
+          guestCount: ts.guestCount,
+          openedAt: ts.openedAt,
+          ordersCount: ts.orders.length,
+          itemsCount,
+          totalAmount: tableTotal.toFixed(2),
+          items,
+        });
+      }
+
+      // Payments & cash drops during the outgoing waiter's shift
+      const [payments, drops] = shiftSessionId
+        ? await Promise.all([
+            this.prisma.payment.findMany({
+              where: {
+                collectorShiftSessionId: shiftSessionId,
+                status: { not: 'CANCELLED' },
+              },
+            }),
+            this.prisma.cashDrop.findMany({
+              where: { waiterShiftSessionId: shiftSessionId },
+            }),
+          ])
+        : [[], []];
+
+      let cashCollected = 0;
+      let nonCashCollected = 0;
+      const pmMap = new Map<string, { count: number; total: number }>();
+      for (const p of payments) {
+        const amt = Number(p.amount);
+        if (p.method.toUpperCase() === 'CASH') cashCollected += amt;
+        else nonCashCollected += amt;
+        const cur = pmMap.get(p.method) ?? { count: 0, total: 0 };
+        cur.count += 1;
+        cur.total += amt;
+        pmMap.set(p.method, cur);
+      }
+
+      const cashDropsGiven = drops.reduce(
+        (sum, d) => sum + Number(d.countedAmount ?? d.declaredAmount ?? 0),
+        0,
+      );
+
+      return {
+        id: ev.id,
+        kind: 'WAITER',
+        handedOverAt: ev.occurredAt,
+        outgoingName: String(meta.outgoingWaiter ?? 'Waiter'),
+        incomingName: String(meta.incomingWaiter ?? 'Waiter'),
+        notes: typeof meta.notes === 'string' ? meta.notes : undefined,
+        money: {
+          cashCollected: cashCollected.toFixed(2),
+          nonCashCollected: nonCashCollected.toFixed(2),
+          cashDropsGiven: cashDropsGiven.toFixed(2),
+          transferredCashAmount: Number(
+            meta.transferredCashAmount ?? 0,
+          ).toFixed(2),
+          openTablesTotalValue: openTablesTotal.toFixed(2),
+        },
+        stationBreakdown: Array.from(stationMap.entries()).map(
+          ([stationName, v]) => ({
+            stationName,
+            itemCount: v.itemCount,
+            totalAmount: v.total.toFixed(2),
+          }),
+        ),
+        tables,
+        paymentMethods: Array.from(pmMap.entries()).map(([method, v]) => ({
+          method,
+          count: v.count,
+          totalAmount: v.total.toFixed(2),
+        })),
+        cashDrops: [],
+      };
+    }
+
+    // CASHIER handover (entityId = CashierFinancialSession.id)
+    const financial = ev.entityId
+      ? await this.prisma.cashierFinancialSession.findUnique({
+          where: { id: ev.entityId },
+          include: {
+            cashDrops: {
+              include: {
+                waiter: {
+                  include: { user: { select: { displayName: true } } },
+                },
+              },
+            },
+          },
+        })
+      : null;
+
+    const payments = financial
+      ? await this.prisma.payment.findMany({
+          where: {
+            collectorShiftSessionId: financial.shiftSessionId,
+            status: { not: 'CANCELLED' },
+          },
+          include: {
+            bill: {
+              include: {
+                lines: {
+                  include: {
+                    orderItem: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+      : [];
+
+    let cashCollected = 0;
+    let nonCashCollected = 0;
+    const pmMap = new Map<string, { count: number; total: number }>();
+    const seenBillIds = new Set<string>();
+
+    for (const p of payments) {
+      const amt = Number(p.amount);
+      if (p.method.toUpperCase() === 'CASH') cashCollected += amt;
+      else nonCashCollected += amt;
+      const cur = pmMap.get(p.method) ?? { count: 0, total: 0 };
+      cur.count += 1;
+      cur.total += amt;
+      pmMap.set(p.method, cur);
+
+      if (p.bill && !seenBillIds.has(p.bill.id)) {
+        seenBillIds.add(p.bill.id);
+        for (const line of p.bill.lines) {
+          const station =
+            line.orderItem?.stationNameSnapshot ?? 'Counter / Other';
+          addStationItem(
+            station,
+            Number(line.quantity),
+            Number(line.lineTotal),
+          );
+        }
+      }
+    }
+
+    const openingFloat = Number(financial?.openingFloatAmount ?? 0);
+    const cashDropsList = (financial?.cashDrops ?? []).map((d) => ({
+      id: d.id,
+      waiterName: d.waiter?.user?.displayName ?? 'Waiter',
+      amount: Number(d.countedAmount ?? d.declaredAmount ?? 0).toFixed(2),
+      receivedAt: d.receivedAt,
+    }));
+    const cashDropsReceived = cashDropsList.reduce(
+      (sum, d) => sum + Number(d.amount),
+      0,
+    );
+    const counted = Number(meta.countedAmount ?? 0);
+    const variance = Number(meta.varianceAmount ?? 0);
+    const expectedCash = counted - variance;
+
+    return {
+      id: ev.id,
+      kind: 'CASHIER',
+      handedOverAt: ev.occurredAt,
+      outgoingName: String(meta.outgoingCashier ?? 'Cashier'),
+      incomingName: String(meta.incomingCashier ?? 'Cashier'),
+      notes: typeof meta.notes === 'string' ? meta.notes : undefined,
+      money: {
+        openingFloat: openingFloat.toFixed(2),
+        cashCollected: cashCollected.toFixed(2),
+        nonCashCollected: nonCashCollected.toFixed(2),
+        cashDropsReceived: cashDropsReceived.toFixed(2),
+        expectedCash: expectedCash.toFixed(2),
+        countedAmount: counted.toFixed(2),
+        floatForNextCashier: Number(meta.floatForNextCashier ?? 0).toFixed(2),
+        safeDropAmount: Number(meta.safeDropAmount ?? 0).toFixed(2),
+        varianceAmount: variance.toFixed(2),
+      },
+      stationBreakdown: Array.from(stationMap.entries()).map(
+        ([stationName, v]) => ({
+          stationName,
+          itemCount: v.itemCount,
+          totalAmount: v.total.toFixed(2),
+        }),
+      ),
+      tables: [],
+      paymentMethods: Array.from(pmMap.entries()).map(([method, v]) => ({
+        method,
+        count: v.count,
+        totalAmount: v.total.toFixed(2),
+      })),
+      cashDrops: cashDropsList,
+    };
   }
 
   async managerForceClockOut(

@@ -142,6 +142,18 @@ export class TenantExporterService {
       sqlChunks.push('');
     };
 
+    // 0. Export System Roles & Permissions (required by staff_role_assignments)
+    for (const sysTable of ['restaurant_roles', 'permissions', 'role_permissions']) {
+      try {
+        const rows: any[] = await this.prisma.$queryRawUnsafe(
+          `SELECT * FROM public."${sysTable}";`,
+        );
+        appendTableInserts(sysTable, rows);
+      } catch (err: any) {
+        this.logger.warn(`Could not export ${sysTable}: ${err.message}`);
+      }
+    }
+
     // 1. Export Tenant Master Row
     appendTableInserts('tenants', tenantRows);
 

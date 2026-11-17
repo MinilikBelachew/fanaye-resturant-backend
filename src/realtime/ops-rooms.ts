@@ -21,3 +21,7 @@ export function stationRoom(stationId: string): string {
 export function tenantRoom(tenantId: string): string {
   return `tenant:${tenantId}`;
 }
+
+export function superAdminRoom(): string {
+  return 'platform:super_admin';
+}

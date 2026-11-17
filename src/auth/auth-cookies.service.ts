@@ -81,11 +81,15 @@ export class AuthCookiesService {
     );
     const isProd =
       this.configService.get('app.nodeEnv', { infer: true }) === 'production';
+    const backendDomain =
+      this.configService.get('app.backendDomain', { infer: true }) || '';
+    const isHttps = backendDomain.toLowerCase().startsWith('https://');
+    const useSecureCookie = isProd && isHttps;
 
     return {
       httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'none' : 'lax',
+      secure: useSecureCookie,
+      sameSite: useSecureCookie ? 'none' : 'lax',
       maxAge: remember ? ms(refreshExpires) : undefined,
     };
   }

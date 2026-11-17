@@ -9,6 +9,7 @@ import { NotificationsService } from './notifications.service';
 import { OpsEventsListener } from './ops-events.listener';
 import { OpsGateway } from './ops.gateway';
 import { OpsNotifyService } from './ops-notify.service';
+import { PublicFeedGateway } from './public-feed.gateway';
 
 @Module({
   imports: [
@@ -27,9 +28,10 @@ import { OpsNotifyService } from './ops-notify.service';
   providers: [
     OpsNotifyService,
     OpsGateway,
+    PublicFeedGateway,
     OpsEventsListener,
     NotificationsService,
   ],
-  exports: [OpsNotifyService, OpsGateway],
+  exports: [OpsNotifyService, OpsGateway, PublicFeedGateway],
 })
 export class RealtimeModule {}

@@ -13,10 +13,12 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { FeedbackService } from './feedback.service';
 import {
+  ApproveFeedbackWebsiteDto,
   FeedbackItemDto,
   FeedbackListQueryDto,
   FeedbackListResponseDto,
   FeedbackSummaryDto,
+  PublicApprovedFeedbackDto,
   PublicFeedbackSummaryDto,
   SubmitFeedbackDto,
   SubmitFeedbackResponseDto,
@@ -36,6 +38,14 @@ export class PublicFeedbackController {
   @ApiOkResponse({ type: PublicFeedbackSummaryDto })
   getSummary(@Param('slug') slug: string): Promise<PublicFeedbackSummaryDto> {
     return this.feedbackService.getPublicSummary(slug);
+  }
+
+  @Get(':slug/feedback/approved')
+  @ApiOkResponse({ type: PublicApprovedFeedbackDto })
+  getApprovedForWebsite(
+    @Param('slug') slug: string,
+  ): Promise<PublicApprovedFeedbackDto> {
+    return this.feedbackService.getApprovedForWebsite(slug);
   }
 
   @Post(':slug/tables/:tableId/feedback')
@@ -94,6 +104,20 @@ export class AdminFeedbackController {
       String(request.user.id),
       id,
       dto.status,
+    );
+  }
+
+  @Patch(':id/website-approval')
+  @ApiOkResponse({ type: FeedbackItemDto })
+  setWebsiteApproval(
+    @Request() request,
+    @Param('id') id: string,
+    @Body() dto: ApproveFeedbackWebsiteDto,
+  ): Promise<FeedbackItemDto> {
+    return this.feedbackService.setWebsiteApproval(
+      String(request.user.id),
+      id,
+      dto.approved,
     );
   }
 }

@@ -13,6 +13,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { AllConfigType } from '../config/config.type';
 import { IdentityContextService } from '../identity/identity-context.service';
+import { PLATFORM_ROLE_CODE } from '../identity/identity.constants';
 import { JwtPayloadType } from '../auth/strategies/types/jwt-payload.type';
 import { OpsNotifyPayload } from './ops-events';
 import {
@@ -21,6 +22,7 @@ import {
   managerRoom,
   staffRoom,
   stationRoom,
+  superAdminRoom,
   tenantRoom,
 } from './ops-rooms';
 
@@ -64,9 +66,36 @@ export class OpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const secret = this.configService.getOrThrow('auth.secret', {
         infer: true,
       });
-      const payload = await this.jwtService.verifyAsync<JwtPayloadType>(token, {
+      const payload = await this.jwtService.verifyAsync<
+        JwtPayloadType & {
+          isFloorKiosk?: boolean;
+          tenantId?: string;
+          branchId?: string;
+        }
+      >(token, {
         secret,
       });
+
+      if (payload?.isFloorKiosk && payload?.branchId && payload?.tenantId) {
+        client.data = {
+          userId: 'floor-kiosk',
+          tenantId: String(payload.tenantId),
+          branchId: String(payload.branchId),
+          staffMembershipId: null,
+          roleCode: 'FLOOR_KIOSK',
+          stationId: null,
+        } satisfies OpsSocketData;
+        await client.join(tenantRoom(String(payload.tenantId)));
+        await client.join(branchRoom(String(payload.branchId)));
+        client.emit('ops.connected', {
+          ok: true,
+          tenantId: payload.tenantId,
+          branchId: payload.branchId,
+          roleCode: 'FLOOR_KIOSK',
+        });
+        return;
+      }
+
       if (!payload?.id) {
         client.disconnect(true);
         return;
@@ -105,6 +134,13 @@ export class OpsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       if (context.stationId) {
         await client.join(stationRoom(context.stationId));
+      }
+      if (
+        context.roleCode === PLATFORM_ROLE_CODE ||
+        context.roleCode === 'PLATFORM_ADMIN' ||
+        context.roleCode === 'SUPER_ADMIN'
+      ) {
+        await client.join(superAdminRoom());
       }
 
       client.emit('ops.connected', {

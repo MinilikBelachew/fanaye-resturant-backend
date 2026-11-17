@@ -1,6 +1,11 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import * as zlib from 'zlib';
+import {
+  SYSTEM_PERMISSIONS,
+  SYSTEM_ROLES,
+  SYSTEM_ROLE_PERMISSIONS,
+} from './system-roles.constants';
 
 @Injectable()
 export class TenantRestorerService {
@@ -99,6 +104,8 @@ export class TenantRestorerService {
         { timeout: 120000 }, // 120s timeout for large restores
       );
 
+      await this.ensureSystemRolesAndPermissions();
+
       this.logger.log(
         `Successfully restored tenant "${archiveTenantName}" (${archiveTenantId}) with ${statements.length} SQL statements.`,
       );
@@ -183,6 +190,50 @@ export class TenantRestorerService {
       totalStatements: statementsCount,
       isTenantMatch,
     };
+  }
+
+  /**
+   * Ensures fixed system roles (1..8), permissions, and role-permission links
+   * exist locally even if the cloud archive omitted them.
+   */
+  async ensureSystemRolesAndPermissions(): Promise<void> {
+    for (const role of SYSTEM_ROLES) {
+      await this.prisma.restaurantRole.upsert({
+        where: { id: role.id },
+        update: {},
+        create: role,
+      });
+    }
+
+    for (const permission of SYSTEM_PERMISSIONS) {
+      await this.prisma.permission.upsert({
+        where: { code: permission.code },
+        update: { domain: permission.domain },
+        create: permission,
+      });
+    }
+
+    const permissionRows = await this.prisma.permission.findMany();
+    const idByCode = new Map(permissionRows.map((row) => [row.code, row.id]));
+
+    for (const role of SYSTEM_ROLES) {
+      const granted = SYSTEM_ROLE_PERMISSIONS[role.code];
+      const codes =
+        granted === '*' ? SYSTEM_PERMISSIONS.map((entry) => entry.code) : granted;
+      for (const code of codes) {
+        const permissionId = idByCode.get(code);
+        if (!permissionId) continue;
+        await this.prisma.rolePermission.upsert({
+          where: {
+            roleId_permissionId: { roleId: role.id, permissionId },
+          },
+          update: {},
+          create: { roleId: role.id, permissionId, allowed: true },
+        });
+      }
+    }
+
+    this.logger.log('Verified system roles and permissions locally.');
   }
 }
 

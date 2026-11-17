@@ -20,6 +20,7 @@ import {
   type BranchRuntime,
 } from './seed/history';
 import { seedFinanceCategories } from './seed/finance';
+import { seedMarketPrices } from './seed/market-prices';
 import { atTime, businessDateOnly, id, startOfDay } from './seed/ids';
 
 const prisma = new PrismaClient();
@@ -293,7 +294,7 @@ async function main() {
   });
 
   await prisma.tenantSite.upsert({
-    where: { tenantId: TENANT_ID },
+    where: { id: id('tenant-site:mamas') },
     update: {
       slug: TENANT_SLUG,
       status: 'PUBLISHED',
@@ -1121,6 +1122,8 @@ async function main() {
   console.log('Today open shift sessions seeded.');
 
   await seedTwoYearHistory(prisma, branchRuntimes);
+  await seedMarketPrices(prisma);
+  await seedLandingTestimonials(prisma);
 
   console.log("Seeding finished — Mama's Kitchen ready.");
 }
@@ -1133,3 +1136,65 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
+
+async function seedLandingTestimonials(prisma: PrismaClient) {
+  const existingCount = await prisma.landingTestimonial.count();
+  if (existingCount > 0) {
+    console.log('Landing testimonials already present, skipping seed.');
+    return;
+  }
+
+  await prisma.landingTestimonial.createMany({
+    data: [
+      {
+        id: '99999999-1111-4111-8111-111111111101',
+        authorName: 'Selamawit Bekele',
+        authorRole: 'Owner & General Manager',
+        restaurantName: 'Bole Terrace Kitchen',
+        quote:
+          'Before Restorch, Friday dinner rushes meant lost paper tickets and 45 minutes counting receipts at midnight. Now every station sees orders in under a second and our Z-Report closes in 2 minutes.',
+        photoUrl: null,
+        rating: 5,
+        isPublished: true,
+        sortOrder: 1,
+      },
+      {
+        id: '99999999-1111-4111-8111-111111111102',
+        authorName: 'Dawit Tadesse',
+        authorRole: 'Managing Partner',
+        restaurantName: 'Kazanchis Grill & Lounge',
+        quote:
+          'Tracking Telebirr and CBE transfers alongside cash drops stopped end-of-shift discrepancies immediately. Our cashiers and managers finally work off one clean ledger.',
+        photoUrl: null,
+        rating: 5,
+        isPublished: true,
+        sortOrder: 2,
+      },
+      {
+        id: '99999999-1111-4111-8111-111111111103',
+        authorName: 'Hanna Girma',
+        authorRole: 'Founder & Head Chef',
+        restaurantName: 'Sarbet Buna & Bistro',
+        quote:
+          'Linking our recipes to store stock and watching live Gebeya market prices changed how we price our menu. We spot onion or oil cost spikes before they eat our margin.',
+        photoUrl: null,
+        rating: 5,
+        isPublished: true,
+        sortOrder: 3,
+      },
+      {
+        id: '99999999-1111-4111-8111-111111111104',
+        authorName: 'Yohannes Kebede',
+        authorRole: 'Operations Director',
+        restaurantName: 'Entoto View Hotel & Dining',
+        quote:
+          'Our waiters switch effortlessly between Amharic and English, room-service folios post straight to guest rooms, and we kept running smoothly even when Wi-Fi dropped.',
+        photoUrl: null,
+        rating: 5,
+        isPublished: true,
+        sortOrder: 4,
+      },
+    ],
+  });
+  console.log('Seeded 4 landing testimonials.');
+}

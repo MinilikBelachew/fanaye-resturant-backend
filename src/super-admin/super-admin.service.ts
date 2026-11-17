@@ -7,11 +7,15 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { AllConfigType } from '../config/config.type';
 import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { PLATFORM_ROLE_CODE } from '../identity/identity.constants';
+import { RoleEnum } from '../roles/roles.enum';
 import {
   CityDistributionItemDto,
   CreatePlatformStaffDto,
@@ -19,6 +23,9 @@ import {
   CreateTenantDto,
   DeletePlanResponseDto,
   DeleteTenantResponseDto,
+  GetTenantActivityQueryDto,
+  ImpersonateResponseDto,
+  ImpersonateSessionDto,
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
@@ -41,6 +48,7 @@ import {
   SuperAdminDashboardDataDto,
   SuperAdminDashboardResponseDto,
   SuperAdminKpisDto,
+  TenantActivityResponseDto,
   TenantDetailDto,
   TenantDetailResponseDto,
   TenantFleetItemDto,
@@ -126,6 +134,8 @@ export class SuperAdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly identity: IdentityContextService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService<AllConfigType>,
   ) {}
 
   private async verifySuperAdminAccess(userId: string): Promise<void> {
@@ -3128,5 +3138,923 @@ export class SuperAdminService {
     });
 
     return this.getStaffMemberDto(membershipId);
+  }
+
+  async impersonateSession(
+    actorUserId: string,
+    sessionId: string | number | undefined,
+    dto: ImpersonateSessionDto,
+  ): Promise<ImpersonateResponseDto> {
+    await this.verifySuperAdminAccess(actorUserId);
+
+    let targetMembershipId: string;
+    let targetUserId: string;
+    let targetTenantId: string;
+    let targetBranchId: string | null = dto.branchId?.trim() || null;
+    let targetRoleLabel: string;
+    let targetDisplayName: string;
+    let tenantDisplayName: string;
+
+    if (dto.membershipId?.trim()) {
+      const membership = await this.prisma.tenantStaffMembership.findUnique({
+        where: { id: dto.membershipId.trim() },
+        include: {
+          tenant: true,
+          user: true,
+          roleAssignments: {
+            where: { status: 'ACTIVE' },
+            include: { role: true },
+          },
+          branchAssignments: {
+            where: { status: 'ACTIVE', releasedAt: null },
+          },
+        },
+      });
+
+      if (!membership) {
+        throw new NotFoundException('Staff membership not found.');
+      }
+      if (
+        membership.status !== 'ACTIVE' ||
+        membership.user.accountStatus !== 'ACTIVE'
+      ) {
+        throw new BadRequestException(
+          'Cannot impersonate a suspended or inactive staff account.',
+        );
+      }
+
+      targetMembershipId = membership.id;
+      targetUserId = membership.userId;
+      targetTenantId = membership.tenantId;
+      targetBranchId =
+        targetBranchId || membership.branchAssignments[0]?.branchId || null;
+      targetRoleLabel = membership.roleAssignments[0]?.role?.code || 'STAFF';
+      targetDisplayName =
+        membership.employeeDisplayName || membership.user.displayName;
+      tenantDisplayName =
+        membership.tenant.displayName ||
+        membership.tenant.legalName ||
+        'Tenant';
+    } else if (dto.tenantId?.trim()) {
+      const desiredRole = dto.targetRole || 'MANAGER';
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: dto.tenantId.trim() },
+        include: {
+          branches: {
+            where: { status: 'ACTIVE' },
+            orderBy: { createdAt: 'asc' },
+          },
+          staffMemberships: {
+            where: { status: 'ACTIVE' },
+            include: {
+              user: {
+                include: {
+                  platformRoles: { where: { status: 'ACTIVE' } },
+                },
+              },
+              roleAssignments: {
+                where: { status: 'ACTIVE', revokedAt: null },
+                include: { role: true },
+              },
+              branchAssignments: {
+                where: { status: 'ACTIVE', releasedAt: null },
+              },
+            },
+          },
+        },
+      });
+
+      if (!tenant) {
+        throw new NotFoundException('Tenant not found.');
+      }
+
+      tenantDisplayName =
+        tenant.displayName || tenant.legalName || 'Restaurant';
+      const branchId = targetBranchId || tenant.branches[0]?.id || null;
+      targetBranchId = branchId;
+
+      const matchingMemberships = tenant.staffMemberships.filter(
+        (m) =>
+          m.user.accountStatus === 'ACTIVE' &&
+          m.roleAssignments.some((r) => r.role?.code === desiredRole),
+      );
+
+      const chosen =
+        (branchId
+          ? matchingMemberships.find((m) =>
+              m.branchAssignments.some((b) => b.branchId === branchId),
+            )
+          : undefined) || matchingMemberships[0];
+
+      if (!chosen) {
+        // Auto-provision an active Owner or Manager account for this tenant so support impersonation always works
+        const created = await this.prisma.$transaction(async (tx) => {
+          const defaultName =
+            desiredRole === 'OWNER_ADMIN'
+              ? `${tenantDisplayName} Owner`
+              : `${tenantDisplayName} Manager`;
+          const user = await tx.appUser.create({
+            data: {
+              displayName: defaultName,
+              accountStatus: 'ACTIVE',
+              preferredBranchId: branchId,
+            },
+          });
+          const membership = await tx.tenantStaffMembership.create({
+            data: {
+              tenantId: tenant.id,
+              userId: user.id,
+              employeeDisplayName: defaultName,
+              status: 'ACTIVE',
+              joinedAt: new Date(),
+            },
+          });
+          if (branchId) {
+            await tx.branchStaffAssignment.create({
+              data: {
+                tenantId: tenant.id,
+                branchId,
+                staffMembershipId: membership.id,
+                status: 'ACTIVE',
+              },
+            });
+          }
+          if (desiredRole === 'OWNER_ADMIN') {
+            await this.ensureOwnerRole(tx, tenant.id, membership.id);
+          } else if (branchId) {
+            await this.ensureManagerRole(
+              tx,
+              tenant.id,
+              branchId,
+              membership.id,
+            );
+          }
+          return { user, membership, defaultName };
+        });
+
+        targetMembershipId = created.membership.id;
+        targetUserId = created.user.id;
+        targetTenantId = tenant.id;
+        targetRoleLabel = desiredRole;
+        targetDisplayName = created.defaultName;
+      } else {
+        targetMembershipId = chosen.id;
+        targetUserId = chosen.userId;
+        targetTenantId = tenant.id;
+        targetRoleLabel = desiredRole;
+        targetDisplayName =
+          chosen.employeeDisplayName || chosen.user.displayName;
+
+        if (branchId) {
+          await this.prisma.$transaction(async (tx) => {
+            await tx.appUser.update({
+              where: { id: chosen.userId },
+              data: { preferredBranchId: branchId },
+            });
+            const hasBranchAssignment = chosen.branchAssignments.some(
+              (b) => b.branchId === branchId,
+            );
+            if (!hasBranchAssignment && desiredRole === 'MANAGER') {
+              await tx.branchStaffAssignment.create({
+                data: {
+                  tenantId: tenant.id,
+                  branchId,
+                  staffMembershipId: chosen.id,
+                  status: 'ACTIVE',
+                },
+              });
+            }
+          });
+        }
+      }
+    } else {
+      throw new BadRequestException(
+        'Provide either membershipId or tenantId to impersonate.',
+      );
+    }
+
+    const expiresInMs = 2 * 60 * 60 * 1000; // 2 hours
+    const tokenExpires = Date.now() + expiresInMs;
+
+    const token = await this.jwtService.signAsync(
+      {
+        id: targetUserId,
+        role: { id: RoleEnum.user },
+        sessionId: sessionId ?? 'impersonation',
+        impersonatedBy: actorUserId,
+        impersonatedMembershipId: targetMembershipId,
+      },
+      {
+        secret: this.configService.getOrThrow('auth.secret', { infer: true }),
+        expiresIn: '2h',
+      },
+    );
+
+    await this.prisma.auditEvent.create({
+      data: {
+        tenantId: targetTenantId,
+        branchId: targetBranchId,
+        actorUserId,
+        action: 'PLATFORM_IMPERSONATION_STARTED',
+        entityType: 'STAFF_MEMBERSHIP',
+        entityId: targetMembershipId,
+        reason: `Super Admin impersonated ${targetDisplayName} (${targetRoleLabel}) at ${tenantDisplayName}`,
+      },
+    });
+
+    const context = await this.identity.getByUserId(targetUserId, {
+      ignorePlatformRoles: true,
+      membershipId: targetMembershipId,
+      impersonatedBy: actorUserId,
+    });
+
+    return {
+      token,
+      tokenExpires,
+      context,
+    };
+  }
+
+  async getTenantActivity(
+    userId: string,
+    query: GetTenantActivityQueryDto,
+  ): Promise<TenantActivityResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const tenantId = query.tenantId?.trim() || undefined;
+    const branchId = query.branchId?.trim() || undefined;
+    const movementType = (query.movementType || 'ALL').trim().toUpperCase();
+
+    const todayUtc = new Date();
+    todayUtc.setUTCHours(0, 0, 0, 0);
+
+    const endDate = query.endDate?.trim()
+      ? new Date(`${query.endDate.trim()}T23:59:59.999Z`)
+      : new Date(todayUtc.getTime() + 86_399_999);
+
+    const defaultStart = new Date(todayUtc);
+    defaultStart.setUTCDate(defaultStart.getUTCDate() - 6);
+
+    const startDate = query.startDate?.trim()
+      ? new Date(`${query.startDate.trim()}T00:00:00.000Z`)
+      : defaultStart;
+
+    const startBusinessDate = new Date(
+      Date.UTC(
+        startDate.getUTCFullYear(),
+        startDate.getUTCMonth(),
+        startDate.getUTCDate(),
+      ),
+    );
+    const endBusinessDate = new Date(
+      Date.UTC(
+        endDate.getUTCFullYear(),
+        endDate.getUTCMonth(),
+        endDate.getUTCDate(),
+      ),
+    );
+
+    const scopeWhere: { tenantId?: string; branchId?: string } = {};
+    if (tenantId) scopeWhere.tenantId = tenantId;
+    if (branchId) scopeWhere.branchId = branchId;
+
+    const businessDateRange = {
+      gte: startBusinessDate,
+      lte: endBusinessDate,
+    };
+    const timestampRange = {
+      gte: startDate,
+      lte: endDate,
+    };
+
+    const [
+      branches,
+      diningTables,
+      bills,
+      payments,
+      tableSessions,
+      orders,
+      shifts,
+      cashDrops,
+      financeEntries,
+      dailyCloses,
+      inventoryEntries,
+      auditEvents,
+    ] = await Promise.all([
+      this.prisma.branch.findMany({
+        where: {
+          status: 'ACTIVE',
+          ...(tenantId ? { tenantId } : {}),
+        },
+        include: {
+          tenant: true,
+          diningTables: { where: { archivedAt: null } },
+          tableSessions: {
+            where: { closedAt: null, status: { not: 'CLOSED' } },
+          },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.diningTable.findMany({
+        where: {
+          archivedAt: null,
+          ...scopeWhere,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          assignedWaiter: true,
+          sessions: {
+            where: { closedAt: null, status: { not: 'CLOSED' } },
+            include: {
+              primaryWaiter: true,
+              bill: true,
+              orders: true,
+            },
+            orderBy: { openedAt: 'desc' },
+            take: 1,
+          },
+        },
+        orderBy: [{ branchId: 'asc' }, { sortOrder: 'asc' }],
+      }),
+      this.prisma.bill.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          generatedBy: true,
+          tableSession: { include: { table: true } },
+        },
+        orderBy: { generatedAt: 'desc' },
+        take: 400,
+      }),
+      this.prisma.payment.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          collector: true,
+          bill: true,
+        },
+        orderBy: { initiatedAt: 'desc' },
+        take: 400,
+      }),
+      this.prisma.tableSession.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          table: true,
+          primaryWaiter: true,
+          bill: true,
+          orders: true,
+        },
+        orderBy: { openedAt: 'desc' },
+        take: 400,
+      }),
+      this.prisma.order.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          createdBy: true,
+          tableSession: { include: { table: true } },
+          items: { select: { itemNameSnapshot: true, quantity: true } },
+        },
+        orderBy: { confirmedAt: 'desc' },
+        take: 300,
+      }),
+      this.prisma.shiftSession.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          membership: true,
+          role: true,
+        },
+        orderBy: { clockInAt: 'desc' },
+        take: 300,
+      }),
+      this.prisma.cashDrop.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          waiter: true,
+          receivedBy: true,
+        },
+        orderBy: { initiatedAt: 'desc' },
+        take: 200,
+      }),
+      this.prisma.manualFinanceEntry.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+          status: { not: 'VOID' },
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          createdBy: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+      this.prisma.operationalDailyClose.findMany({
+        where: {
+          ...scopeWhere,
+          businessDate: businessDateRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+        },
+        orderBy: { businessDate: 'desc' },
+      }),
+      this.prisma.inventoryLedgerEntry.findMany({
+        where: {
+          ...(tenantId ? { tenantId } : {}),
+          ...(branchId ? { branchId } : {}),
+          createdAt: timestampRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          ingredient: true,
+          createdBy: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+      this.prisma.auditEvent.findMany({
+        where: {
+          ...(tenantId ? { tenantId } : {}),
+          ...(branchId ? { branchId } : {}),
+          occurredAt: timestampRange,
+        },
+        include: {
+          branch: true,
+          tenant: true,
+          actorUser: true,
+          actorStaff: true,
+        },
+        orderBy: { occurredAt: 'desc' },
+        take: 200,
+      }),
+    ]);
+
+    // 1. Active Tables & Live Floor status
+    const activeTables = diningTables.map((t) => {
+      const openSession = t.sessions[0] ?? null;
+      const isOccupied =
+        Boolean(openSession) ||
+        t.status === 'OCCUPIED' ||
+        t.status === 'BILL_REQUESTED';
+      return {
+        tableId: t.id,
+        tableName: t.displayName,
+        tableNumber: t.displayNumber || t.displayName,
+        isVip: t.isVip,
+        branchId: t.branchId,
+        branchName: t.branch.name,
+        tenantId: t.tenantId,
+        tenantName: t.tenant.displayName || t.tenant.legalName || 'Tenant',
+        status: openSession?.billRequestedAt
+          ? 'BILL_REQUESTED'
+          : isOccupied
+            ? 'OCCUPIED'
+            : t.status,
+        isOccupied,
+        sessionId: openSession?.id ?? null,
+        waiterName:
+          openSession?.primaryWaiter?.employeeDisplayName ||
+          t.assignedWaiter?.employeeDisplayName ||
+          null,
+        guestCount: openSession?.guestCount ?? null,
+        openedAt: openSession?.openedAt?.toISOString() ?? null,
+        runningBillTotal: openSession?.bill
+          ? Number(openSession.bill.totalAmount)
+          : 0,
+        billStatus: openSession?.bill?.status ?? null,
+        ordersCount: openSession?.orders?.length ?? 0,
+      };
+    });
+
+    // 2. Daily Breakdown (grouped by YYYY-MM-DD + branchId)
+    type DayBranchAccumulator = {
+      date: string;
+      branchId: string;
+      branchName: string;
+      tenantId: string;
+      tenantName: string;
+      totalGmv: number;
+      cashSales: number;
+      digitalSales: number;
+      billsCount: number;
+      paidBillsCount: number;
+      ordersCount: number;
+      tableSessionsCount: number;
+      shiftsCount: number;
+      cashDropsTotal: number;
+      expensesTotal: number;
+      dailyCloseStatus: string;
+      cashVariance: number;
+    };
+
+    const dayMap = new Map<string, DayBranchAccumulator>();
+    const ensureDayRow = (
+      dateStr: string,
+      bId: string,
+      bName: string,
+      tId: string,
+      tName: string,
+    ): DayBranchAccumulator => {
+      const key = `${dateStr}::${bId}`;
+      let row = dayMap.get(key);
+      if (!row) {
+        row = {
+          date: dateStr,
+          branchId: bId,
+          branchName: bName,
+          tenantId: tId,
+          tenantName: tName,
+          totalGmv: 0,
+          cashSales: 0,
+          digitalSales: 0,
+          billsCount: 0,
+          paidBillsCount: 0,
+          ordersCount: 0,
+          tableSessionsCount: 0,
+          shiftsCount: 0,
+          cashDropsTotal: 0,
+          expensesTotal: 0,
+          dailyCloseStatus: 'OPEN',
+          cashVariance: 0,
+        };
+        dayMap.set(key, row);
+      }
+      return row;
+    };
+
+    let totalGmv = 0;
+    let cashVolume = 0;
+    let digitalVolume = 0;
+    let paidBills = 0;
+    let unpaidBills = 0;
+
+    for (const b of bills) {
+      if (b.status === 'CANCELLED') continue;
+      const d = ymd(b.businessDate);
+      const tName = b.tenant.displayName || b.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(d, b.branchId, b.branch.name, b.tenantId, tName);
+      const amt = Number(b.totalAmount);
+      row.totalGmv += amt;
+      row.billsCount += 1;
+      totalGmv += amt;
+      if (b.paidAt || b.status === 'SETTLED' || b.status === 'CLOSED') {
+        row.paidBillsCount += 1;
+        paidBills += 1;
+      } else {
+        unpaidBills += 1;
+      }
+    }
+
+    for (const p of payments) {
+      if (p.status === 'CANCELLED') continue;
+      const d = ymd(p.businessDate);
+      const tName = p.tenant.displayName || p.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(d, p.branchId, p.branch.name, p.tenantId, tName);
+      const amt = Number(p.amount);
+      if (p.method === 'CASH') {
+        row.cashSales += amt;
+        cashVolume += amt;
+      } else {
+        row.digitalSales += amt;
+        digitalVolume += amt;
+      }
+    }
+
+    for (const o of orders) {
+      const d = ymd(o.businessDate);
+      const tName = o.tenant.displayName || o.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(d, o.branchId, o.branch.name, o.tenantId, tName);
+      row.ordersCount += 1;
+    }
+
+    for (const ts of tableSessions) {
+      const d = ymd(ts.businessDate);
+      const tName = ts.tenant.displayName || ts.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(
+        d,
+        ts.branchId,
+        ts.branch.name,
+        ts.tenantId,
+        tName,
+      );
+      row.tableSessionsCount += 1;
+    }
+
+    for (const s of shifts) {
+      const d = ymd(s.businessDate);
+      const tName = s.tenant.displayName || s.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(d, s.branchId, s.branch.name, s.tenantId, tName);
+      row.shiftsCount += 1;
+    }
+
+    let cashDropsVolume = 0;
+    for (const cd of cashDrops) {
+      const d = ymd(cd.businessDate);
+      const tName = cd.tenant.displayName || cd.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(
+        d,
+        cd.branchId,
+        cd.branch.name,
+        cd.tenantId,
+        tName,
+      );
+      const amt = Number(cd.countedAmount ?? cd.declaredAmount);
+      row.cashDropsTotal += amt;
+      cashDropsVolume += amt;
+    }
+
+    let expensesVolume = 0;
+    for (const fe of financeEntries) {
+      const d = ymd(fe.businessDate);
+      const tName = fe.tenant.displayName || fe.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(
+        d,
+        fe.branchId,
+        fe.branch.name,
+        fe.tenantId,
+        tName,
+      );
+      if (fe.direction === 'EXPENSE') {
+        const amt = Number(fe.amount);
+        row.expensesTotal += amt;
+        expensesVolume += amt;
+      }
+    }
+
+    for (const dc of dailyCloses) {
+      const d = ymd(dc.businessDate);
+      const tName = dc.tenant.displayName || dc.tenant.legalName || 'Tenant';
+      const row = ensureDayRow(
+        d,
+        dc.branchId,
+        dc.branch.name,
+        dc.tenantId,
+        tName,
+      );
+      row.dailyCloseStatus = dc.status;
+      row.cashVariance = Number(dc.cashierVariance);
+    }
+
+    const dailyBreakdown = Array.from(dayMap.values()).sort((a, b) =>
+      b.date.localeCompare(a.date) || a.branchName.localeCompare(b.branchName),
+    );
+
+    const uniqueDays = new Set(dailyBreakdown.map((d) => d.date)).size || 1;
+
+    // 3.Unified Chronological Movement Feed
+    type MovementItem = {
+      id: string;
+      timestamp: string;
+      category: 'SALES' | 'TABLES' | 'CASH' | 'INVENTORY' | 'SHIFTS' | 'AUDIT';
+      title: string;
+      subtitle: string;
+      amount: number | null;
+      status: string;
+      actorName: string;
+      branchName: string;
+      tenantName: string;
+    };
+
+    const allMovements: MovementItem[] = [];
+
+    if (movementType === 'ALL' || movementType === 'SALES') {
+      for (const b of bills.slice(0, 100)) {
+        const tableLabel = b.tableSession?.table?.displayName
+          ? ` · ${b.tableSession.table.displayName}`
+          : '';
+        allMovements.push({
+          id: `bill-${b.id}`,
+          timestamp: (b.paidAt ?? b.generatedAt).toISOString(),
+          category: 'SALES',
+          title: `Bill ${b.billNumber}${tableLabel}`,
+          subtitle: `Generated by ${b.generatedBy.employeeDisplayName}`,
+          amount: Number(b.totalAmount),
+          status: b.status,
+          actorName: b.generatedBy.employeeDisplayName,
+          branchName: b.branch.name,
+          tenantName: b.tenant.displayName || b.tenant.legalName || 'Tenant',
+        });
+      }
+      for (const p of payments.slice(0, 100)) {
+        allMovements.push({
+          id: `pay-${p.id}`,
+          timestamp: (p.collectedAt ?? p.initiatedAt).toISOString(),
+          category: 'SALES',
+          title: `Payment (${p.method}${p.transferChannel ? ` · ${p.transferChannel}` : ''}) — Bill ${p.bill.billNumber}`,
+          subtitle: `Collected by ${p.collector.employeeDisplayName}`,
+          amount: Number(p.amount),
+          status: p.status,
+          actorName: p.collector.employeeDisplayName,
+          branchName: p.branch.name,
+          tenantName: p.tenant.displayName || p.tenant.legalName || 'Tenant',
+        });
+      }
+    }
+
+    if (movementType === 'ALL' || movementType === 'TABLES') {
+      for (const ts of tableSessions.slice(0, 100)) {
+        allMovements.push({
+          id: `ts-${ts.id}`,
+          timestamp: (ts.closedAt ?? ts.openedAt).toISOString(),
+          category: 'TABLES',
+          title: `${ts.table.displayName} Session (${ts.status})`,
+          subtitle: `Waiter: ${ts.primaryWaiter.employeeDisplayName} · ${ts.orders.length} order(s)${ts.guestCount ? ` · ${ts.guestCount} guests` : ''}`,
+          amount: ts.bill ? Number(ts.bill.totalAmount) : null,
+          status: ts.status,
+          actorName: ts.primaryWaiter.employeeDisplayName,
+          branchName: ts.branch.name,
+          tenantName: ts.tenant.displayName || ts.tenant.legalName || 'Tenant',
+        });
+      }
+      for (const o of orders.slice(0, 80)) {
+        const itemSummary = o.items
+          .slice(0, 3)
+          .map((i) => `${i.quantity}x ${i.itemNameSnapshot}`)
+          .join(', ');
+        allMovements.push({
+          id: `ord-${o.id}`,
+          timestamp: o.confirmedAt.toISOString(),
+          category: 'TABLES',
+          title: `Order Confirmed${o.tableSession?.table ? ` · ${o.tableSession.table.displayName}` : ''}`,
+          subtitle: itemSummary || `${o.items.length} items`,
+          amount: null,
+          status: o.status,
+          actorName: o.createdBy.employeeDisplayName,
+          branchName: o.branch.name,
+          tenantName: o.tenant.displayName || o.tenant.legalName || 'Tenant',
+        });
+      }
+    }
+
+    if (movementType === 'ALL' || movementType === 'CASH') {
+      for (const cd of cashDrops.slice(0, 80)) {
+        allMovements.push({
+          id: `cd-${cd.id}`,
+          timestamp: (cd.receivedAt ?? cd.initiatedAt).toISOString(),
+          category: 'CASH',
+          title: `Cash Drop (${cd.status})`,
+          subtitle: `Waiter: ${cd.waiter.employeeDisplayName}${cd.receivedBy ? ` → Cashier: ${cd.receivedBy.employeeDisplayName}` : ''}`,
+          amount: Number(cd.countedAmount ?? cd.declaredAmount),
+          status: cd.status,
+          actorName: cd.waiter.employeeDisplayName,
+          branchName: cd.branch.name,
+          tenantName: cd.tenant.displayName || cd.tenant.legalName || 'Tenant',
+        });
+      }
+      for (const fe of financeEntries.slice(0, 80)) {
+        allMovements.push({
+          id: `fin-${fe.id}`,
+          timestamp: fe.createdAt.toISOString(),
+          category: 'CASH',
+          title: `${fe.direction}: ${fe.label}`,
+          subtitle: `Settled via ${fe.settledVia} · By ${fe.createdBy.employeeDisplayName}`,
+          amount: Number(fe.amount),
+          status: fe.direction,
+          actorName: fe.createdBy.employeeDisplayName,
+          branchName: fe.branch.name,
+          tenantName: fe.tenant.displayName || fe.tenant.legalName || 'Tenant',
+        });
+      }
+    }
+
+    if (movementType === 'ALL' || movementType === 'INVENTORY') {
+      for (const inv of inventoryEntries.slice(0, 80)) {
+        const qty = Number(inv.quantityDelta);
+        allMovements.push({
+          id: `inv-${inv.id}`,
+          timestamp: inv.createdAt.toISOString(),
+          category: 'INVENTORY',
+          title: `Stock ${inv.entryType.replace(/_/g, ' ')}: ${inv.ingredient.name} (${qty > 0 ? `+${qty}` : qty})`,
+          subtitle: inv.note || inv.supplierNote || 'Inventory ledger movement',
+          amount: inv.unitCostSnapshot
+            ? Math.abs(qty) * Number(inv.unitCostSnapshot)
+            : null,
+          status: inv.entryType,
+          actorName: inv.createdBy?.employeeDisplayName || 'System',
+          branchName: inv.branch?.name || 'Central Warehouse',
+          tenantName:
+            inv.tenant.displayName || inv.tenant.legalName || 'Tenant',
+        });
+      }
+    }
+
+    if (movementType === 'ALL' || movementType === 'SHIFTS') {
+      for (const s of shifts.slice(0, 80)) {
+        allMovements.push({
+          id: `shift-${s.id}`,
+          timestamp: (s.clockOutAt ?? s.clockInAt).toISOString(),
+          category: 'SHIFTS',
+          title: `Shift ${s.state === 'OPEN' ? 'Clock-In' : 'Completed'} — ${s.membership.employeeDisplayName}`,
+          subtitle: `Role: ${s.role?.name || s.role?.code || 'Staff'}${s.lateByMinutes > 0 ? ` · Late ${s.lateByMinutes}m` : ''}`,
+          amount: null,
+          status: s.state,
+          actorName: s.membership.employeeDisplayName,
+          branchName: s.branch.name,
+          tenantName: s.tenant.displayName || s.tenant.legalName || 'Tenant',
+        });
+      }
+    }
+
+    if (movementType === 'ALL' || movementType === 'AUDIT') {
+      for (const ae of auditEvents.slice(0, 80)) {
+        allMovements.push({
+          id: `aud-${ae.id}`,
+          timestamp: ae.occurredAt.toISOString(),
+          category: 'AUDIT',
+          title: ae.action.replace(/_/g, ' '),
+          subtitle: ae.reason || `${ae.entityType} event`,
+          amount: null,
+          status: ae.entityType,
+          actorName:
+            ae.actorStaff?.employeeDisplayName ||
+            ae.actorUser?.displayName ||
+            'Platform',
+          branchName: ae.branch?.name || 'Platform',
+          tenantName:
+            ae.tenant?.displayName || ae.tenant?.legalName || 'Platform',
+        });
+      }
+    }
+
+    allMovements.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+    const branchesSummary = branches.map((b) => {
+      const bTables = activeTables.filter((t) => t.branchId === b.id);
+      const bOccupied = bTables.filter((t) => t.isOccupied).length;
+      const bGmv = dailyBreakdown
+        .filter((d) => d.branchId === b.id)
+        .reduce((s, d) => s + d.totalGmv, 0);
+      return {
+        id: b.id,
+        name: b.name,
+        displayCode: b.displayCode || 'MAIN',
+        serviceMode: b.serviceMode,
+        tenantId: b.tenantId,
+        tenantName: b.tenant.displayName || b.tenant.legalName || 'Tenant',
+        totalTables: b.diningTables.length,
+        activeTables: bOccupied,
+        openSessions: b.tableSessions.length,
+        periodGmv: bGmv,
+      };
+    });
+
+    return {
+      summary: {
+        totalGmv,
+        avgDailyGmv: Math.round(totalGmv / uniqueDays),
+        cashVolume,
+        digitalVolume,
+        totalBills: paidBills + unpaidBills,
+        paidBills,
+        unpaidBills,
+        totalOrders: orders.length,
+        totalTableSessions: tableSessions.length,
+        activeTablesCount: activeTables.filter((t) => t.isOccupied).length,
+        totalTablesCount: activeTables.length,
+        openTableSessionsCount: tableSessions.filter(
+          (ts) => !ts.closedAt && ts.status !== 'CLOSED',
+        ).length,
+        activeStaffShiftsCount: shifts.filter((s) => s.state === 'OPEN').length,
+        totalStaffShiftsCount: shifts.length,
+        cashDropsVolume,
+        expensesVolume,
+      },
+      branches: branchesSummary,
+      dailyBreakdown,
+      activeTables,
+      movements: allMovements.slice(0, 250),
+    };
   }
 }

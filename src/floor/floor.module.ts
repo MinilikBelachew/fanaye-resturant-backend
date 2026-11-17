@@ -1,8 +1,13 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
+import { AuthModule } from '../auth/auth.module';
 import { IdentityModule } from '../identity/identity.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { SiteModule } from '../site/site.module';
 import { FloorController } from './floor.controller';
+import { FloorKioskController } from './floor-kiosk.controller';
+import { FloorKioskService } from './floor-kiosk.service';
 import { FloorLayoutController } from './floor-layout.controller';
 import { FloorLayoutService } from './floor-layout.service';
 import { FloorService } from './floor.service';
@@ -16,9 +21,17 @@ import { WaiterPerformanceService } from './waiter-performance.service';
 import { WaiterTablesController } from './waiter-tables.controller';
 
 @Module({
-  imports: [IdentityModule, RealtimeModule, SiteModule],
+  imports: [
+    ConfigModule,
+    JwtModule.register({}),
+    AuthModule,
+    IdentityModule,
+    RealtimeModule,
+    SiteModule,
+  ],
   controllers: [
     FloorController,
+    FloorKioskController,
     FloorLayoutController,
     StaffCoverageController,
     WaiterTablesController,
@@ -28,6 +41,7 @@ import { WaiterTablesController } from './waiter-tables.controller';
   ],
   providers: [
     FloorService,
+    FloorKioskService,
     FloorLayoutService,
     StaffCoverageService,
     WaiterPerformanceService,

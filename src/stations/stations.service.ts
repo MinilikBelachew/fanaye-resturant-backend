@@ -17,7 +17,7 @@ import { IdentityContextService } from '../identity/identity-context.service';
 import { AuthContextDto } from '../identity/dto/auth-context.dto';
 import { OpsEventType } from '../realtime/ops-events';
 import { OpsNotifyService } from '../realtime/ops-notify.service';
-import { managerRoom, stationRoom } from '../realtime/ops-rooms';
+import { branchRoom, managerRoom, stationRoom } from '../realtime/ops-rooms';
 import { OrderSlaQueueService } from '../orders/queues/order-sla.queue';
 import { ExpectedVersionDto } from './dto/expected-version.dto';
 import { ReportCannotPrepareDto } from './dto/report-cannot-prepare.dto';
@@ -1324,6 +1324,19 @@ export class StationsService {
         payload: basePayload,
       });
 
+      this.opsNotify.broadcast({
+        type: OpsEventType.ITEM_READY,
+        tenantId: context.tenantId!,
+        branchId: context.branchId!,
+        severity: 'ATTENTION',
+        title: `Ready · ${tableName}`,
+        body: `${item.quantity}× ${item.itemNameSnapshot} from ${item.stationNameSnapshot}`,
+        rooms: [branchRoom(context.branchId!)],
+        relatedEntityType: 'OrderItem',
+        relatedEntityId: item.id,
+        payload: basePayload,
+      });
+
       await this.opsNotify.notify({
         type: OpsEventType.ITEM_READY,
         tenantId: context.tenantId!,
@@ -1346,7 +1359,11 @@ export class StationsService {
       severity: 'INFO',
       title: `${item.itemNameSnapshot} → ${toState}`,
       body: tableName,
-      rooms: [stationRoom(stationId), managerRoom(context.branchId!)],
+      rooms: [
+        stationRoom(stationId),
+        managerRoom(context.branchId!),
+        branchRoom(context.branchId!),
+      ],
       relatedEntityType: 'OrderItem',
       relatedEntityId: item.id,
       payload: basePayload,

@@ -42,8 +42,40 @@ async function bootstrap() {
     );
   }
 
+  const isPrivateLanOrigin = (requestOrigin: string): boolean => {
+    try {
+      const { protocol, hostname } = new URL(requestOrigin);
+      if (protocol !== 'http:' && protocol !== 'https:') return false;
+      if (
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname.endsWith('.local')
+      ) {
+        return true;
+      }
+      if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+      if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+      if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
   app.enableCors({
-    origin: origins.length > 0 ? origins : false,
+    origin: (requestOrigin, callback) => {
+      if (
+        !requestOrigin ||
+        origins.includes(requestOrigin) ||
+        isPrivateLanOrigin(requestOrigin)
+      ) {
+        callback(null, true);
+      } else {
+        callback(new Error(`Origin ${requestOrigin} not allowed by CORS`), false);
+      }
+    },
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
   });

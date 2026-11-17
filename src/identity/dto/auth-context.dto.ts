@@ -16,6 +16,14 @@ export class AuthWorkspaceDto {
 
   @ApiPropertyOptional()
   @Expose()
+  tenantName?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  impersonatedBy?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
   branchId: string | null;
 
   @ApiPropertyOptional()
@@ -43,6 +51,14 @@ export class AuthContextDto {
   @ApiPropertyOptional()
   @Expose()
   tenantId: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  tenantName?: string | null;
+
+  @ApiPropertyOptional()
+  @Expose()
+  impersonatedBy?: string | null;
 
   @ApiPropertyOptional()
   @Expose()

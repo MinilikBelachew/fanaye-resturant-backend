@@ -8,7 +8,10 @@ import {
 import bcrypt from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
 import { AuthContextDto, AuthWorkspaceDto } from './dto/auth-context.dto';
-import { PLATFORM_ROLE_CODE } from './identity.constants';
+import {
+  MARKET_REPORTER_ROLE_CODE,
+  PLATFORM_ROLE_CODE,
+} from './identity.constants';
 
 export interface PinTenantMatch {
   userId: string;
@@ -23,7 +26,14 @@ export interface PinTenantMatch {
 export class IdentityContextService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getByUserId(userId: string): Promise<AuthContextDto> {
+  async getByUserId(
+    userId: string,
+    options?: {
+      ignorePlatformRoles?: boolean;
+      membershipId?: string;
+      impersonatedBy?: string;
+    },
+  ): Promise<AuthContextDto> {
     const user = await this.prisma.appUser.findUnique({
       where: { id: String(userId) },
       include: {
@@ -68,17 +78,30 @@ export class IdentityContextService {
       throw new UnauthorizedException();
     }
 
-    const isPlatformAdmin = user.platformRoles.some(
-      (role) => role.roleCode === PLATFORM_ROLE_CODE,
-    );
-    const membership = user.staffMemberships[0] ?? null;
+    const isPlatformAdmin =
+      !options?.ignorePlatformRoles &&
+      user.platformRoles.some((role) => role.roleCode === PLATFORM_ROLE_CODE);
+    const isMarketReporter =
+      !options?.ignorePlatformRoles &&
+      !isPlatformAdmin &&
+      user.platformRoles.some(
+        (role) => role.roleCode === MARKET_REPORTER_ROLE_CODE,
+      );
+    const membership =
+      (options?.membershipId
+        ? user.staffMemberships.find((m) => m.id === options.membershipId)
+        : undefined) ??
+      user.staffMemberships[0] ??
+      null;
     const roleAssignment = membership?.roleAssignments[0] ?? null;
     const branchAssignment = membership?.branchAssignments[0] ?? null;
     const stationAssignment = membership?.stationAssignments[0] ?? null;
     const openShift = membership?.shiftSessions[0] ?? null;
     const roleCode = isPlatformAdmin
       ? PLATFORM_ROLE_CODE
-      : (roleAssignment?.role?.code ?? 'NONE');
+      : isMarketReporter
+        ? MARKET_REPORTER_ROLE_CODE
+        : (roleAssignment?.role?.code ?? 'NONE');
 
     let branchId = branchAssignment?.branchId ?? null;
     let branchName =
@@ -124,6 +147,14 @@ export class IdentityContextService {
         branchId: null,
         staffMembershipId: null,
       });
+    } else if (isMarketReporter) {
+      workspaces.push({
+        workspace: MARKET_REPORTER_ROLE_CODE,
+        roleCode: MARKET_REPORTER_ROLE_CODE,
+        tenantId: null,
+        branchId: null,
+        staffMembershipId: null,
+      });
     }
     for (const entry of user.staffMemberships) {
       const code = entry.roleAssignments[0]?.role?.code ?? 'NONE';
@@ -146,9 +177,17 @@ export class IdentityContextService {
       });
     }
 
-    const permissions =
+    let permissions =
       roleAssignment?.role?.permissions?.map((item) => item.permission?.code)?.filter(Boolean) ??
       [];
+
+    if (isMarketReporter) {
+      const platformPerms = await this.prisma.platformRolePermission.findMany({
+        where: { roleCode: MARKET_REPORTER_ROLE_CODE, enabled: true },
+        select: { permissionCode: true },
+      });
+      permissions = platformPerms.map((p) => p.permissionCode);
+    }
 
     let roomsEnabled = false;
     if (branchId) {
@@ -175,10 +214,15 @@ export class IdentityContextService {
 
     return {
       userId: user.id,
-      displayName: user.displayName,
+      displayName: membership?.employeeDisplayName || user.displayName,
       email: user.email,
       phone: user.phone,
       tenantId: membership?.tenantId ?? null,
+      tenantName:
+        membership?.tenant?.displayName ??
+        membership?.tenant?.legalName ??
+        null,
+      impersonatedBy: options?.impersonatedBy ?? null,
       branchId,
       branchName,
       serviceMode,
@@ -496,7 +540,7 @@ export class IdentityContextService {
       );
 
     // 1. Exact match attempt
-    let tenant = await this.prisma.tenant.findFirst({
+    const tenant = await this.prisma.tenant.findFirst({
       where: {
         status: 'ACTIVE',
         OR: [

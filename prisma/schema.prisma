@@ -46,6 +46,9 @@ model AppUser {
   idempotencyCommands IdempotencyCommand[]
   supportSessions     PlatformSupportSession[]
   biometricProfile    StaffBiometricProfile?
+  marketingCampaigns  MarketingCampaign[]
+  createdTalents      TalentProfile[]          @relation("TalentCreatedBy")
+  talentHireRequests  TalentHireRequest[]
 
   @@unique([email], map: "uq_app_users__email")
   @@unique([phone], map: "uq_app_users__phone")
@@ -253,6 +256,9 @@ model Tenant {
   staffBiometrics            StaffBiometricProfile[]
   customerBiometrics         CustomerBiometricProfile[]
   customerVisits             CustomerVisitLog[]
+  marketingCampaigns         MarketingCampaign[]
+  hiredTalents               TalentProfile[]          @relation("TalentHiredByTenant")
+  talentHireRequests         TalentHireRequest[]
 
   @@index([status], map: "ix_tenants__status")
   @@map("tenants")
@@ -425,6 +431,8 @@ model Branch {
   staffBiometrics           StaffBiometricProfile[]
   customerBiometrics        CustomerBiometricProfile[]
   customerVisits            CustomerVisitLog[]
+  marketingCampaigns        MarketingCampaign[]
+  talentHireRequests        TalentHireRequest[]
 
   @@unique([tenantId, displayCode], map: "uq_branches__tenant_display_code")
   @@index([tenantId, status], map: "ix_branches__tenant_status")
@@ -445,6 +453,8 @@ model BranchSettings {
   /// Warn once when a ticket stays QUEUED this long (default 3h).
   ticketStaleWarnMinutes                   Int      @default(180) @map("ticket_stale_warn_minutes")
   shiftEndWarningMinutes                   Int      @default(15) @map("shift_end_warning_minutes")
+  floorKioskPin                            String?  @map("floor_kiosk_pin") @db.VarChar(12)
+  readyOverdueMinutes                      Int      @default(3) @map("ready_overdue_minutes")
   billUnresolvedProductionPolicyOverride   String?  @map("bill_unresolved_production_policy_override") @db.VarChar(40)
   settingsVersion                          Int      @default(1) @map("settings_version")
   updatedByMembershipId                    String?  @map("updated_by_membership_id") @db.Uuid
@@ -1068,6 +1078,7 @@ model MenuItem {
   orderItems          OrderItem[]
   recipeLines         MenuItemRecipeLine[]
   breakfastForTenants TenantSettings[]             @relation("TenantBreakfastMenuItem")
+  marketingCampaigns  MarketingCampaign[]
 
   @@index([tenantId, menuId, status, soldOut, sortOrder], map: "ix_menu_items__menu_active")
   @@map("menu_items")
@@ -2728,6 +2739,8 @@ model CustomerFeedback {
   customerPhone          String?   @map("customer_phone") @db.VarChar(40)
   /// NEW | READ | RESOLVED
   status                 String    @default("NEW") @map("status") @db.VarChar(20)
+  /// Only owner/manager-approved ratings appear on the public restaurant website.
+  isApprovedForSite      Boolean   @default(false) @map("is_approved_for_site")
   resolvedByMembershipId String?   @map("resolved_by_membership_id") @db.Uuid
   resolvedAt             DateTime? @map("resolved_at") @db.Timestamptz(6)
   createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -3005,4 +3018,279 @@ model CustomerVisitLog {
   @@index([tenantId, branchId, detectedAt], map: "ix_customer_visits__tenant_branch_date")
   @@index([customerId], map: "ix_customer_visits__customer")
   @@map("customer_visit_logs")
+}
+
+enum MarketingCampaignStatus {
+  PENDING
+  CONFIRMED
+  PROMOTING
+  DONE
+  PAYMENT_SUBMITTED
+  PAID
+  CANCELLED
+}
+
+model MarketingCampaign {
+  id                 String                  @id @default(uuid()) @db.Uuid
+  tenantId           String                  @map("tenant_id") @db.Uuid
+  branchId           String?                 @map("branch_id") @db.Uuid
+  menuItemId         String                  @map("menu_item_id") @db.Uuid
+  requestedById      String                  @map("requested_by_id") @db.Uuid
+  targetLocation     String                  @map("target_location") @db.VarChar(180)
+  targetAgeMin       Int                     @map("target_age_min")
+  targetAgeMax       Int                     @map("target_age_max")
+  targetViews        Int                     @map("target_views")
+  notes              String?                 @db.Text
+  status             MarketingCampaignStatus @default(PENDING)
+  deliveredViews     Int                     @default(0) @map("delivered_views")
+  amountDue          Decimal?                @map("amount_due") @db.Decimal(19, 2)
+  currencyCode       String                  @default("ETB") @map("currency_code") @db.Char(3)
+  adminNotes         String?                 @map("admin_notes") @db.Text
+  paymentReference   String?                 @map("payment_reference") @db.VarChar(180)
+  paymentNotes       String?                 @map("payment_notes") @db.Text
+  confirmedAt        DateTime?               @map("confirmed_at") @db.Timestamptz(6)
+  promotedAt         DateTime?               @map("promoted_at") @db.Timestamptz(6)
+  doneAt             DateTime?               @map("done_at") @db.Timestamptz(6)
+  paymentSubmittedAt DateTime?               @map("payment_submitted_at") @db.Timestamptz(6)
+  paidAt             DateTime?               @map("paid_at") @db.Timestamptz(6)
+  cancelledAt        DateTime?               @map("cancelled_at") @db.Timestamptz(6)
+  createdAt          DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch      Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  menuItem    MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Restrict)
+  requestedBy AppUser  @relation(fields: [requestedById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status, createdAt], map: "ix_marketing_campaigns__tenant_status_created")
+  @@index([status, createdAt], map: "ix_marketing_campaigns__status_created")
+  @@map("marketing_campaigns")
+}
+
+enum TalentRoleCategory {
+  CHEF
+  WAITER
+  BARISTA
+  CASHIER
+  BAKER
+  STORE_MANAGER
+  RECEPTIONIST
+  DRIVER
+  CLEANER
+  OTHER
+}
+
+enum TalentAvailability {
+  IMMEDIATE
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+}
+
+enum TalentProfileStatus {
+  AVAILABLE
+  IN_PROCESS
+  HIRED
+  ARCHIVED
+}
+
+enum TalentRequestStatus {
+  CONTACTED
+  INTERVIEWING
+  HIRED
+  CANCELLED
+}
+
+model TalentProfile {
+  id              String              @id @default(uuid()) @db.Uuid
+  fullName        String              @map("full_name") @db.VarChar(160)
+  phone           String              @db.VarChar(40)
+  email           String?             @db.VarChar(255)
+  photoUrl        String?             @map("photo_url") @db.Text
+  roleCategory    TalentRoleCategory  @map("role_category")
+  roleTitle       String              @map("role_title") @db.VarChar(120)
+  location        String              @db.VarChar(180)
+  yearsExperience Int                 @default(0) @map("years_experience")
+  availability    TalentAvailability  @default(FULL_TIME)
+  skills          String[]            @default([])
+  languages       String[]            @default([])
+  bio             String?             @db.Text
+  isVerified      Boolean             @default(true) @map("is_verified")
+  status          TalentProfileStatus @default(AVAILABLE)
+  hiredByTenantId String?             @map("hired_by_tenant_id") @db.Uuid
+  hiredAt         DateTime?           @map("hired_at") @db.Timestamptz(6)
+  createdById     String?             @map("created_by_id") @db.Uuid
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  hiredByTenant Tenant?             @relation("TalentHiredByTenant", fields: [hiredByTenantId], references: [id], onDelete: SetNull)
+  createdBy     AppUser?            @relation("TalentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  hireRequests  TalentHireRequest[]
+
+  @@index([status, roleCategory, location], map: "ix_talent_profiles__filter")
+  @@index([phone], map: "ix_talent_profiles__phone")
+  @@map("talent_profiles")
+}
+
+model TalentHireRequest {
+  id                    String              @id @default(uuid()) @db.Uuid
+  talentProfileId       String              @map("talent_profile_id") @db.Uuid
+  tenantId              String              @map("tenant_id") @db.Uuid
+  branchId              String?             @map("branch_id") @db.Uuid
+  requestedById         String              @map("requested_by_id") @db.Uuid
+  status                TalentRequestStatus @default(CONTACTED)
+  notes                 String?             @db.Text
+  adminNotes            String?             @map("admin_notes") @db.Text
+  onboardedMembershipId String?             @map("onboarded_membership_id") @db.Uuid
+  contactedAt           DateTime            @default(now()) @map("contacted_at") @db.Timestamptz(6)
+  interviewingAt        DateTime?           @map("interviewing_at") @db.Timestamptz(6)
+  hiredAt               DateTime?           @map("hired_at") @db.Timestamptz(6)
+  cancelledAt           DateTime?           @map("cancelled_at") @db.Timestamptz(6)
+  createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  talentProfile TalentProfile @relation(fields: [talentProfileId], references: [id], onDelete: Cascade)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch        Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  requestedBy   AppUser       @relation(fields: [requestedById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status, createdAt], map: "ix_talent_hire_requests__tenant_status")
+  @@index([status, createdAt], map: "ix_talent_hire_requests__status_created")
+  @@map("talent_hire_requests")
+}
+
+model MarketCategory {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String       @unique @db.VarChar(120)
+  slug      String       @unique @db.VarChar(120)
+  sortOrder Int          @default(0) @map("sort_order")
+  isActive  Boolean      @default(true) @map("is_active")
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items MarketItem[]
+
+  @@index([isActive, sortOrder], map: "ix_market_categories__active_sort")
+  @@map("market_categories")
+}
+
+model MarketUnit {
+  id        String       @id @default(uuid()) @db.Uuid
+  code      String       @unique @db.VarChar(40)
+  label     String       @db.VarChar(120)
+  sortOrder Int          @default(0) @map("sort_order")
+  isActive  Boolean      @default(true) @map("is_active")
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items MarketItem[]
+
+  @@index([isActive, sortOrder], map: "ix_market_units__active_sort")
+  @@map("market_units")
+}
+
+model Marketplace {
+  id        String               @id @default(uuid()) @db.Uuid
+  name      String               @unique @db.VarChar(120)
+  slug      String               @unique @db.VarChar(120)
+  city      String?              @db.VarChar(100)
+  area      String?              @db.VarChar(120)
+  isActive  Boolean              @default(true) @map("is_active")
+  createdAt DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  prices  MarketItemPrice[]
+  history MarketPriceHistory[]
+
+  @@index([isActive, name], map: "ix_marketplaces__active_name")
+  @@map("marketplaces")
+}
+
+model MarketItem {
+  id                  String               @id @default(uuid()) @db.Uuid
+  name                String               @db.VarChar(160)
+  slug                String               @unique @db.VarChar(160)
+  categoryId          String               @map("category_id") @db.Uuid
+  unitId              String               @map("unit_id") @db.Uuid
+  photoUrl            String?              @map("photo_url") @db.Text
+  description         String?              @db.Text
+  isFeaturedOnLanding Boolean              @default(true) @map("is_featured_on_landing")
+  isActive            Boolean              @default(true) @map("is_active")
+  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  category MarketCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  unit     MarketUnit           @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  prices   MarketItemPrice[]
+  history  MarketPriceHistory[]
+
+  @@index([isActive, isFeaturedOnLanding], map: "ix_market_items__active_featured")
+  @@index([categoryId], map: "ix_market_items__category")
+  @@map("market_items")
+}
+
+model MarketItemPrice {
+  id            String   @id @default(uuid()) @db.Uuid
+  itemId        String   @map("item_id") @db.Uuid
+  marketplaceId String   @map("marketplace_id") @db.Uuid
+  price         Decimal  @db.Decimal(12, 2)
+  previousPrice Decimal? @map("previous_price") @db.Decimal(12, 2)
+  updatedById   String?  @map("updated_by_id") @db.Uuid
+  updatedByName String?  @map("updated_by_name") @db.VarChar(160)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  item        MarketItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  marketplace Marketplace @relation(fields: [marketplaceId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, marketplaceId], map: "uq_market_item_prices__item_market")
+  @@index([marketplaceId], map: "ix_market_item_prices__market")
+  @@map("market_item_prices")
+}
+
+model MarketPriceHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  itemId         String   @map("item_id") @db.Uuid
+  marketplaceId  String   @map("marketplace_id") @db.Uuid
+  price          Decimal  @db.Decimal(12, 2)
+  recordedById   String?  @map("recorded_by_id") @db.Uuid
+  recordedByName String?  @map("recorded_by_name") @db.VarChar(160)
+  recordedAt     DateTime @default(now()) @map("recorded_at") @db.Timestamptz(6)
+
+  item        MarketItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  marketplace Marketplace @relation(fields: [marketplaceId], references: [id], onDelete: Cascade)
+
+  @@index([itemId, recordedAt], map: "ix_market_price_history__item_recorded")
+  @@index([itemId, marketplaceId, recordedAt], map: "ix_market_price_history__item_market_recorded")
+  @@map("market_price_history")
+}
+
+model PlatformRolePermission {
+  id             String   @id @default(uuid()) @db.Uuid
+  roleCode       String   @map("role_code") @db.VarChar(40)
+  permissionCode String   @map("permission_code") @db.VarChar(80)
+  enabled        Boolean  @default(true)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([roleCode, permissionCode], map: "uq_platform_role_perms__role_perm")
+  @@index([roleCode], map: "ix_platform_role_perms__role")
+  @@map("platform_role_permissions")
+}
+
+model LandingTestimonial {
+  id             String   @id @default(uuid()) @db.Uuid
+  authorName     String   @map("author_name") @db.VarChar(120)
+  authorRole     String   @map("author_role") @db.VarChar(120)
+  restaurantName String   @map("restaurant_name") @db.VarChar(160)
+  quote          String   @db.Text
+  photoUrl       String?  @map("photo_url") @db.Text
+  rating         Int      @default(5)
+  isPublished    Boolean  @default(true) @map("is_published")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdById    String?  @map("created_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([isPublished, sortOrder], map: "ix_landing_testimonials__published_sort")
+  @@map("landing_testimonials")
 }

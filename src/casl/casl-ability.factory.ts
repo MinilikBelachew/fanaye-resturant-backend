@@ -116,6 +116,14 @@ export class CaslAbilityFactory {
       'daily_close.lock': ['lock', 'DailyClose'],
       'audit.view': ['read', 'Audit'],
       'audit.manage': ['manage', 'Audit'],
+      // Marketing
+      'marketing.read': ['read', 'Marketing'],
+      'marketing.manage': ['manage', 'Marketing'],
+      // Talent
+      'talent.read': ['read', 'Talent'],
+      'talent.manage': ['manage', 'Talent'],
+      // Market Prices
+      'market_prices.read': ['read', 'MarketPrices'],
     };
 
     for (const code of permissions) {

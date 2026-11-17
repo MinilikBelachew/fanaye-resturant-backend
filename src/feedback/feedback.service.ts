@@ -13,6 +13,7 @@ import {
   FeedbackListQueryDto,
   FeedbackListResponseDto,
   FeedbackSummaryDto,
+  PublicApprovedFeedbackDto,
   PublicFeedbackSummaryDto,
   SubmitFeedbackResponseDto,
   SubmitFeedbackDto,
@@ -173,6 +174,43 @@ export class FeedbackService {
     });
 
     return this.buildPublicSummary(rows.map((row) => row.rating));
+  }
+
+  async getApprovedForWebsite(
+    slug: string,
+  ): Promise<PublicApprovedFeedbackDto> {
+    const site = await this.prisma.tenantSite.findUnique({
+      where: { slug },
+      select: { tenantId: true },
+    });
+    if (!site) throw new NotFoundException('Restaurant site not found.');
+
+    const rows = await this.prisma.customerFeedback.findMany({
+      where: { tenantId: site.tenantId, isApprovedForSite: true },
+      orderBy: { createdAt: 'desc' },
+      take: 24,
+      select: {
+        id: true,
+        rating: true,
+        comment: true,
+        customerName: true,
+        source: true,
+        createdAt: true,
+      },
+    });
+
+    const summary = this.buildPublicSummary(rows.map((r) => r.rating));
+    return {
+      ...summary,
+      reviews: rows.map((r) => ({
+        id: r.id,
+        rating: r.rating,
+        comment: r.comment,
+        customerName: r.customerName,
+        source: r.source,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -351,6 +389,38 @@ export class FeedbackService {
     return this.toItem(updated);
   }
 
+  async setWebsiteApproval(
+    userId: string,
+    id: string,
+    approved: boolean,
+  ): Promise<FeedbackItemDto> {
+    const scope = await this.resolveScope(userId);
+    if (
+      scope.roleCode !== 'OWNER_ADMIN' &&
+      scope.roleCode !== PLATFORM_ROLE_CODE
+    ) {
+      throw new ForbiddenException(
+        'Only the restaurant owner can approve ratings for the public website.',
+      );
+    }
+
+    const existing = await this.prisma.customerFeedback.findFirst({
+      where: { id, tenantId: scope.tenantId },
+    });
+    if (!existing) throw new NotFoundException('Feedback not found.');
+
+    const updated = await this.prisma.customerFeedback.update({
+      where: { id: existing.id },
+      data: { isApprovedForSite: approved },
+      include: {
+        table: { select: { displayName: true } },
+        branch: { select: { name: true } },
+      },
+    });
+
+    return this.toItem(updated);
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -438,6 +508,7 @@ export class FeedbackService {
     customerPhone: string | null;
     source: string;
     status: string;
+    isApprovedForSite: boolean;
     branchId: string;
     createdAt: Date;
     orderId?: string | null;
@@ -452,6 +523,7 @@ export class FeedbackService {
       customerPhone: row.customerPhone,
       source: row.source,
       status: row.status,
+      isApprovedForSite: row.isApprovedForSite,
       branchId: row.branchId,
       branchName: row.branch?.name ?? null,
       tableName: row.table?.displayName ?? null,

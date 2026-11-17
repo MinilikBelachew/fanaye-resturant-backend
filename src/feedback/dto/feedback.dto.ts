@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -124,6 +125,46 @@ export class UpdateFeedbackStatusDto {
   status: string;
 }
 
+export class ApproveFeedbackWebsiteDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  approved: boolean;
+}
+
+export class PublicApprovedReviewDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ minimum: 1, maximum: 5 })
+  rating: number;
+
+  @ApiPropertyOptional()
+  comment?: string | null;
+
+  @ApiPropertyOptional()
+  customerName?: string | null;
+
+  @ApiProperty({ enum: ['QR_MENU', 'WEBSITE'] })
+  source: string;
+
+  @ApiProperty()
+  createdAt: string;
+}
+
+export class PublicApprovedFeedbackDto {
+  @ApiProperty()
+  averageRating: number;
+
+  @ApiProperty()
+  totalCount: number;
+
+  @ApiProperty()
+  distribution: Record<string, number>;
+
+  @ApiProperty({ type: [PublicApprovedReviewDto] })
+  reviews: PublicApprovedReviewDto[];
+}
+
 export class FeedbackItemDto {
   @ApiProperty()
   id: string;
@@ -145,6 +186,9 @@ export class FeedbackItemDto {
 
   @ApiProperty({ enum: ['NEW', 'READ', 'RESOLVED'] })
   status: string;
+
+  @ApiProperty()
+  isApprovedForSite: boolean;
 
   @ApiPropertyOptional()
   branchId?: string | null;

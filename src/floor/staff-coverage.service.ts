@@ -516,6 +516,59 @@ export class StaffCoverageService {
         });
       }
 
+      if (phone || email) {
+        const matchedTalent = await tx.talentProfile.findFirst({
+          where: {
+            status: { in: ['AVAILABLE', 'IN_PROCESS'] },
+            OR: [
+              ...(phone ? [{ phone }] : []),
+              ...(email ? [{ email }] : []),
+            ],
+          },
+        });
+        if (matchedTalent) {
+          const now = new Date();
+          await tx.talentProfile.update({
+            where: { id: matchedTalent.id },
+            data: {
+              status: 'HIRED',
+              hiredByTenantId: context.tenantId!,
+              hiredAt: now,
+            },
+          });
+          const existingTalentReq = await tx.talentHireRequest.findFirst({
+            where: {
+              talentProfileId: matchedTalent.id,
+              tenantId: context.tenantId!,
+              status: { in: ['CONTACTED', 'INTERVIEWING'] },
+            },
+          });
+          if (existingTalentReq) {
+            await tx.talentHireRequest.update({
+              where: { id: existingTalentReq.id },
+              data: {
+                status: 'HIRED',
+                hiredAt: now,
+                onboardedMembershipId: membership.id,
+              },
+            });
+          } else {
+            await tx.talentHireRequest.create({
+              data: {
+                talentProfileId: matchedTalent.id,
+                tenantId: context.tenantId!,
+                branchId: targetBranchId,
+                requestedById: context.userId,
+                status: 'HIRED',
+                hiredAt: now,
+                onboardedMembershipId: membership.id,
+                notes: 'Auto-matched from manual staff creation',
+              },
+            });
+          }
+        }
+      }
+
       await tx.auditEvent.create({
         data: {
           tenantId: context.tenantId!,

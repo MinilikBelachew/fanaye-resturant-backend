@@ -1218,3 +1218,93 @@ export class SetRolePermissionsDto {
   @Type(() => Number)
   permissionIds: number[];
 }
+
+export class ImpersonateSessionDto {
+  @ApiPropertyOptional({
+    description: 'Specific staff membership ID to impersonate',
+  })
+  @IsOptional()
+  @IsString()
+  membershipId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Tenant ID when impersonating Owner or Branch Manager',
+  })
+  @IsOptional()
+  @IsString()
+  tenantId?: string;
+
+  @ApiPropertyOptional({
+    enum: ['OWNER_ADMIN', 'MANAGER'],
+    default: 'MANAGER',
+  })
+  @IsOptional()
+  @IsIn(['OWNER_ADMIN', 'MANAGER'])
+  targetRole?: 'OWNER_ADMIN' | 'MANAGER';
+
+  @ApiPropertyOptional({
+    description: 'Optional branch ID to scope the impersonated session to',
+  })
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+}
+
+export class ImpersonateResponseDto {
+  @ApiProperty()
+  token: string;
+
+  @ApiProperty()
+  tokenExpires: number;
+
+  @ApiProperty()
+  context: any;
+}
+
+export class GetTenantActivityQueryDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  tenantId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+
+  @ApiPropertyOptional({ example: '2026-11-10' })
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ example: '2026-11-17' })
+  @IsOptional()
+  @IsString()
+  endDate?: string;
+
+  @ApiPropertyOptional({
+    enum: ['ALL', 'SALES', 'TABLES', 'CASH', 'INVENTORY', 'SHIFTS', 'AUDIT'],
+  })
+  @IsOptional()
+  @IsString()
+  movementType?: string;
+}
+
+export class TenantActivityResponseDto {
+  @ApiProperty()
+  summary: any;
+
+  @ApiProperty()
+  branches: any[];
+
+  @ApiProperty()
+  dailyBreakdown: any[];
+
+  @ApiProperty()
+  activeTables: any[];
+
+  @ApiProperty()
+  movements: any[];
+}
+
+

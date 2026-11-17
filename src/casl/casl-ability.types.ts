@@ -68,6 +68,9 @@ export type AppSubject =
   | 'QrMenuAdmin'
   | 'InventoryMaterial'
   | 'OutsideOrder'
-  | 'Finance';
+  | 'Finance'
+  | 'Marketing'
+  | 'Talent'
+  | 'MarketPrices';
 
 export type AppAbility = MongoAbility<[AppAction, AppSubject]>;

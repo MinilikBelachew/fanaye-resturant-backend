@@ -5,7 +5,7 @@ import OpenAI, { toFile } from 'openai';
 @Injectable()
 export class VoiceService {
   private readonly logger = new Logger(VoiceService.name);
-  private readonly openai: OpenAI;
+  private readonly openai: OpenAI | null;
   private readonly ttsVoice: string;
 
   constructor(private readonly config: ConfigService) {
@@ -13,7 +13,12 @@ export class VoiceService {
       this.config.get<string>('ai.openaiApiKey') ||
       process.env.OPENAI_API_KEY ||
       '';
-    this.openai = new OpenAI({ apiKey });
+    if (apiKey) {
+      this.openai = new OpenAI({ apiKey });
+    } else {
+      this.openai = null;
+      this.logger.warn('OPENAI_API_KEY is not configured for VoiceService.');
+    }
     this.ttsVoice = this.config.get<string>('ai.voiceName') || 'alloy';
   }
 
@@ -24,7 +29,7 @@ export class VoiceService {
     audioBase64: string,
     mimeType: string = 'audio/webm',
   ): Promise<string> {
-    if (!audioBase64 || !audioBase64.trim()) {
+    if (!audioBase64 || !audioBase64.trim() || !this.openai) {
       return '';
     }
 
@@ -82,7 +87,7 @@ export class VoiceService {
     text: string,
     voiceOverride?: string,
   ): Promise<string> {
-    if (!text || !text.trim()) {
+    if (!text || !text.trim() || !this.openai) {
       return '';
     }
 

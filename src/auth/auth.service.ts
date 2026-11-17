@@ -477,6 +477,13 @@ export class AuthService {
     }
     const context = await this.identityContextService.getByUserId(
       String(userJwtPayload.id),
+      userJwtPayload.impersonatedBy
+        ? {
+            ignorePlatformRoles: true,
+            membershipId: userJwtPayload.impersonatedMembershipId,
+            impersonatedBy: userJwtPayload.impersonatedBy,
+          }
+        : undefined,
     );
     return { user, context };
   }

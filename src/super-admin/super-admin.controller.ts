@@ -28,6 +28,9 @@ import {
   CreateTenantDto,
   DeletePlanResponseDto,
   DeleteTenantResponseDto,
+  GetTenantActivityQueryDto,
+  ImpersonateResponseDto,
+  ImpersonateSessionDto,
   ListPlatformAuditQueryDto,
   ListPlatformStaffQueryDto,
   LiveOpsResponseDto,
@@ -44,6 +47,7 @@ import {
   SubscriptionPlanListResponseDto,
   SuspendPlatformStaffDto,
   SuperAdminDashboardResponseDto,
+  TenantActivityResponseDto,
   TenantDetailResponseDto,
   TenantListResponseDto,
   UpdateSubscriptionPlanDto,
@@ -306,6 +310,31 @@ export class SuperAdminController {
       this.requireUserId(request),
       roleId,
       dto,
+    );
+  }
+
+  @Post('impersonate')
+  @ApiOkResponse({ type: ImpersonateResponseDto })
+  impersonate(
+    @Request() request,
+    @Body() dto: ImpersonateSessionDto,
+  ): Promise<ImpersonateResponseDto> {
+    return this.superAdminService.impersonateSession(
+      this.requireUserId(request),
+      request?.user?.sessionId,
+      dto,
+    );
+  }
+
+  @Get('activity')
+  @ApiOkResponse({ type: TenantActivityResponseDto })
+  getTenantActivity(
+    @Request() request,
+    @Query() query: GetTenantActivityQueryDto,
+  ): Promise<TenantActivityResponseDto> {
+    return this.superAdminService.getTenantActivity(
+      this.requireUserId(request),
+      query,
     );
   }
 }

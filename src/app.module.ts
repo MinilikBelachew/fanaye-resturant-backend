@@ -61,6 +61,9 @@ import { BiometricsModule } from './biometrics/biometrics.module';
 import { AiModule } from './ai/ai.module';
 import { BackupModule } from './backup/backup.module';
 import { SyncModule } from './sync/sync.module';
+import { MarketingModule } from './marketing/marketing.module';
+import { TalentModule } from './talent/talent.module';
+import { MarketPricesModule } from './market-prices/market-prices.module';
 
 @Module({
   imports: [
@@ -173,6 +176,9 @@ import { SyncModule } from './sync/sync.module';
     AiModule,
     BackupModule,
     SyncModule,
+    MarketingModule,
+    TalentModule,
+    MarketPricesModule,
   ],
   providers: [
     {

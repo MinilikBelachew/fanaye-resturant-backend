@@ -7,6 +7,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -25,8 +26,10 @@ import { ClockOutDto } from './dto/clock-out.dto';
 import { CurrentShiftResponseDto } from './dto/current-shift-response.dto';
 import {
   HandoverCandidateDto,
+  ShiftHandoverDetailDto,
   ShiftHandoverDto,
   ShiftHandoverResponseDto,
+  ShiftHandoversResponseDto,
   WaiterShiftHandoverDto,
   WaiterShiftHandoverResponseDto,
 } from './dto/shift-handover.dto';
@@ -119,6 +122,41 @@ export class ShiftsController {
   ): Promise<ActiveShiftSummaryDto[]> {
     return this.shiftsService.listManagerActiveSessions(
       String(request.user.id),
+    );
+  }
+
+  @Get('manager/handovers')
+  @ApiOkResponse({ type: ShiftHandoversResponseDto })
+  @HttpCode(HttpStatus.OK)
+  listManagerHandovers(
+    @Request() request,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('kind') kind?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ): Promise<ShiftHandoversResponseDto> {
+    return this.shiftsService.listManagerHandovers(String(request.user.id), {
+      from,
+      to,
+      kind,
+      search,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('manager/handovers/:id')
+  @ApiOkResponse({ type: ShiftHandoverDetailDto })
+  @HttpCode(HttpStatus.OK)
+  getManagerHandoverDetail(
+    @Request() request,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ShiftHandoverDetailDto> {
+    return this.shiftsService.getManagerHandoverDetail(
+      String(request.user.id),
+      id,
     );
   }
 
