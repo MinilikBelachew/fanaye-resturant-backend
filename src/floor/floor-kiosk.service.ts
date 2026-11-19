@@ -436,22 +436,6 @@ export class FloorKioskService {
     const activeSession = table.sessions[0] ?? null;
 
     if (!isManagerOrOwner) {
-      const openShift = await this.prisma.shiftSession.findFirst({
-        where: {
-          tenantId,
-          branchId,
-          staffMembershipId: staffCtx.staffMembershipId,
-          state: 'OPEN',
-        },
-        select: { id: true },
-      });
-
-      if (!openShift) {
-        throw new ForbiddenException(
-          'You must be clocked into an active shift to open a table.',
-        );
-      }
-
       if (activeSession) {
         const ownsSession =
           activeSession.primaryWaiterMembershipId ===

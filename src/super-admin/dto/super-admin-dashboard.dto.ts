@@ -1288,6 +1288,26 @@ export class GetTenantActivityQueryDto {
   @IsOptional()
   @IsString()
   movementType?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  movementSearch?: string;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  movementPage?: number;
+
+  @ApiPropertyOptional({ default: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  movementLimit?: number;
 }
 
 export class TenantActivityResponseDto {
@@ -1305,6 +1325,14 @@ export class TenantActivityResponseDto {
 
   @ApiProperty()
   movements: any[];
+
+  @ApiPropertyOptional()
+  movementPagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
 }
 
 

@@ -4010,6 +4010,27 @@ export class SuperAdminService {
 
     allMovements.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
+    const search = query.movementSearch?.trim().toLowerCase();
+    const filteredMovements = search
+      ? allMovements.filter(
+          (m) =>
+            m.title.toLowerCase().includes(search) ||
+            m.subtitle.toLowerCase().includes(search) ||
+            m.actorName.toLowerCase().includes(search) ||
+            m.branchName.toLowerCase().includes(search) ||
+            m.tenantName.toLowerCase().includes(search),
+        )
+      : allMovements;
+
+    const totalMovements = filteredMovements.length;
+    const mPage = Math.max(1, Number(query.movementPage) || 1);
+    const mLimit = query.movementLimit
+      ? Math.max(1, Math.min(500, Number(query.movementLimit)))
+      : 25;
+    const mTotalPages = Math.max(1, Math.ceil(totalMovements / mLimit));
+    const startIdx = (mPage - 1) * mLimit;
+    const paginatedMovements = filteredMovements.slice(startIdx, startIdx + mLimit);
+
     const branchesSummary = branches.map((b) => {
       const bTables = activeTables.filter((t) => t.branchId === b.id);
       const bOccupied = bTables.filter((t) => t.isOccupied).length;
@@ -4054,7 +4075,13 @@ export class SuperAdminService {
       branches: branchesSummary,
       dailyBreakdown,
       activeTables,
-      movements: allMovements.slice(0, 250),
+      movements: paginatedMovements,
+      movementPagination: {
+        page: mPage,
+        limit: mLimit,
+        total: totalMovements,
+        totalPages: mTotalPages,
+      },
     };
   }
 }
