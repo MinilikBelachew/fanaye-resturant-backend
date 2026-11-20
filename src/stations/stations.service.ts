@@ -51,6 +51,10 @@ const DEFAULT_STATES = [
 ];
 
 const ACTIVE_COOKING = ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION'];
+/** Station queue only returns tickets queued within this window. */
+const QUEUE_WINDOW_HOURS = 24;
+/** Hard cap so a bad day can't ship thousands of rows to the KDS. */
+const QUEUE_MAX_ITEMS = 300;
 /** Hard stale threshold — ticket belongs under Exceptions, not a live rush. */
 const STALE_EXCEPTION_SECONDS = 4 * 60 * 60;
 const HISTORY_STATES = [
@@ -661,6 +665,7 @@ export class StationsService {
     }
 
     const states = parseStates(stateQuery);
+    const since = new Date(Date.now() - QUEUE_WINDOW_HOURS * 60 * 60_000);
 
     const items = await this.prisma.orderItem.findMany({
       where: {
@@ -668,9 +673,20 @@ export class StationsService {
         currentPreparationStationId: station.id,
         cancelledAt: null,
         state: { in: states },
+        // Live work only: recent tickets whose seating is still open.
+        OR: [
+          { queuedAt: { gte: since } },
+          { queuedAt: null, confirmedAt: { gte: since } },
+        ],
+        NOT: [
+          { tableSession: { closedAt: { not: null } } },
+          { roomSession: { closedAt: { not: null } } },
+          { outsideOrder: { closedAt: { not: null } } },
+        ],
       },
       include: ticketInclude,
-      orderBy: [{ queuedAt: 'asc' }, { confirmedAt: 'asc' }],
+      orderBy: [{ queuedAt: 'desc' }, { confirmedAt: 'desc' }],
+      take: QUEUE_MAX_ITEMS,
     });
 
     return {
