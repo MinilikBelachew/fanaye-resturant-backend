@@ -95,8 +95,31 @@ export class StationHistoryItemDto {
   @ApiPropertyOptional()
   servedAt?: Date | null;
 
+  @ApiProperty()
+  version: number;
+
+  @ApiProperty()
+  seatingClosed: boolean;
+
   @ApiPropertyOptional()
   prepMinutes?: number | null;
+}
+
+export class StationHistorySummaryDto {
+  @ApiProperty()
+  total: number;
+
+  @ApiProperty()
+  completed: number;
+
+  @ApiProperty()
+  unfinished: number;
+
+  @ApiProperty()
+  missedClosed: number;
+
+  @ApiProperty()
+  cancelled: number;
 }
 
 export class StationHistoryPaginationDto {
@@ -117,6 +140,12 @@ export class StationHistoryResponseDto {
   @ApiProperty()
   stationId: string;
 
+  @ApiPropertyOptional()
+  stationName?: string;
+
+  @ApiPropertyOptional()
+  workflowMode?: string;
+
   @ApiProperty()
   period: string;
 
@@ -125,6 +154,9 @@ export class StationHistoryResponseDto {
 
   @ApiProperty({ type: () => [StationHistoryItemDto] })
   data: StationHistoryItemDto[];
+
+  @ApiPropertyOptional({ type: () => StationHistorySummaryDto })
+  summary?: StationHistorySummaryDto;
 
   @ApiProperty({ type: () => StationHistoryPaginationDto })
   pagination: StationHistoryPaginationDto;

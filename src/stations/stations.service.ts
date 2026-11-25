@@ -93,6 +93,11 @@ export class StationsService {
         branchId: context.branchId!,
         state: { in: ACTIVE_COOKING },
         cancelledAt: null,
+        NOT: [
+          { tableSession: { closedAt: { not: null } } },
+          { roomSession: { closedAt: { not: null } } },
+          { outsideOrder: { closedAt: { not: null } } },
+        ],
       },
       _count: {
         _all: true,
@@ -411,6 +416,11 @@ export class StationsService {
             currentPreparationStationId: stationId,
             state: { in: ACTIVE_COOKING },
             cancelledAt: null,
+            NOT: [
+              { tableSession: { closedAt: { not: null } } },
+              { roomSession: { closedAt: { not: null } } },
+              { outsideOrder: { closedAt: { not: null } } },
+            ],
           },
         }),
         this.prisma.orderItem.count({
@@ -487,13 +497,14 @@ export class StationsService {
       limit?: number;
     },
   ): Promise<StationHistoryResponseDto> {
-    const context = await this.requireManager(userId);
+    const context = await this.requireBranch(userId);
     const station = await this.prisma.preparationStation.findFirst({
       where: { id: stationId, branchId: context.branchId! },
     });
     if (!station) {
       throw new NotFoundException('Station not found.');
     }
+    this.assertStationQueueAccess(context, station.id);
 
     const { period, rangeStart, rangeEnd, periodLabel } = resolveHistoryRange(
       opts?.period,
@@ -508,49 +519,85 @@ export class StationsService {
     const stateFilter = opts?.state?.trim().toUpperCase();
     const q = opts?.q?.trim();
 
-    const where: Prisma.OrderItemWhereInput = {
+    const dateWhere: Prisma.OrderItemWhereInput =
+      rangeStart && rangeEnd
+        ? { businessDate: { gte: rangeStart, lte: rangeEnd } }
+        : {};
+
+    const baseWhere: Prisma.OrderItemWhereInput = {
       branchId: context.branchId!,
       currentPreparationStationId: stationId,
-      businessDate: { gte: rangeStart, lte: rangeEnd },
-      ...(stateFilter && HISTORY_STATES.includes(stateFilter)
-        ? { state: stateFilter }
-        : {}),
-      ...(q
-        ? {
-            OR: [
-              { itemNameSnapshot: { contains: q, mode: 'insensitive' } },
-              { specialInstruction: { contains: q, mode: 'insensitive' } },
-              {
-                tableSession: {
-                  table: {
-                    OR: [
-                      { displayName: { contains: q, mode: 'insensitive' } },
-                      {
-                        displayNumber: {
-                          contains: q,
-                          mode: 'insensitive',
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-              {
-                order: {
-                  createdBy: {
-                    employeeDisplayName: {
-                      contains: q,
-                      mode: 'insensitive',
-                    },
-                  },
-                },
-              },
-            ],
-          }
-        : {}),
+      ...dateWhere,
     };
 
-    const [total, rows] = await Promise.all([
+    const stateWhere: Prisma.OrderItemWhereInput =
+      stateFilter === 'UNFINISHED'
+        ? { state: { in: ACTIVE_COOKING } }
+        : stateFilter === 'MISSED'
+          ? {
+              state: { in: ACTIVE_COOKING },
+              OR: [
+                { tableSession: { closedAt: { not: null } } },
+                { roomSession: { closedAt: { not: null } } },
+                { outsideOrder: { closedAt: { not: null } } },
+              ],
+            }
+          : stateFilter && HISTORY_STATES.includes(stateFilter)
+            ? { state: stateFilter }
+            : {};
+
+    const searchWhere: Prisma.OrderItemWhereInput = q
+      ? {
+          OR: [
+            { itemNameSnapshot: { contains: q, mode: 'insensitive' } },
+            { specialInstruction: { contains: q, mode: 'insensitive' } },
+            {
+              tableSession: {
+                table: {
+                  OR: [
+                    { displayName: { contains: q, mode: 'insensitive' } },
+                    {
+                      displayNumber: {
+                        contains: q,
+                        mode: 'insensitive',
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+            {
+              outsideOrder: {
+                destinationName: { contains: q, mode: 'insensitive' },
+              },
+            },
+            {
+              order: {
+                createdBy: {
+                  employeeDisplayName: {
+                    contains: q,
+                    mode: 'insensitive',
+                  },
+                },
+              },
+            },
+          ],
+        }
+      : {};
+
+    const where: Prisma.OrderItemWhereInput = {
+      AND: [baseWhere, stateWhere, searchWhere],
+    };
+
+    const [
+      total,
+      rows,
+      summaryTotal,
+      summaryCompleted,
+      summaryUnfinished,
+      summaryMissedClosed,
+      summaryCancelled,
+    ] = await Promise.all([
       this.prisma.orderItem.count({ where }),
       this.prisma.orderItem.findMany({
         where,
@@ -570,6 +617,13 @@ export class StationsService {
               hotelRoom: { select: { roomNumber: true } },
             },
           },
+          outsideOrder: {
+            select: {
+              destinationName: true,
+              customerName: true,
+              closedAt: true,
+            },
+          },
           order: {
             include: {
               createdBy: { select: { employeeDisplayName: true } },
@@ -577,21 +631,55 @@ export class StationsService {
           },
         },
       }),
+      this.prisma.orderItem.count({ where: baseWhere }),
+      this.prisma.orderItem.count({
+        where: { ...baseWhere, state: { in: ['READY', 'SERVED'] } },
+      }),
+      this.prisma.orderItem.count({
+        where: { ...baseWhere, state: { in: ACTIVE_COOKING } },
+      }),
+      this.prisma.orderItem.count({
+        where: {
+          ...baseWhere,
+          state: { in: ACTIVE_COOKING },
+          OR: [
+            { tableSession: { closedAt: { not: null } } },
+            { roomSession: { closedAt: { not: null } } },
+            { outsideOrder: { closedAt: { not: null } } },
+          ],
+        },
+      }),
+      this.prisma.orderItem.count({
+        where: { ...baseWhere, state: { in: ['CANCELLED', 'CANNOT_PREPARE'] } },
+      }),
     ]);
 
     const totalPages = Math.max(1, Math.ceil(total / limit));
 
     return {
       stationId,
+      stationName: station.name,
+      workflowMode: normalizeWorkflowMode(station.workflowMode),
       period,
       periodLabel,
+      summary: {
+        total: summaryTotal,
+        completed: summaryCompleted,
+        unfinished: summaryUnfinished,
+        missedClosed: summaryMissedClosed,
+        cancelled: summaryCancelled,
+      },
       data: rows.map((item) => {
-        const table = item.tableSession?.table;
-        const room = item.roomSession?.hotelRoom;
-        const tableDisplayName = room
-          ? `Room ${room.roomNumber}`
-          : table?.displayName ||
-            (table?.displayNumber ? `Table ${table.displayNumber}` : 'Seating');
+        const tableDisplayName = callPickupLabel(
+          item.tableSession,
+          item.roomSession,
+          item.outsideOrder,
+        );
+        const seatingClosed = Boolean(
+          item.tableSession?.closedAt ||
+            item.roomSession?.closedAt ||
+            item.outsideOrder?.closedAt,
+        );
         let prepMinutes: number | null = null;
         if (item.readyAt && item.preparationStartedAt) {
           prepMinutes = Math.max(
@@ -622,6 +710,8 @@ export class StationsService {
           queuedAt: item.queuedAt,
           readyAt: item.readyAt,
           servedAt: item.servedAt,
+          version: item.version,
+          seatingClosed,
           prepMinutes,
         };
       }),
@@ -754,7 +844,12 @@ export class StationsService {
     const context = await this.requireBranch(userId);
     const item = await this.prisma.orderItem.findFirst({
       where: { id: orderItemId, branchId: context.branchId! },
-      select: { currentPreparationStationId: true },
+      select: {
+        currentPreparationStationId: true,
+        tableSession: { select: { closedAt: true } },
+        roomSession: { select: { closedAt: true } },
+        outsideOrder: { select: { closedAt: true } },
+      },
     });
     if (!item) {
       throw new NotFoundException('Order item not found.');
@@ -768,15 +863,21 @@ export class StationsService {
     });
     const quickServe =
       normalizeWorkflowMode(station?.workflowMode) === 'QUICK_SERVE';
+    const seatingClosed = Boolean(
+      item.tableSession?.closedAt ||
+        item.roomSession?.closedAt ||
+        item.outsideOrder?.closedAt,
+    );
 
     const result = await this.transition(
       userId,
       orderItemId,
       dto.expectedVersion,
       {
-        from: quickServe
-          ? ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION']
-          : ['IN_PREPARATION'],
+        from:
+          quickServe || seatingClosed
+            ? ['QUEUED', 'ACKNOWLEDGED', 'IN_PREPARATION']
+            : ['IN_PREPARATION'],
         to: 'READY',
         extra: { readyAt: new Date() },
       },
@@ -1536,12 +1637,31 @@ function resolveHistoryRange(
   toRaw?: string,
 ): {
   period: string;
-  rangeStart: Date;
-  rangeEnd: Date;
+  rangeStart: Date | null;
+  rangeEnd: Date | null;
   periodLabel: string;
 } {
   const today = businessDateUtc();
   const period = (periodRaw || 'today').toLowerCase();
+
+  if (period === 'all') {
+    return {
+      period: 'all',
+      rangeStart: null,
+      rangeEnd: null,
+      periodLabel: 'All time',
+    };
+  }
+
+  if (period === 'yesterday') {
+    const yesterday = addLocalDays(today, -1);
+    return {
+      period: 'yesterday',
+      rangeStart: yesterday,
+      rangeEnd: yesterday,
+      periodLabel: 'Yesterday',
+    };
+  }
 
   if (period === 'custom' && fromRaw && toRaw) {
     const from = parseBusinessDate(fromRaw);

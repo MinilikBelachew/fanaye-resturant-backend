@@ -62,6 +62,11 @@ export class OrderSlaMonitorService implements OnModuleInit, OnModuleDestroy {
         cancelledAt: null,
         servedAt: null,
         queuedAt: { not: null },
+        NOT: [
+          { tableSession: { closedAt: { not: null } } },
+          { roomSession: { closedAt: { not: null } } },
+          { outsideOrder: { closedAt: { not: null } } },
+        ],
         OR: [
           { unacknowledgedAlertSentAt: null },
           { delayAlertSentAt: null },
