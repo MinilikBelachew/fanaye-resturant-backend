@@ -220,12 +220,11 @@ export class SuperAdminService {
     });
   }
 
-  private async upsertUserPassword(
+  private async upsertUserPasswordHash(
     tx: Prisma.TransactionClient,
     userId: string,
-    password: string,
+    passwordHash: string,
   ): Promise<void> {
-    const passwordHash = await bcrypt.hash(password.slice(0, 72), 10);
     const existing = await tx.userCredential.findUnique({ where: { userId } });
     if (existing) {
       await tx.userCredential.update({
@@ -241,6 +240,15 @@ export class SuperAdminService {
         authProvider: 'email',
       },
     });
+  }
+
+  private async upsertUserPassword(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    password: string,
+  ): Promise<void> {
+    const passwordHash = await bcrypt.hash(password.slice(0, 72), 10);
+    await this.upsertUserPasswordHash(tx, userId, passwordHash);
   }
 
   private async ensureManagerRole(
@@ -1341,291 +1349,369 @@ export class SuperAdminService {
       throw new BadRequestException(`Unknown or inactive plan "${planCode}".`);
     }
 
-    const createdTenant = await this.prisma.$transaction(async (tx) => {
-      // 1. Create Tenant
-      const tenant = await tx.tenant.create({
-        data: {
-          displayName,
-          legalName: (dto.legalName || displayName).trim(),
-          status: 'ACTIVE',
-          defaultTimezone: 'Africa/Addis_Ababa',
-          currencyCode: 'ETB',
-          activatedAt: new Date(),
-          settings: {
-            create: {
-              calendarPreference: 'ETHIOPIAN',
-              defaultShiftGraceMinutes: 15,
-              waiterMayClosePaidTable: true,
-              cashierMayCollectCustomerPayment: false,
+    const ownerPasswordHash = dto.ownerPassword?.trim()
+      ? await bcrypt.hash(dto.ownerPassword.trim().slice(0, 72), 10)
+      : null;
+    const managerPasswordHash = dto.managerPassword?.trim()
+      ? await bcrypt.hash(dto.managerPassword.trim().slice(0, 72), 10)
+      : null;
+
+    let createdTenant: { id: string };
+    try {
+      createdTenant = await this.prisma.$transaction(
+        async (tx) => {
+          // 1. Create Tenant
+          const tenant = await tx.tenant.create({
+            data: {
+              displayName,
+              legalName: (dto.legalName || displayName).trim(),
+              status: 'ACTIVE',
+              defaultTimezone: 'Africa/Addis_Ababa',
+              currencyCode: 'ETB',
+              activatedAt: new Date(),
+              settings: {
+                create: {
+                  calendarPreference: 'ETHIOPIAN',
+                  defaultShiftGraceMinutes: 15,
+                  waiterMayClosePaidTable: true,
+                  cashierMayCollectCustomerPayment: false,
+                },
+              },
             },
-          },
-        },
-      });
+          });
 
-      // 2. Create primary Branch
-      const branchCode = (
-        dto.branchCode || displayName.slice(0, 3).toUpperCase() + '-1'
-      ).slice(0, 40);
-      const branch = await tx.branch.create({
-        data: {
-          tenantId: tenant.id,
-          name: (dto.branchName || `${displayName} Main Branch`).trim(),
-          displayCode: branchCode,
-          timezone: 'Africa/Addis_Ababa',
-          serviceMode: dto.serviceMode === 'BAKERY' ? 'BAKERY' : 'RESTAURANT',
-          status: 'ACTIVE',
-          businessDayCutoff: new Date('1970-01-01T04:00:00Z'),
-          settings: {
-            create: {
-              tenant: { connect: { id: tenant.id } },
-              shiftEndWarningMinutes: 15,
+          // 2. Create primary Branch
+          const branchCode = (
+            dto.branchCode || displayName.slice(0, 3).toUpperCase() + '-1'
+          ).slice(0, 40);
+          const branch = await tx.branch.create({
+            data: {
+              tenantId: tenant.id,
+              name: (dto.branchName || `${displayName} Main Branch`).trim(),
+              displayCode: branchCode,
+              timezone: 'Africa/Addis_Ababa',
+              serviceMode:
+                dto.serviceMode === 'BAKERY' ? 'BAKERY' : 'RESTAURANT',
+              status: 'ACTIVE',
+              businessDayCutoff: new Date('1970-01-01T04:00:00Z'),
+              settings: {
+                create: {
+                  tenant: { connect: { id: tenant.id } },
+                  shiftEndWarningMinutes: 15,
+                },
+              },
             },
-          },
-        },
-      });
+          });
 
-      // 3. Create Subscription
-      await tx.tenantSubscription.create({
-        data: {
-          tenantId: tenant.id,
-          planId: plan.id,
-          subscriptionStatus: 'ACTIVE',
-          effectiveFrom: new Date(),
-        },
-      });
+          // 3. Create Subscription
+          await tx.tenantSubscription.create({
+            data: {
+              tenantId: tenant.id,
+              planId: plan.id,
+              subscriptionStatus: 'ACTIVE',
+              effectiveFrom: new Date(),
+            },
+          });
 
-      const isBakery = dto.serviceMode === 'BAKERY';
+          const isBakery = dto.serviceMode === 'BAKERY';
 
-      // 4. Create Preparation Stations (presets + custom), or Counter for bakery
-      if (isBakery) {
-        await tx.preparationStation.create({
-          data: {
-            tenantId: tenant.id,
-            branchId: branch.id,
-            name: 'Counter',
-            code: 'COUNTER',
-            status: 'ACTIVE',
-            sortOrder: 0,
-          },
-        });
-      } else {
-        const presetStations = [
-          { name: 'Kitchen Station', code: 'KITCHEN', sortOrder: 0 },
-          { name: 'Barista Station', code: 'BARISTA', sortOrder: 1 },
-          { name: 'Cakes & Pastry', code: 'CAKES', sortOrder: 2 },
-          { name: 'Soft Drinks & Bar', code: 'SOFT_DRINKS', sortOrder: 3 },
-        ];
-        const nameByCode = new Map(
-          presetStations.map((st) => [st.code, st.name]),
-        );
-        for (const custom of dto.customStations ?? []) {
-          const code = custom.code.trim().toUpperCase();
-          if (code) nameByCode.set(code, custom.name.trim() || code);
-        }
-        const selectedCodes = (
-          dto.activeStations?.length
-            ? dto.activeStations
-            : presetStations.map((s) => s.code)
-        )
-          .map((code) => code.trim().toUpperCase())
-          .filter(Boolean);
-        const uniqueCodes = [...new Set(selectedCodes)];
-
-        await Promise.all(
-          uniqueCodes.map((code, index) => {
-            const name = nameByCode.get(code) || code.replace(/_/g, ' ');
-            return tx.preparationStation.create({
+          // 4. Create Preparation Stations (presets + custom), or Counter for bakery
+          let createdStationCount = 1;
+          if (isBakery) {
+            await tx.preparationStation.create({
               data: {
                 tenantId: tenant.id,
                 branchId: branch.id,
-                name: name.slice(0, 120),
-                code: code.slice(0, 60),
+                name: 'Counter',
+                code: 'COUNTER',
                 status: 'ACTIVE',
-                sortOrder: index,
+                sortOrder: 0,
               },
             });
-          }),
+          } else {
+            const presetStations = [
+              { name: 'Kitchen Station', code: 'KITCHEN', sortOrder: 0 },
+              { name: 'Barista Station', code: 'BARISTA', sortOrder: 1 },
+              { name: 'Cakes & Pastry', code: 'CAKES', sortOrder: 2 },
+              { name: 'Soft Drinks & Bar', code: 'SOFT_DRINKS', sortOrder: 3 },
+            ];
+            const nameByCode = new Map(
+              presetStations.map((st) => [st.code, st.name]),
+            );
+            for (const custom of dto.customStations ?? []) {
+              const code = custom.code.trim().toUpperCase();
+              if (code) nameByCode.set(code, custom.name.trim() || code);
+            }
+            const selectedCodes = (
+              dto.activeStations?.length
+                ? dto.activeStations
+                : presetStations.map((s) => s.code)
+            )
+              .map((code) => code.trim().toUpperCase())
+              .filter(Boolean);
+            const uniqueCodes = [...new Set(selectedCodes)];
+            createdStationCount = uniqueCodes.length;
+
+            await tx.preparationStation.createMany({
+              data: uniqueCodes.map((code, index) => {
+                const name = nameByCode.get(code) || code.replace(/_/g, ' ');
+                return {
+                  tenantId: tenant.id,
+                  branchId: branch.id,
+                  name: name.slice(0, 120),
+                  code: code.slice(0, 60),
+                  status: 'ACTIVE',
+                  sortOrder: index,
+                };
+              }),
+            });
+          }
+
+          // 5. Create default Table Location & Dining Tables
+          const location = await tx.tableLocation.create({
+            data: {
+              tenantId: tenant.id,
+              branchId: branch.id,
+              name: isBakery ? 'Counter' : 'Main Dining Floor',
+              code: isBakery ? 'COUNTER' : 'MAIN_FLOOR',
+              status: 'ACTIVE',
+              sortOrder: 0,
+            },
+          });
+
+          const tableCount = isBakery
+            ? 1
+            : Math.min(Math.max(dto.tableCount || 16, 1), 60);
+          await tx.diningTable.createMany({
+            data: Array.from({ length: tableCount }, (_, idx) => {
+              const i = idx + 1;
+              return {
+                tenantId: tenant.id,
+                branchId: branch.id,
+                locationId: location.id,
+                displayName: isBakery ? 'Counter' : `Table ${i}`,
+                displayNumber: isBakery ? 'C' : String(i),
+                status: 'AVAILABLE',
+                sortOrder: i,
+              };
+            }),
+          });
+
+          // 6. Create Owner AppUser & Staff Membership if ownerName is provided
+          let ownerUserId: string | null = null;
+          let ownerMembershipId: string | null = null;
+
+          if (dto.ownerName?.trim()) {
+            const ownerEmail = dto.ownerEmail?.trim() || undefined;
+            const ownerPhone = dto.ownerPhone?.trim() || undefined;
+
+            const ownerByEmail = ownerEmail
+              ? await tx.appUser.findFirst({ where: { email: ownerEmail } })
+              : null;
+            const ownerByPhone = ownerPhone
+              ? await tx.appUser.findFirst({ where: { phone: ownerPhone } })
+              : null;
+
+            if (
+              ownerByEmail &&
+              ownerByPhone &&
+              ownerByEmail.id !== ownerByPhone.id
+            ) {
+              throw new ConflictException(
+                'Owner email and phone belong to two different existing accounts.',
+              );
+            }
+
+            let ownerUser = ownerByEmail || ownerByPhone;
+
+            if (!ownerUser) {
+              ownerUser = await tx.appUser.create({
+                data: {
+                  displayName: dto.ownerName.trim(),
+                  email: ownerEmail || null,
+                  phone: ownerPhone || null,
+                  accountStatus: 'ACTIVE',
+                  preferredBranchId: branch.id,
+                },
+              });
+            } else {
+              ownerUser = await tx.appUser.update({
+                where: { id: ownerUser.id },
+                data: {
+                  displayName: dto.ownerName.trim(),
+                  ...(ownerEmail ? { email: ownerEmail } : {}),
+                  ...(ownerPhone ? { phone: ownerPhone } : {}),
+                  preferredBranchId: ownerUser.preferredBranchId ?? branch.id,
+                },
+              });
+            }
+
+            if (ownerPasswordHash) {
+              await this.upsertUserPasswordHash(
+                tx,
+                ownerUser.id,
+                ownerPasswordHash,
+              );
+            }
+
+            const ownerMembership = await tx.tenantStaffMembership.create({
+              data: {
+                tenantId: tenant.id,
+                userId: ownerUser.id,
+                employeeDisplayName: dto.ownerName.trim(),
+                status: 'ACTIVE',
+                joinedAt: new Date(),
+              },
+            });
+
+            await this.ensureOwnerRole(tx, tenant.id, ownerMembership.id);
+            ownerUserId = ownerUser.id;
+            ownerMembershipId = ownerMembership.id;
+          }
+
+          // 7. Create Manager AppUser & Staff Membership if email or managerName is provided
+          if (dto.managerEmail || dto.managerName) {
+            const explicitManagerEmail = dto.managerEmail?.trim() || undefined;
+            const fallbackEmail = `manager.${tenant.id.slice(0, 6)}@restaurant.et`;
+            const phone = dto.managerPhone?.trim() || dto.phone;
+
+            const managerByEmail = explicitManagerEmail
+              ? await tx.appUser.findFirst({
+                  where: { email: explicitManagerEmail },
+                })
+              : null;
+            const managerByPhone = phone
+              ? await tx.appUser.findFirst({ where: { phone } })
+              : null;
+
+            if (
+              managerByEmail &&
+              managerByPhone &&
+              managerByEmail.id !== managerByPhone.id
+            ) {
+              throw new ConflictException(
+                'Manager email and phone belong to two different existing accounts.',
+              );
+            }
+
+            let managerUser = managerByEmail || managerByPhone;
+
+            if (!managerUser) {
+              managerUser = await tx.appUser.create({
+                data: {
+                  displayName: dto.managerName || 'Restaurant Manager',
+                  email: explicitManagerEmail || fallbackEmail,
+                  phone,
+                  accountStatus: 'ACTIVE',
+                },
+              });
+            } else {
+              managerUser = await tx.appUser.update({
+                where: { id: managerUser.id },
+                data: {
+                  displayName: dto.managerName || managerUser.displayName,
+                  ...(explicitManagerEmail
+                    ? { email: explicitManagerEmail }
+                    : {}),
+                  ...(phone ? { phone } : {}),
+                },
+              });
+            }
+
+            if (managerPasswordHash && managerUser.id !== ownerUserId) {
+              await this.upsertUserPasswordHash(
+                tx,
+                managerUser.id,
+                managerPasswordHash,
+              );
+            }
+
+            let managerMembershipId: string;
+            if (ownerUserId && ownerMembershipId && managerUser.id === ownerUserId) {
+              managerMembershipId = ownerMembershipId;
+            } else {
+              const managerMembership = await tx.tenantStaffMembership.create({
+                data: {
+                  tenantId: tenant.id,
+                  userId: managerUser.id,
+                  employeeDisplayName: dto.managerName || 'Restaurant Manager',
+                  status: 'ACTIVE',
+                  joinedAt: new Date(),
+                },
+              });
+              managerMembershipId = managerMembership.id;
+            }
+
+            await tx.branchStaffAssignment.create({
+              data: {
+                tenantId: tenant.id,
+                branchId: branch.id,
+                staffMembershipId: managerMembershipId,
+                status: 'ACTIVE',
+              },
+            });
+
+            await this.ensureManagerRole(
+              tx,
+              tenant.id,
+              branch.id,
+              managerMembershipId,
+            );
+          }
+
+          await this.upsertTenantProfile(tx, tenant.id, userId, {
+            city: dto.city,
+            area: dto.area,
+            address: dto.address,
+            hours: dto.hours,
+            concept: dto.concept,
+            contactPhone: dto.phone,
+            contactEmail: dto.email,
+          });
+
+          // 8. Log audit event
+          await tx.auditEvent.create({
+            data: {
+              tenantId: tenant.id,
+              branchId: branch.id,
+              actorUserId: userId,
+              action: 'TENANT_PROVISIONED',
+              entityType: 'TENANT',
+              entityId: tenant.id,
+              reason: `Provisioned tenant ${displayName} with ${tableCount} tables and ${createdStationCount} stations.`,
+            },
+          });
+
+          // 9. Auto-provision default returnable materials (bulk)
+          await provisionDefaultMaterials(tx, tenant.id, branch.id);
+
+          return tenant;
+        },
+        { timeout: 60_000, maxWait: 15_000 },
+      );
+    } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof ConflictException ||
+        error instanceof ForbiddenException ||
+        error instanceof NotFoundException ||
+        error instanceof UnauthorizedException
+      ) {
+        throw error;
+      }
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const target = Array.isArray(error.meta?.target)
+          ? (error.meta?.target as string[]).join(', ')
+          : String(error.meta?.target || 'field');
+        throw new ConflictException(
+          `Could not provision tenant: ${target} is already in use.`,
         );
       }
-
-      // 5. Create default Table Location & Dining Tables
-      const location = await tx.tableLocation.create({
-        data: {
-          tenantId: tenant.id,
-          branchId: branch.id,
-          name: isBakery ? 'Counter' : 'Main Dining Floor',
-          code: isBakery ? 'COUNTER' : 'MAIN_FLOOR',
-          status: 'ACTIVE',
-          sortOrder: 0,
-        },
-      });
-
-      const tableCount = isBakery
-        ? 1
-        : Math.min(Math.max(dto.tableCount || 16, 1), 60);
-      for (let i = 1; i <= tableCount; i++) {
-        await tx.diningTable.create({
-          data: {
-            tenantId: tenant.id,
-            branchId: branch.id,
-            locationId: location.id,
-            displayName: isBakery ? 'Counter' : `Table ${i}`,
-            displayNumber: isBakery ? 'C' : String(i),
-            status: 'AVAILABLE',
-            sortOrder: i,
-          },
-        });
-      }
-
-      // 6. Create Owner AppUser & Staff Membership if ownerName is provided
-      if (dto.ownerName?.trim()) {
-        const ownerEmail = dto.ownerEmail?.trim() || undefined;
-        const ownerPhone = dto.ownerPhone?.trim() || undefined;
-
-        let ownerUser =
-          (ownerEmail
-            ? await tx.appUser.findFirst({ where: { email: ownerEmail } })
-            : null) ||
-          (ownerPhone
-            ? await tx.appUser.findFirst({ where: { phone: ownerPhone } })
-            : null);
-
-        if (!ownerUser) {
-          ownerUser = await tx.appUser.create({
-            data: {
-              displayName: dto.ownerName.trim(),
-              email: ownerEmail || null,
-              phone: ownerPhone || null,
-              accountStatus: 'ACTIVE',
-              preferredBranchId: branch.id,
-            },
-          });
-        } else {
-          ownerUser = await tx.appUser.update({
-            where: { id: ownerUser.id },
-            data: {
-              displayName: dto.ownerName.trim(),
-              ...(ownerEmail ? { email: ownerEmail } : {}),
-              ...(ownerPhone ? { phone: ownerPhone } : {}),
-              preferredBranchId: ownerUser.preferredBranchId ?? branch.id,
-            },
-          });
-        }
-
-        if (dto.ownerPassword?.trim()) {
-          await this.upsertUserPassword(
-            tx,
-            ownerUser.id,
-            dto.ownerPassword.trim(),
-          );
-        }
-
-        const ownerMembership = await tx.tenantStaffMembership.create({
-          data: {
-            tenantId: tenant.id,
-            userId: ownerUser.id,
-            employeeDisplayName: dto.ownerName.trim(),
-            status: 'ACTIVE',
-            joinedAt: new Date(),
-          },
-        });
-
-        await this.ensureOwnerRole(tx, tenant.id, ownerMembership.id);
-      }
-
-      // 7. Create Manager AppUser & Staff Membership if email or managerName is provided
-      if (dto.managerEmail || dto.managerName) {
-        const email =
-          dto.managerEmail?.trim() ||
-          `manager.${tenant.id.slice(0, 6)}@restaurant.et`;
-        const phone = dto.managerPhone?.trim() || dto.phone;
-
-        let managerUser = await tx.appUser.findFirst({
-          where: { email },
-        });
-
-        if (!managerUser) {
-          managerUser = await tx.appUser.create({
-            data: {
-              displayName: dto.managerName || 'Restaurant Manager',
-              email,
-              phone,
-              accountStatus: 'ACTIVE',
-            },
-          });
-        } else {
-          managerUser = await tx.appUser.update({
-            where: { id: managerUser.id },
-            data: {
-              displayName: dto.managerName || managerUser.displayName,
-              phone: phone || managerUser.phone,
-            },
-          });
-        }
-
-        if (dto.managerPassword?.trim()) {
-          await this.upsertUserPassword(
-            tx,
-            managerUser.id,
-            dto.managerPassword.trim(),
-          );
-        }
-
-        const managerMembership = await tx.tenantStaffMembership.create({
-          data: {
-            tenantId: tenant.id,
-            userId: managerUser.id,
-            employeeDisplayName: dto.managerName || 'Restaurant Manager',
-            status: 'ACTIVE',
-            joinedAt: new Date(),
-          },
-        });
-
-        await tx.branchStaffAssignment.create({
-          data: {
-            tenantId: tenant.id,
-            branchId: branch.id,
-            staffMembershipId: managerMembership.id,
-            status: 'ACTIVE',
-          },
-        });
-
-        await this.ensureManagerRole(
-          tx,
-          tenant.id,
-          branch.id,
-          managerMembership.id,
-        );
-      }
-
-      await this.upsertTenantProfile(tx, tenant.id, userId, {
-        city: dto.city,
-        area: dto.area,
-        address: dto.address,
-        hours: dto.hours,
-        concept: dto.concept,
-        contactPhone: dto.phone,
-        contactEmail: dto.email,
-      });
-
-      // 8. Log audit event
-      await tx.auditEvent.create({
-        data: {
-          tenantId: tenant.id,
-          branchId: branch.id,
-          actorUserId: userId,
-          action: 'TENANT_PROVISIONED',
-          entityType: 'TENANT',
-          entityId: tenant.id,
-          reason: `Provisioned tenant ${displayName} with ${tableCount} tables and 4 stations.`,
-        },
-      });
-
-      // 9. Auto-provision 107 default returnable materials
-      await provisionDefaultMaterials(tx, tenant.id, branch.id);
-
-      return tenant;
-    });
+      throw error;
+    }
 
     return this.getTenantById(userId, createdTenant.id);
   }

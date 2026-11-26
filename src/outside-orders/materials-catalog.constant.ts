@@ -1612,61 +1612,66 @@ export async function provisionDefaultMaterials(
   tenantId: string,
   branchId: string,
 ) {
-  for (const item of DEFAULT_MATERIALS_CATALOG) {
-    const material = await prismaTx.inventoryMaterial.upsert({
+  if (DEFAULT_MATERIALS_CATALOG.length === 0) return;
+
+  await prismaTx.inventoryMaterial.createMany({
+    data: DEFAULT_MATERIALS_CATALOG.map((item) => ({
+      tenantId,
+      code: item.code,
+      name: item.name,
+      amharicName: item.amharicName,
+      category: item.category,
+      unit: item.unit,
+      isReusable: item.isReusable,
+      imageUrl: item.imageUrl,
+      description: item.description,
+      sortOrder: item.sortOrder,
+    })),
+    skipDuplicates: true,
+  });
+
+  const materials: Array<{ id: string; code: string }> =
+    await prismaTx.inventoryMaterial.findMany({
       where: {
-        tenantId_code: {
-          tenantId,
-          code: item.code,
-        },
-      },
-      create: {
         tenantId,
-        code: item.code,
-        name: item.name,
-        amharicName: item.amharicName,
-        category: item.category,
-        unit: item.unit,
-        isReusable: item.isReusable,
-        imageUrl: item.imageUrl,
-        description: item.description,
-        sortOrder: item.sortOrder,
+        code: { in: DEFAULT_MATERIALS_CATALOG.map((item) => item.code) },
       },
-      update: {
-        name: item.name,
-        amharicName: item.amharicName,
-        category: item.category,
-        unit: item.unit,
-        isReusable: item.isReusable,
-        imageUrl: item.imageUrl,
-        description: item.description,
-        sortOrder: item.sortOrder,
-      },
+      select: { id: true, code: true },
     });
 
-    const existingBalance = await prismaTx.inventoryMaterialBalance.findFirst({
+  if (materials.length === 0) return;
+
+  const existingBalances: Array<{ materialId: string }> =
+    await prismaTx.inventoryMaterialBalance.findMany({
       where: {
         tenantId,
         branchId,
-        materialId: material.id,
+        materialId: { in: materials.map((m) => m.id) },
       },
+      select: { materialId: true },
     });
-    if (existingBalance) {
-      await prismaTx.inventoryMaterialBalance.update({
-        where: { id: existingBalance.id },
-        data: { onHandQty: item.initialOnHand },
-      });
-    } else {
-      await prismaTx.inventoryMaterialBalance.create({
-        data: {
-          tenantId,
-          branchId,
-          materialId: material.id,
-          onHandQty: item.initialOnHand,
-          issuedQty: 0,
-          lostQty: 0,
-        },
-      });
-    }
+
+  const existingMaterialIds = new Set(
+    existingBalances.map((b) => b.materialId),
+  );
+  const initialByCode = new Map(
+    DEFAULT_MATERIALS_CATALOG.map((item) => [item.code, item.initialOnHand]),
+  );
+
+  const balancesToCreate = materials
+    .filter((m) => !existingMaterialIds.has(m.id))
+    .map((m) => ({
+      tenantId,
+      branchId,
+      materialId: m.id,
+      onHandQty: initialByCode.get(m.code) ?? 0,
+      issuedQty: 0,
+      lostQty: 0,
+    }));
+
+  if (balancesToCreate.length > 0) {
+    await prismaTx.inventoryMaterialBalance.createMany({
+      data: balancesToCreate,
+    });
   }
 }
