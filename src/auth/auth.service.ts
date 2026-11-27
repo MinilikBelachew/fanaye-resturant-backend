@@ -122,6 +122,10 @@ export class AuthService {
       String(user.id),
     );
 
+    await this.identityContextService.assertLocalDesktopLicense(
+      context.tenantId ?? undefined,
+    );
+
     return {
       refreshToken,
       token,
@@ -484,6 +488,9 @@ export class AuthService {
             impersonatedBy: userJwtPayload.impersonatedBy,
           }
         : undefined,
+    );
+    await this.identityContextService.assertLocalDesktopLicense(
+      context.tenantId ?? undefined,
     );
     return { user, context };
   }

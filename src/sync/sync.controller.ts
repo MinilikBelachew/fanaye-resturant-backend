@@ -62,10 +62,8 @@ export class SyncController {
     @Request() req: ExpressRequest,
     @Response() res: ExpressResponse,
   ) {
-    const nodeSyncToken = await this.syncService.authorizeRemoteTenantSync(
-      req,
-      tenantId,
-    );
+    const { nodeSyncToken, signedLicenseHeader } =
+      await this.syncService.authorizeRemoteTenantSync(req, tenantId, true);
     const { filename, sqlGzBuffer } =
       await this.syncService.exportTenantData(tenantId);
     res.set({
@@ -73,6 +71,9 @@ export class SyncController {
       'Content-Disposition': `attachment; filename="${filename}"`,
       'Content-Length': sqlGzBuffer.length,
       ...(nodeSyncToken ? { 'x-sync-node-token': nodeSyncToken } : {}),
+      ...(signedLicenseHeader
+        ? { 'x-desktop-license': signedLicenseHeader }
+        : {}),
     });
     res.send(sqlGzBuffer);
   }

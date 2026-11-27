@@ -1335,4 +1335,34 @@ export class TenantActivityResponseDto {
   };
 }
 
+export class DesktopLicenseStatusDto {
+  @ApiProperty()
+  bound: boolean;
+
+  @ApiPropertyOptional()
+  hardwareHashPreview?: string;
+
+  @ApiPropertyOptional()
+  deviceLabel?: string;
+
+  @ApiPropertyOptional()
+  activatedAt?: string;
+
+  @ApiProperty()
+  historyCount: number;
+}
+
+export class DesktopLicenseStatusResponseDto {
+  @ApiProperty({ type: () => DesktopLicenseStatusDto })
+  data: DesktopLicenseStatusDto;
+}
+
+export class ResetDesktopLicenseResponseDto {
+  @ApiProperty()
+  ok: boolean;
+
+  @ApiProperty()
+  revokedCount: number;
+}
+
 

@@ -16,6 +16,7 @@ import { PrismaService } from '../database/prisma.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { PLATFORM_ROLE_CODE } from '../identity/identity.constants';
 import { RoleEnum } from '../roles/roles.enum';
+import { DESKTOP_DEVICE_LICENSE_KEY } from '../sync/desktop-license.util';
 import {
   CityDistributionItemDto,
   CreatePlatformStaffDto,
@@ -23,6 +24,7 @@ import {
   CreateTenantDto,
   DeletePlanResponseDto,
   DeleteTenantResponseDto,
+  DesktopLicenseStatusResponseDto,
   GetTenantActivityQueryDto,
   ImpersonateResponseDto,
   ImpersonateSessionDto,
@@ -33,6 +35,7 @@ import {
   PlatformAuditListResponseDto,
   PlatformStaffListResponseDto,
   PlatformStaffMemberDto,
+  ResetDesktopLicenseResponseDto,
   ResetPlatformStaffPasswordDto,
   ResetPlatformStaffPinDto,
   SuspendPlatformStaffDto,
@@ -4168,6 +4171,78 @@ export class SuperAdminService {
         total: totalMovements,
         totalPages: mTotalPages,
       },
+    };
+  }
+
+  async getTenantDesktopLicense(
+    userId: string,
+    tenantId: string,
+  ): Promise<DesktopLicenseStatusResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const rows = await this.prisma.tenantEntitlement.findMany({
+      where: {
+        tenantId,
+        entitlementKey: DESKTOP_DEVICE_LICENSE_KEY,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const active = rows.find((r) => r.effectiveTo === null);
+    const val = (active?.valueJson ?? {}) as {
+      hardwareHash?: string;
+      deviceLabel?: string;
+      activatedAt?: string;
+    };
+
+    const hash = val.hardwareHash || '';
+    const hardwareHashPreview =
+      hash.length > 12 ? `${hash.slice(0, 6)}...${hash.slice(-6)}` : hash;
+
+    return {
+      data: {
+        bound: Boolean(active && hash),
+        hardwareHashPreview: hardwareHashPreview || undefined,
+        deviceLabel: val.deviceLabel || undefined,
+        activatedAt:
+          val.activatedAt || active?.effectiveFrom?.toISOString() || undefined,
+        historyCount: rows.length,
+      },
+    };
+  }
+
+  async resetTenantDesktopLicense(
+    userId: string,
+    tenantId: string,
+  ): Promise<ResetDesktopLicenseResponseDto> {
+    await this.verifySuperAdminAccess(userId);
+
+    const result = await this.prisma.tenantEntitlement.updateMany({
+      where: {
+        tenantId,
+        entitlementKey: DESKTOP_DEVICE_LICENSE_KEY,
+        effectiveTo: null,
+      },
+      data: {
+        effectiveTo: new Date(),
+        changedByUserId: userId,
+      },
+    });
+
+    await this.prisma.auditEvent.create({
+      data: {
+        tenantId,
+        actorUserId: userId,
+        action: 'DESKTOP_LICENSE_RESET',
+        entityType: 'TENANT',
+        entityId: tenantId,
+        reason: `Reset desktop offline device binding (${result.count} active binding(s) revoked).`,
+      },
+    });
+
+    return {
+      ok: true,
+      revokedCount: result.count,
     };
   }
 }

@@ -28,6 +28,7 @@ import {
   CreateTenantDto,
   DeletePlanResponseDto,
   DeleteTenantResponseDto,
+  DesktopLicenseStatusResponseDto,
   GetTenantActivityQueryDto,
   ImpersonateResponseDto,
   ImpersonateSessionDto,
@@ -38,6 +39,7 @@ import {
   PlatformAuditListResponseDto,
   PlatformStaffListResponseDto,
   PlatformStaffMemberDto,
+  ResetDesktopLicenseResponseDto,
   ResetPlatformStaffPasswordDto,
   ResetPlatformStaffPinDto,
   RestaurantRoleListResponseDto,
@@ -335,6 +337,30 @@ export class SuperAdminController {
     return this.superAdminService.getTenantActivity(
       this.requireUserId(request),
       query,
+    );
+  }
+
+  @Get('tenants/:id/desktop-license')
+  @ApiOkResponse({ type: DesktopLicenseStatusResponseDto })
+  getDesktopLicense(
+    @Request() request,
+    @Param('id') id: string,
+  ): Promise<DesktopLicenseStatusResponseDto> {
+    return this.superAdminService.getTenantDesktopLicense(
+      this.requireUserId(request),
+      id,
+    );
+  }
+
+  @Delete('tenants/:id/desktop-license')
+  @ApiOkResponse({ type: ResetDesktopLicenseResponseDto })
+  resetDesktopLicense(
+    @Request() request,
+    @Param('id') id: string,
+  ): Promise<ResetDesktopLicenseResponseDto> {
+    return this.superAdminService.resetTenantDesktopLicense(
+      this.requireUserId(request),
+      id,
     );
   }
 }

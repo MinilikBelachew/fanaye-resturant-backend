@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -14,6 +15,15 @@ import { AuthService } from '../auth/auth.service';
 import { AuthCookiesService } from '../auth/auth-cookies.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AllConfigType } from '../config/config.type';
+import {
+  DESKTOP_DEVICE_LICENSE_KEY,
+  getLocalHardwareFingerprint,
+  readLocalDesktopLicense,
+  signDesktopLicense,
+  SignedDesktopLicense,
+  verifyDesktopLicense,
+  writeLocalDesktopLicense,
+} from './desktop-license.util';
 import { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import * as crypto from 'crypto';
 import * as os from 'os';
@@ -179,7 +189,11 @@ export class SyncService {
   async authorizeRemoteTenantSync(
     req: ExpressRequest,
     targetTenantId?: string,
-  ): Promise<string | null> {
+    bindDesktopLicense = false,
+  ): Promise<{
+    nodeSyncToken: string | null;
+    signedLicenseHeader: string | null;
+  }> {
     if (!targetTenantId) {
       throw new BadRequestException('tenantId is required.');
     }
@@ -199,50 +213,139 @@ export class SyncService {
       throw new UnauthorizedException('Missing sync authentication token.');
     }
 
+    let actorUserId: string | null = null;
     const configuredSecret = this.getCloudSyncToken();
     if (configuredSecret && this.timingSafeEquals(token, configuredSecret)) {
-      return null;
+      actorUserId = null;
+    } else {
+      const jwtSecret = this.configService.get('auth.secret', { infer: true });
+      let payload: any;
+      try {
+        payload = await this.jwtService.verifyAsync(token, {
+          secret: jwtSecret,
+        });
+      } catch {
+        throw new UnauthorizedException('Invalid or expired sync token.');
+      }
+
+      if (payload?.scope === 'sync-node') {
+        if (String(payload.tenantId) !== String(targetTenantId)) {
+          throw new ForbiddenException(
+            'Sync node token does not match tenant.',
+          );
+        }
+        actorUserId = payload.id ? String(payload.id) : null;
+      } else {
+        if (!payload?.id) {
+          throw new UnauthorizedException('Invalid sync token payload.');
+        }
+
+        const ctx = await this.identityContext.getByUserId(String(payload.id));
+        if (!ctx || !SYNC_ALLOWED_ROLES.has(ctx.roleCode)) {
+          throw new ForbiddenException('Insufficient role for tenant sync.');
+        }
+        if (
+          ctx.roleCode !== 'PLATFORM_SUPER_ADMIN' &&
+          String(ctx.tenantId) !== String(targetTenantId)
+        ) {
+          throw new ForbiddenException('Tenant mismatch for sync request.');
+        }
+        actorUserId = ctx.userId;
+      }
+    }
+
+    const hardwareHash =
+      typeof req.headers['x-hardware-hash'] === 'string'
+        ? req.headers['x-hardware-hash'].trim()
+        : '';
+    const deviceLabel =
+      typeof req.headers['x-device-label'] === 'string'
+        ? req.headers['x-device-label'].trim().slice(0, 120)
+        : 'POS-PC';
+
+    let signedLicenseHeader: string | null = null;
+    if (hardwareHash) {
+      const existingBinding = await this.prisma.tenantEntitlement.findFirst({
+        where: {
+          tenantId: String(targetTenantId),
+          entitlementKey: DESKTOP_DEVICE_LICENSE_KEY,
+          effectiveTo: null,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      const boundData = existingBinding?.valueJson as
+        | { hardwareHash?: string }
+        | null
+        | undefined;
+
+      if (
+        existingBinding &&
+        boundData?.hardwareHash &&
+        boundData.hardwareHash !== hardwareHash
+      ) {
+        throw new ForbiddenException(
+          'This restaurant is already activated on another PC. Reset the Desktop Device License in Super Admin to activate a new computer.',
+        );
+      }
+
+      if (!bindDesktopLicense && !existingBinding) {
+        throw new ForbiddenException(
+          'Desktop device license is not bound or was reset. Re-activate this PC.',
+        );
+      }
+
+      if (bindDesktopLicense) {
+        if (!existingBinding) {
+          await this.prisma.tenantEntitlement.create({
+            data: {
+              tenantId: String(targetTenantId),
+              entitlementKey: DESKTOP_DEVICE_LICENSE_KEY,
+              valueJson: {
+                hardwareHash,
+                deviceLabel: deviceLabel || 'POS-PC',
+                activatedAt: new Date().toISOString(),
+              },
+              effectiveFrom: new Date(),
+              changedByUserId: actorUserId,
+            },
+          });
+        }
+
+        try {
+          const signed = signDesktopLicense({
+            version: 1,
+            tenantId: String(targetTenantId),
+            hardwareHash,
+            deviceLabel: deviceLabel || 'POS-PC',
+            issuedAt: new Date().toISOString(),
+          });
+          signedLicenseHeader = Buffer.from(
+            JSON.stringify(signed),
+            'utf8',
+          ).toString('base64');
+        } catch (err: any) {
+          throw new InternalServerErrorException(
+            err?.message || 'Unable to sign desktop license.',
+          );
+        }
+      }
     }
 
     const jwtSecret = this.configService.get('auth.secret', { infer: true });
-    let payload: any;
-    try {
-      payload = await this.jwtService.verifyAsync(token, { secret: jwtSecret });
-    } catch {
-      throw new UnauthorizedException('Invalid or expired sync token.');
-    }
+    const nodeSyncToken =
+      bindDesktopLicense && actorUserId
+        ? await this.jwtService.signAsync(
+            {
+              id: actorUserId,
+              tenantId: String(targetTenantId),
+              scope: 'sync-node',
+            },
+            { secret: jwtSecret, expiresIn: '365d' },
+          )
+        : null;
 
-    if (payload?.scope === 'sync-node') {
-      if (String(payload.tenantId) !== String(targetTenantId)) {
-        throw new ForbiddenException('Sync node token does not match tenant.');
-      }
-      return null;
-    }
-
-    if (!payload?.id) {
-      throw new UnauthorizedException('Invalid sync token payload.');
-    }
-
-    const ctx = await this.identityContext.getByUserId(String(payload.id));
-    if (!ctx || !SYNC_ALLOWED_ROLES.has(ctx.roleCode)) {
-      throw new ForbiddenException('Insufficient role for tenant sync.');
-    }
-    if (
-      ctx.roleCode !== 'PLATFORM_SUPER_ADMIN' &&
-      String(ctx.tenantId) !== String(targetTenantId)
-    ) {
-      throw new ForbiddenException('Tenant mismatch for sync request.');
-    }
-
-    // Issue a long-lived node token for subsequent background push cycles
-    return this.jwtService.signAsync(
-      {
-        id: ctx.userId,
-        tenantId: String(targetTenantId),
-        scope: 'sync-node',
-      },
-      { secret: jwtSecret, expiresIn: '365d' },
-    );
+    return { nodeSyncToken, signedLicenseHeader };
   }
 
   private timingSafeEquals(a: string, b: string): boolean {
@@ -410,6 +513,18 @@ export class SyncService {
       throw new BadRequestException('Both cloudUrl and tenantId are required.');
     }
 
+    const existingLicense = readLocalDesktopLicense();
+    if (
+      existingLicense?.tenantId &&
+      existingLicense.tenantId !== dto.tenantId
+    ) {
+      throw new ForbiddenException(
+        'This PC is already licensed to another restaurant. Uninstall and clear app data to switch restaurants.',
+      );
+    }
+
+    const { hardwareHash, deviceLabel } = getLocalHardwareFingerprint();
+
     let cleanUrl = dto.cloudUrl.replace(/\/+$/, '');
     cleanUrl = cleanUrl.replace(/\/(backend|api)(\/v1)?$/i, '');
     const exportEndpoint = `${cleanUrl}/backend/v1/sync/export-tenant/${dto.tenantId}`;
@@ -419,7 +534,10 @@ export class SyncService {
       `Connecting to Cloud at ${cleanUrl} to fetch all tenant data for ${dto.tenantId}...`,
     );
 
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      'x-hardware-hash': hardwareHash,
+      'x-device-label': deviceLabel,
+    };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
       headers['x-sync-token'] = token;
@@ -435,13 +553,42 @@ export class SyncService {
     }
 
     if (!response.ok) {
+      const errBody = await response.json().catch(() => null);
       throw new BadRequestException(
-        `Cloud server returned error (${response.status}): ${response.statusText}`,
+        errBody?.message ||
+          `Cloud server returned error (${response.status}): ${response.statusText}`,
       );
     }
 
     const longLivedNodeToken =
       response.headers.get('x-sync-node-token')?.trim() || token;
+
+    const licenseHeader = response.headers.get('x-desktop-license')?.trim();
+    let parsedLicense: SignedDesktopLicense | null = null;
+    if (licenseHeader) {
+      try {
+        parsedLicense = JSON.parse(
+          Buffer.from(licenseHeader, 'base64').toString('utf8'),
+        ) as SignedDesktopLicense;
+        const verified = verifyDesktopLicense(
+          parsedLicense,
+          hardwareHash,
+          dto.tenantId,
+        );
+        if (!verified.valid) {
+          throw new ForbiddenException(
+            verified.reason || 'Invalid desktop license returned by Cloud.',
+          );
+        }
+      } catch (err: any) {
+        if (err instanceof ForbiddenException) throw err;
+        throw new BadRequestException('Malformed desktop license from Cloud.');
+      }
+    } else if (process.env.OFFLINE_DESKTOP === 'true') {
+      throw new BadRequestException(
+        'Cloud server did not return a signed desktop license. Ensure DESKTOP_LICENSE_PRIVATE_KEY is configured on Cloud.',
+      );
+    }
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -454,6 +601,10 @@ export class SyncService {
       buffer,
       dto.tenantId,
     );
+
+    if (parsedLicense) {
+      writeLocalDesktopLicense(parsedLicense);
+    }
 
     // Save configuration (persist long-lived node token if issued by cloud)
     await this.updateConfig({
@@ -557,10 +708,8 @@ export class SyncService {
             create: data,
             update: {
               state: data.state,
-              closedAt: data.closedAt,
-              safeLockTriggeredAt: data.safeLockTriggeredAt,
-              closingRequestedAt: data.closingRequestedAt,
-              closedByMembershipId: data.closedByMembershipId,
+              clockOutAt: data.clockOutAt,
+              lateByMinutes: data.lateByMinutes,
               version: data.version,
             },
           });
@@ -841,6 +990,7 @@ export class SyncService {
         recentOrders.length > 0 ||
         recentBills.length > 0
       ) {
+        const { hardwareHash, deviceLabel } = getLocalHardwareFingerprint();
         const pushRes = await fetch(`${cloudUrl}/backend/v1/sync/push`, {
           method: 'POST',
           headers: {
@@ -848,6 +998,8 @@ export class SyncService {
             Authorization: `Bearer ${token}`,
             'x-sync-token': token,
             'x-tenant-id': tenantId,
+            'x-hardware-hash': hardwareHash,
+            'x-device-label': deviceLabel,
           },
           body: JSON.stringify({
             tenantId,

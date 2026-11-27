@@ -1,12 +1,18 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
+import {
+  getLocalHardwareFingerprint,
+  readLocalDesktopLicense,
+  verifyDesktopLicense,
+} from '../sync/desktop-license.util';
 import { AuthContextDto, AuthWorkspaceDto } from './dto/auth-context.dto';
 import {
   MARKET_REPORTER_ROLE_CODE,
@@ -598,5 +604,30 @@ export class IdentityContextService {
             : tenant.id),
       },
     };
+  }
+
+  async assertLocalDesktopLicense(expectedTenantId?: string): Promise<void> {
+    if (process.env.OFFLINE_DESKTOP !== 'true') {
+      return;
+    }
+
+    const existingTenant = await this.prisma.tenant.findFirst({
+      select: { id: true },
+    });
+    if (!existingTenant && !expectedTenantId) {
+      return;
+    }
+
+    const tenantId = expectedTenantId || existingTenant?.id;
+    const license = readLocalDesktopLicense();
+    const { hardwareHash } = getLocalHardwareFingerprint();
+    const check = verifyDesktopLicense(license, hardwareHash, tenantId);
+
+    if (!check.valid) {
+      throw new ForbiddenException(
+        check.reason ||
+          'Desktop license invalid or not authorized for this computer.',
+      );
+    }
   }
 }
