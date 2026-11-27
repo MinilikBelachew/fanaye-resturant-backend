@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory, Reflector } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { useContainer } from 'class-validator';
+import { json, urlencoded } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import validationOptions from './utils/validation-options';
@@ -20,6 +21,9 @@ async function bootstrap() {
   const configService = app.get(ConfigService<AllConfigType>);
   const isProd =
     configService.get('app.nodeEnv', { infer: true }) === 'production';
+
+  app.use(json({ limit: '25mb' }));
+  app.use(urlencoded({ extended: true, limit: '25mb' }));
 
   app.use(
     helmet({

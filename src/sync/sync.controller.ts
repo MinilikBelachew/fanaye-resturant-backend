@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   Request,
   Response,
   UseGuards,
@@ -20,7 +21,9 @@ import {
   SyncConfigDto,
   FirstTimeSetupDto,
   SyncPushPayload,
+  SyncUploadFileDto,
 } from './sync.service';
+import { SyncOutboxService } from './sync-outbox.service';
 
 @ApiTags('Sync')
 @Controller({
@@ -28,7 +31,10 @@ import {
   version: '1',
 })
 export class SyncController {
-  constructor(private readonly syncService: SyncService) {}
+  constructor(
+    private readonly syncService: SyncService,
+    private readonly syncOutboxService: SyncOutboxService,
+  ) {}
 
   /**
    * SIGN-IN SCREEN:
@@ -64,12 +70,13 @@ export class SyncController {
   ) {
     const { nodeSyncToken, signedLicenseHeader } =
       await this.syncService.authorizeRemoteTenantSync(req, tenantId, true);
-    const { filename, sqlGzBuffer } =
+    const { filename, sqlGzBuffer, latestSeq } =
       await this.syncService.exportTenantData(tenantId);
     res.set({
       'Content-Type': 'application/gzip',
       'Content-Disposition': `attachment; filename="${filename}"`,
       'Content-Length': sqlGzBuffer.length,
+      'x-sync-latest-seq': latestSeq,
       ...(nodeSyncToken ? { 'x-sync-node-token': nodeSyncToken } : {}),
       ...(signedLicenseHeader
         ? { 'x-desktop-license': signedLicenseHeader }
@@ -112,6 +119,52 @@ export class SyncController {
     const tenantId = payload.tenantId || headerTenantId;
     await this.syncService.authorizeRemoteTenantSync(req, tenantId);
     return this.syncService.handleIncomingPush(tenantId, payload);
+  }
+
+  /**
+   * CLOUD SERVER ENDPOINT:
+   * Uploads local offline media files (e.g. dish photos) to Cloudinary and records File row.
+   */
+  @Post('upload-file')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Relay local offline image/file to Cloud (Cloudinary) storage',
+  })
+  async uploadSyncedFile(
+    @Request() req: ExpressRequest,
+    @Headers('x-tenant-id') headerTenantId: string,
+    @Body() body: SyncUploadFileDto,
+  ) {
+    const tenantId = body.tenantId || headerTenantId;
+    await this.syncService.authorizeRemoteTenantSync(req, tenantId);
+    return this.syncService.handleIncomingFileUpload(tenantId, body);
+  }
+
+  /**
+   * CLOUD SERVER ENDPOINT:
+   * Returns incremental Cloud changes after `afterSeq` for two-way sync to offline nodes.
+   */
+  @Get('pull-changes')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Fetch incremental Cloud changes after afterSeq for offline node',
+  })
+  async pullChanges(
+    @Request() req: ExpressRequest,
+    @Headers('x-tenant-id') headerTenantId: string,
+    @Query('tenantId') queryTenantId?: string,
+    @Query('afterSeq') afterSeq?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const tenantId = queryTenantId || headerTenantId;
+    await this.syncService.authorizeRemoteTenantSync(req, tenantId);
+    const parsedLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
+    return this.syncOutboxService.getCloudChangesAfterSeq(
+      tenantId,
+      afterSeq || '0',
+      parsedLimit,
+    );
   }
 
   /**

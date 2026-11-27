@@ -3294,3 +3294,23 @@ model LandingTestimonial {
   @@index([isPublished, sortOrder], map: "ix_landing_testimonials__published_sort")
   @@map("landing_testimonials")
 }
+
+model SyncOutbox {
+  seq       BigInt    @id @default(autoincrement())
+  tenantId  String?   @map("tenant_id") @db.Uuid
+  tableName String    @map("table_name") @db.VarChar(80)
+  recordId  String    @map("record_id") @db.VarChar(255)
+  operation String    @db.VarChar(16)
+  payload   Json?
+  keyData   Json?     @map("key_data")
+  origin    String    @default("LOCAL") @db.VarChar(16)
+  attempts  Int       @default(0)
+  lastError String?   @map("last_error") @db.Text
+  syncedAt  DateTime? @map("synced_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([syncedAt, seq], map: "ix_sync_outbox__pending")
+  @@index([tenantId, seq], map: "ix_sync_outbox__tenant_seq")
+  @@index([tableName, recordId], map: "ix_sync_outbox__target")
+  @@map("sync_outbox")
+}

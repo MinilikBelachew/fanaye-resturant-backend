@@ -15,6 +15,12 @@ import { AuthService } from '../auth/auth.service';
 import { AuthCookiesService } from '../auth/auth-cookies.service';
 import { IdentityContextService } from '../identity/identity-context.service';
 import { AllConfigType } from '../config/config.type';
+import { FileDriver } from '../files/config/file-config.type';
+import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
+import {
+  OutboxChangeDto,
+  SyncOutboxService,
+} from './sync-outbox.service';
 import {
   DESKTOP_DEVICE_LICENSE_KEY,
   getLocalHardwareFingerprint,
@@ -53,6 +59,7 @@ export interface SyncConfigDto {
 
 export interface SyncPushPayload {
   tenantId?: string;
+  outboxItems?: OutboxChangeDto[];
   shiftSessions?: any[];
   tableSessions?: any[];
   roomSessions?: any[];
@@ -60,6 +67,16 @@ export interface SyncPushPayload {
   orders?: any[];
   bills?: any[];
 }
+
+export interface SyncUploadFileDto {
+  tenantId?: string;
+  fileId: string;
+  filename?: string;
+  base64Data: string;
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const SYNC_ALLOWED_ROLES = new Set([
   'PLATFORM_SUPER_ADMIN',
@@ -72,6 +89,7 @@ export class SyncService {
   private readonly logger = new Logger(SyncService.name);
   private isSyncing = false;
   private lastSyncedAt: Date | null = null;
+  private lastPulledSeq = '0';
 
   // Runtime memory overrides
   private runtimeCloudSyncUrl: string | null = null;
@@ -88,37 +106,58 @@ export class SyncService {
     private readonly authCookiesService: AuthCookiesService,
     private readonly identityContext: IdentityContextService,
     private readonly jwtService: JwtService,
+    private readonly syncOutboxService: SyncOutboxService,
   ) {
-    this.lastSyncedAt = this.loadPersistedLastSyncedAt();
+    const persisted = this.loadPersistedSyncState();
+    this.lastSyncedAt = persisted.lastSyncedAt;
+    this.lastPulledSeq = persisted.lastPulledSeq;
   }
 
   private getSyncStatePath(): string {
     return path.resolve(process.cwd(), 'sync-state.json');
   }
 
-  private loadPersistedLastSyncedAt(): Date | null {
+  private loadPersistedSyncState(): {
+    lastSyncedAt: Date | null;
+    lastPulledSeq: string;
+  } {
+    let lastSyncedAt: Date | null = null;
+    let lastPulledSeq = '0';
     try {
       const statePath = this.getSyncStatePath();
-      if (!fs.existsSync(statePath)) return null;
+      if (!fs.existsSync(statePath)) return { lastSyncedAt, lastPulledSeq };
       const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
       if (raw?.lastSyncedAt) {
         const parsed = new Date(raw.lastSyncedAt);
         if (!Number.isNaN(parsed.getTime())) {
-          return parsed;
+          lastSyncedAt = parsed;
         }
+      }
+      if (raw?.lastPulledSeq && /^\d+$/.test(String(raw.lastPulledSeq))) {
+        lastPulledSeq = String(raw.lastPulledSeq);
       }
     } catch {
       // ignore corrupt state file
     }
-    return null;
+    return { lastSyncedAt, lastPulledSeq };
   }
 
-  private persistLastSyncedAt(date: Date) {
+  private persistSyncState(date: Date, pulledSeq?: string) {
     this.lastSyncedAt = date;
+    if (pulledSeq && /^\d+$/.test(pulledSeq)) {
+      this.lastPulledSeq = pulledSeq;
+    }
     try {
       fs.writeFileSync(
         this.getSyncStatePath(),
-        JSON.stringify({ lastSyncedAt: date.toISOString() }, null, 2),
+        JSON.stringify(
+          {
+            lastSyncedAt: date.toISOString(),
+            lastPulledSeq: this.lastPulledSeq,
+          },
+          null,
+          2,
+        ),
         'utf8',
       );
     } catch (err: any) {
@@ -374,6 +413,10 @@ export class SyncService {
       OFFLINE_SYNC_ENABLED: this.isOfflineSyncEnabled() ? 'true' : 'false',
     });
 
+    await this.syncOutboxService.ensureOutboxTriggers(
+      this.isOfflineSyncEnabled() ? 'DESKTOP' : 'CLOUD',
+    );
+
     return this.getSyncStatus();
   }
 
@@ -406,7 +449,14 @@ export class SyncService {
    * Exports full tenant data archive for the local offline client to pull.
    */
   async exportTenantData(tenantId: string) {
-    return this.tenantExporter.exportTenantData(tenantId);
+    const seqRows: { max_seq: string }[] = await this.prisma.$queryRawUnsafe(
+      `SELECT COALESCE(MAX(seq), 0)::text AS max_seq FROM public.sync_outbox;`,
+    );
+    const exported = await this.tenantExporter.exportTenantData(tenantId);
+    return {
+      ...exported,
+      latestSeq: seqRows[0]?.max_seq || '0',
+    };
   }
 
   /**
@@ -562,6 +612,8 @@ export class SyncService {
 
     const longLivedNodeToken =
       response.headers.get('x-sync-node-token')?.trim() || token;
+    const latestCloudSeq =
+      response.headers.get('x-sync-latest-seq')?.trim() || '0';
 
     const licenseHeader = response.headers.get('x-desktop-license')?.trim();
     let parsedLicense: SignedDesktopLicense | null = null;
@@ -602,6 +654,8 @@ export class SyncService {
       dto.tenantId,
     );
 
+    await this.syncOutboxService.clearLocalOutboxBeforeRestore();
+
     if (parsedLicense) {
       writeLocalDesktopLicense(parsedLicense);
     }
@@ -621,7 +675,7 @@ export class SyncService {
     }
 
     const syncedAt = new Date();
-    this.persistLastSyncedAt(syncedAt);
+    this.persistSyncState(syncedAt, latestCloudSeq);
 
     return {
       success: true,
@@ -634,20 +688,45 @@ export class SyncService {
     };
   }
 
+  private async downloadRemoteFileToLocal(
+    fileId: string,
+    imageUrl: string,
+  ): Promise<string | null> {
+    try {
+      const filesDir = path.resolve(process.cwd(), 'files');
+      if (!fs.existsSync(filesDir)) {
+        fs.mkdirSync(filesDir, { recursive: true });
+      }
+
+      const res = await fetch(imageUrl);
+      if (!res.ok) return null;
+
+      const arrayBuf = await res.arrayBuffer();
+      const buf = Buffer.from(arrayBuf);
+
+      const urlParts = imageUrl.split('?')[0].split('.');
+      const ext = urlParts.length > 1 ? urlParts[urlParts.length - 1] : 'jpg';
+      const cleanExt = ext.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4) || 'jpg';
+      const localFileName = `img_${fileId.replace(/-/g, '')}.${cleanExt}`;
+      const localFilePath = path.join(filesDir, localFileName);
+
+      fs.writeFileSync(localFilePath, buf);
+      return `/backend/v1/files/${localFileName}`;
+    } catch (err: any) {
+      this.logger.warn(`Failed to cache image ${imageUrl}: ${err.message}`);
+      return null;
+    }
+  }
+
   /**
    * Pre-downloads Cloudinary & online images to local disk (./files/)
-   * and maps them to local endpoints (/backend/v1/files/:filename)
+   * and maps them to local endpoints (/backend/v1/files/:filename) without triggering outbox echoes.
    */
   async cacheImagesForOffline(tenantId: string): Promise<number> {
     this.logger.log(
       `Caching remote images locally for tenant ${tenantId}...`,
     );
     let cachedCount = 0;
-
-    const filesDir = path.resolve(process.cwd(), 'files');
-    if (!fs.existsSync(filesDir)) {
-      fs.mkdirSync(filesDir, { recursive: true });
-    }
 
     const remoteFiles = await this.prisma.file.findMany({
       where: {
@@ -656,31 +735,21 @@ export class SyncService {
     });
 
     for (const file of remoteFiles) {
-      try {
-        const imageUrl = file.path;
-        const res = await fetch(imageUrl);
-        if (!res.ok) continue;
+      const localPath = await this.downloadRemoteFileToLocal(
+        file.id,
+        file.path,
+      );
+      if (!localPath) continue;
 
-        const arrayBuf = await res.arrayBuffer();
-        const buf = Buffer.from(arrayBuf);
-
-        const urlParts = imageUrl.split('?')[0].split('.');
-        const ext = urlParts.length > 1 ? urlParts[urlParts.length - 1] : 'jpg';
-        const cleanExt = ext.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4) || 'jpg';
-        const localFileName = `img_${file.id.replace(/-/g, '')}.${cleanExt}`;
-        const localFilePath = path.join(filesDir, localFileName);
-
-        fs.writeFileSync(localFilePath, buf);
-
-        await this.prisma.file.update({
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL app.sync_applying = 'true';`);
+        await tx.file.update({
           where: { id: file.id },
-          data: { path: `/backend/v1/files/${localFileName}` },
+          data: { path: localPath },
         });
+      });
 
-        cachedCount++;
-      } catch (err: any) {
-        this.logger.warn(`Failed to cache image ${file.path}: ${err.message}`);
-      }
+      cachedCount++;
     }
 
     this.logger.log(
@@ -689,19 +758,164 @@ export class SyncService {
     return cachedCount;
   }
 
+  private async cacheRemoteFilesForChanges(
+    changes: OutboxChangeDto[],
+  ): Promise<void> {
+    for (const item of changes) {
+      if (
+        item.tableName === 'file' &&
+        item.operation === 'UPSERT' &&
+        typeof item.payload?.path === 'string' &&
+        item.payload.path.startsWith('http')
+      ) {
+        const localPath = await this.downloadRemoteFileToLocal(
+          String(item.payload.id || item.recordId),
+          item.payload.path,
+        );
+        if (localPath) {
+          item.payload = { ...item.payload, path: localPath };
+        }
+      }
+    }
+  }
+
+  /**
+   * CLOUD SERVER ENDPOINT:
+   * Receives base64 media file uploaded from an offline node, pushes it to Cloudinary
+   * (or local Cloud storage if Cloudinary is not enabled), and upserts `file` preserving `fileId`.
+   */
+  async handleIncomingFileUpload(
+    tenantId: string,
+    dto: SyncUploadFileDto,
+  ): Promise<{ success: boolean; file: { id: string; path: string } }> {
+    if (!dto?.fileId || !UUID_PATTERN.test(dto.fileId)) {
+      throw new BadRequestException('Valid fileId UUID is required.');
+    }
+    if (!dto?.base64Data || typeof dto.base64Data !== 'string') {
+      throw new BadRequestException('base64Data is required.');
+    }
+
+    const buffer = Buffer.from(dto.base64Data, 'base64');
+    if (buffer.length === 0 || buffer.length > 15 * 1024 * 1024) {
+      throw new BadRequestException(
+        'Uploaded file must be between 1 byte and 15 MB.',
+      );
+    }
+
+    const rawName = path.basename(dto.filename || `${dto.fileId}.jpg`);
+    const extMatch = rawName.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff|pdf)$/i);
+    const cleanExt = extMatch ? extMatch[1].toLowerCase() : 'jpg';
+
+    const driver = this.configService.get('file.driver', { infer: true });
+    const cloudName = this.configService.get('file.cloudinaryCloudName', {
+      infer: true,
+    });
+    const apiKey = this.configService.get('file.cloudinaryApiKey', {
+      infer: true,
+    });
+    const apiSecret = this.configService.get('file.cloudinaryApiSecret', {
+      infer: true,
+    });
+
+    let uploadedPath: string;
+    if (
+      driver === FileDriver.CLOUDINARY &&
+      cloudName &&
+      apiKey &&
+      apiSecret
+    ) {
+      cloudinary.config({
+        cloud_name: cloudName,
+        api_key: apiKey,
+        api_secret: apiSecret,
+      });
+
+      const uploadResult = await new Promise<UploadApiResponse>(
+        (resolve, reject) => {
+          const uploadStream = cloudinary.uploader.upload_stream(
+            {
+              folder: 'restaurant',
+              resource_type: 'auto',
+            },
+            (error, result) => {
+              if (error) return reject(error);
+              if (!result) {
+                return reject(
+                  new Error('Cloudinary upload returned empty response'),
+                );
+              }
+              resolve(result);
+            },
+          );
+          uploadStream.end(buffer);
+        },
+      );
+      uploadedPath = uploadResult.secure_url;
+    } else {
+      const filesDir = path.resolve(process.cwd(), 'files');
+      if (!fs.existsSync(filesDir)) {
+        fs.mkdirSync(filesDir, { recursive: true });
+      }
+      const localName = `sync_${dto.fileId.replace(/-/g, '')}.${cleanExt}`;
+      fs.writeFileSync(path.join(filesDir, localName), buffer);
+      uploadedPath = `/backend/v1/files/${localName}`;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.sync_applying = 'true';`);
+      await tx.file.upsert({
+        where: { id: dto.fileId },
+        create: { id: dto.fileId, path: uploadedPath },
+        update: { path: uploadedPath },
+      });
+    });
+
+    this.logger.log(
+      `Relayed offline file ${dto.fileId} for tenant ${tenantId} -> ${uploadedPath}`,
+    );
+
+    return {
+      success: true,
+      file: { id: dto.fileId, path: uploadedPath },
+    };
+  }
+
   /**
    * RECEIVER (Runs on Contabo Cloud):
-   * Receives shift sessions, table/room/outside sessions, orders (+ items/modifiers),
-   * and bills (+ lines/payments) pushed from the offline restaurant.
+   * Applies outbox mutations (menus, catalog, media, inventory, sessions, orders, bills, finance, etc.)
+   * and/or legacy payloads inside `app.sync_applying = 'true'`.
    */
   async handleIncomingPush(tenantId: string, payload: SyncPushPayload) {
     this.logger.log(`Received incoming sync push for tenant ${tenantId}`);
+    let outboxApplied = 0;
+    let outboxSkipped = 0;
     let ordersCount = 0;
     let billsCount = 0;
 
-    await this.prisma.$transaction(
-      async (tx) => {
-        for (const shift of payload.shiftSessions ?? []) {
+    if (Array.isArray(payload.outboxItems) && payload.outboxItems.length > 0) {
+      const res = await this.syncOutboxService.applyOutboxBatch(
+        tenantId,
+        payload.outboxItems,
+        'PUSH_TO_CLOUD',
+      );
+      outboxApplied = res.appliedCount;
+      outboxSkipped = res.skippedCount;
+    }
+
+    const hasLegacyPayload = Boolean(
+      payload.shiftSessions?.length ||
+        payload.tableSessions?.length ||
+        payload.roomSessions?.length ||
+        payload.outsideOrders?.length ||
+        payload.orders?.length ||
+        payload.bills?.length,
+    );
+
+    if (hasLegacyPayload) {
+      await this.prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SET LOCAL app.sync_applying = 'true';`);
+          for (const shift of payload.shiftSessions ?? []) {
           const data = { ...shift, tenantId };
           await tx.shiftSession.upsert({
             where: { id: shift.id },
@@ -853,23 +1067,94 @@ export class SyncService {
 
           billsCount++;
         }
-      },
-      { timeout: 60_000, maxWait: 15_000 },
-    );
+        },
+        { timeout: 60_000, maxWait: 15_000 },
+      );
+    }
 
     return {
       success: true,
+      outboxApplied,
+      outboxSkipped,
       ordersSynced: ordersCount,
       billsSynced: billsCount,
       syncedAt: new Date().toISOString(),
     };
   }
 
+  private async relayLocalFilesToCloud(
+    pendingRows: OutboxChangeDto[],
+    cloudUrl: string,
+    headers: Record<string, string>,
+    tenantId: string,
+  ): Promise<Set<string>> {
+    const relayedFileIds = new Set<string>();
+    const filesDir = path.resolve(process.cwd(), 'files');
+
+    // Deduplicate latest local file upserts in batch
+    const fileMap = new Map<string, OutboxChangeDto>();
+    for (const row of pendingRows) {
+      if (row.tableName === 'file') {
+        if (row.operation === 'UPSERT') {
+          fileMap.set(row.recordId, row);
+        } else {
+          fileMap.delete(row.recordId);
+        }
+      }
+    }
+
+    for (const [fileId, row] of fileMap.entries()) {
+      const filePath = String(row.payload?.path || '');
+      if (!filePath.startsWith('/backend/v1/files/')) continue;
+
+      const fileName = path.basename(filePath);
+      const diskPath = path.join(filesDir, fileName);
+      if (!fs.existsSync(diskPath)) {
+        this.logger.warn(
+          `Skipping missing local file during cloud relay: ${diskPath}`,
+        );
+        continue;
+      }
+
+      const buf = fs.readFileSync(diskPath);
+      const uploadRes = await fetch(`${cloudUrl}/backend/v1/sync/upload-file`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          tenantId,
+          fileId,
+          filename: fileName,
+          base64Data: buf.toString('base64'),
+        }),
+      });
+
+      if (!uploadRes.ok) {
+        const errText = await uploadRes
+          .text()
+          .catch(() => uploadRes.statusText);
+        throw new Error(
+          `Cloud file upload failed for ${fileName} (${uploadRes.status}): ${errText}`,
+        );
+      }
+
+      relayedFileIds.add(fileId);
+    }
+
+    return relayedFileIds;
+  }
+
   /**
-   * SENDER (Runs on Local Offline PC):
-   * Background cycle: Checks internet, pushes offline sessions/orders/bills to cloud.
+   * SENDER & PULLER (Runs on Local Offline PC):
+   * Background two-way cycle:
+   * 1) Push all pending local `sync_outbox` mutations (+ Cloudinary media relay) to Cloud
+   * 2) Pull incremental Cloud `sync_outbox` changes (`afterSeq`) + cache remote Cloudinary photos locally
    */
-  async runOfflineSyncCycle(): Promise<{ status: string; message: string }> {
+  async runOfflineSyncCycle(): Promise<{
+    status: string;
+    message: string;
+    pushedCount?: number;
+    pulledCount?: number;
+  }> {
     if (!this.isOfflineSyncEnabled()) {
       return {
         status: 'disabled',
@@ -911,127 +1196,144 @@ export class SyncService {
         };
       }
 
-      this.logger.log(
-        `Internet detected! Synchronizing with Cloud: ${cloudUrl}...`,
-      );
+      const { hardwareHash, deviceLabel } = getLocalHardwareFingerprint();
+      const authHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'x-sync-token': token,
+        'x-tenant-id': tenantId,
+        'x-hardware-hash': hardwareHash,
+        'x-device-label': deviceLabel,
+      };
 
-      // 2. Fetch locally modified records since last successful sync
-      const sinceDate =
-        this.lastSyncedAt || new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const syncRunStartedAt = new Date();
+      let totalPushed = 0;
+      let totalPulled = 0;
 
-      const [
-        shiftSessions,
-        tableSessions,
-        roomSessions,
-        outsideOrders,
-        recentOrders,
-        recentBills,
-      ] = await Promise.all([
-        this.prisma.shiftSession.findMany({
-          where: { tenantId, updatedAt: { gte: sinceDate } },
-          orderBy: { updatedAt: 'asc' },
-          take: 500,
-        }),
-        this.prisma.tableSession.findMany({
-          where: { tenantId, updatedAt: { gte: sinceDate } },
-          orderBy: { updatedAt: 'asc' },
-          take: 500,
-        }),
-        this.prisma.roomSession.findMany({
-          where: { tenantId, updatedAt: { gte: sinceDate } },
-          orderBy: { updatedAt: 'asc' },
-          take: 500,
-        }),
-        this.prisma.outsideOrder.findMany({
-          where: { tenantId, updatedAt: { gte: sinceDate } },
-          orderBy: { updatedAt: 'asc' },
-          take: 500,
-        }),
-        this.prisma.order.findMany({
-          where: {
+      // 2. PUSH PHASE: Drain local `sync_outbox` in batches
+      for (let batchIdx = 0; batchIdx < 5; batchIdx++) {
+        const pendingRows =
+          await this.syncOutboxService.getPendingLocalOutbox(200);
+        if (pendingRows.length === 0) break;
+
+        const seqs = pendingRows.map((r) => r.seq);
+        try {
+          const relayedFileIds = await this.relayLocalFilesToCloud(
+            pendingRows,
+            cloudUrl,
+            authHeaders,
             tenantId,
-            OR: [
-              { updatedAt: { gte: sinceDate } },
-              { items: { some: { updatedAt: { gte: sinceDate } } } },
-            ],
-          },
-          include: {
-            items: {
-              include: { modifiers: true },
-            },
-          },
-          orderBy: { updatedAt: 'asc' },
-          take: 500,
-        }),
-        this.prisma.bill.findMany({
-          where: {
-            tenantId,
-            OR: [
-              { updatedAt: { gte: sinceDate } },
-              { payments: { some: { updatedAt: { gte: sinceDate } } } },
-            ],
-          },
-          include: {
-            lines: true,
-            payments: true,
-          },
-          orderBy: { updatedAt: 'asc' },
-          take: 500,
-        }),
-      ]);
+          );
 
-      // 3. Push to Cloud
-      if (
-        shiftSessions.length > 0 ||
-        tableSessions.length > 0 ||
-        roomSessions.length > 0 ||
-        outsideOrders.length > 0 ||
-        recentOrders.length > 0 ||
-        recentBills.length > 0
-      ) {
-        const { hardwareHash, deviceLabel } = getLocalHardwareFingerprint();
-        const pushRes = await fetch(`${cloudUrl}/backend/v1/sync/push`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-            'x-sync-token': token,
-            'x-tenant-id': tenantId,
-            'x-hardware-hash': hardwareHash,
-            'x-device-label': deviceLabel,
-          },
-          body: JSON.stringify({
-            tenantId,
-            shiftSessions,
-            tableSessions,
-            roomSessions,
-            outsideOrders,
-            orders: recentOrders,
-            bills: recentBills,
-          }),
-        });
+          const outboxItems = pendingRows.filter(
+            (r) =>
+              !(
+                r.tableName === 'file' &&
+                r.operation === 'UPSERT' &&
+                relayedFileIds.has(r.recordId)
+              ),
+          );
 
-        if (!pushRes.ok) {
-          const errText = await pushRes.text().catch(() => pushRes.statusText);
-          this.logger.warn(
-            `Cloud sync push rejected (${pushRes.status}): ${errText}`,
+          if (outboxItems.length > 0) {
+            const pushRes = await fetch(`${cloudUrl}/backend/v1/sync/push`, {
+              method: 'POST',
+              headers: authHeaders,
+              body: JSON.stringify({
+                tenantId,
+                outboxItems,
+              }),
+            });
+
+            if (!pushRes.ok) {
+              const errText = await pushRes
+                .text()
+                .catch(() => pushRes.statusText);
+              await this.syncOutboxService.markOutboxError(seqs, errText);
+              this.logger.warn(
+                `Cloud sync push rejected (${pushRes.status}): ${errText}`,
+              );
+              return {
+                status: 'error',
+                message: `Cloud rejected sync push (${pushRes.status}): ${errText}`,
+              };
+            }
+          }
+
+          await this.syncOutboxService.markOutboxSynced(seqs);
+          totalPushed += pendingRows.length;
+
+          if (pendingRows.length < 200) break;
+        } catch (batchErr: any) {
+          await this.syncOutboxService.markOutboxError(
+            seqs,
+            batchErr?.message || 'Push batch failed',
           );
           return {
             status: 'error',
-            message: `Cloud rejected sync push (${pushRes.status}): ${errText}`,
+            message: batchErr?.message || 'Push batch failed',
           };
         }
+      }
 
+      // 3. PULL PHASE: Fetch Cloud changes since `lastPulledSeq`
+      let nextSeq = this.lastPulledSeq;
+      for (let pageIdx = 0; pageIdx < 5; pageIdx++) {
+        const pullUrl = `${cloudUrl}/backend/v1/sync/pull-changes?tenantId=${encodeURIComponent(tenantId)}&afterSeq=${encodeURIComponent(nextSeq)}&limit=200`;
+        const pullRes = await fetch(pullUrl, {
+          method: 'GET',
+          headers: authHeaders,
+        });
+
+        if (!pullRes.ok) {
+          const errText = await pullRes.text().catch(() => pullRes.statusText);
+          this.logger.warn(
+            `Cloud incremental pull failed (${pullRes.status}): ${errText}`,
+          );
+          break;
+        }
+
+        const pullData = (await pullRes.json()) as {
+          changes: OutboxChangeDto[];
+          nextSeq: string;
+          hasMore: boolean;
+        };
+
+        const changes = Array.isArray(pullData?.changes)
+          ? pullData.changes
+          : [];
+        if (changes.length > 0) {
+          await this.cacheRemoteFilesForChanges(changes);
+          const protectedKeys =
+            await this.syncOutboxService.getLocalPendingKeys();
+          const applied = await this.syncOutboxService.applyOutboxBatch(
+            tenantId,
+            changes,
+            'PULL_TO_DESKTOP',
+            protectedKeys,
+          );
+          totalPulled += applied.appliedCount;
+        }
+
+        if (pullData?.nextSeq && /^\d+$/.test(String(pullData.nextSeq))) {
+          nextSeq = String(pullData.nextSeq);
+        }
+
+        if (!pullData?.hasMore) break;
+      }
+
+      const syncCompletedAt = new Date();
+      this.persistSyncState(syncCompletedAt, nextSeq);
+
+      if (totalPushed > 0 || totalPulled > 0) {
         this.logger.log(
-          `Successfully pushed ${recentOrders.length} orders and ${recentBills.length} bills to Cloud!`,
+          `Two-way sync complete: pushed ${totalPushed} local changes, pulled ${totalPulled} cloud changes.`,
         );
       }
 
-      this.persistLastSyncedAt(syncRunStartedAt);
       return {
         status: 'success',
-        message: `Synced ${recentOrders.length} orders and ${recentBills.length} bills.`,
+        pushedCount: totalPushed,
+        pulledCount: totalPulled,
+        message: `Synced: pushed ${totalPushed} local changes and pulled ${totalPulled} cloud updates.`,
       };
     } catch (err: any) {
       this.logger.warn(`Sync attempt notice: ${err.message}`);
@@ -1066,6 +1368,24 @@ export class SyncService {
 
     let pendingOrdersCount = 0;
     let pendingBillsCount = 0;
+    let outboxStats = {
+      pendingOutboxCount: 0,
+      failedOutboxCount: 0,
+      lastSyncError: null as string | null,
+      pendingByCategory: {
+        menusAndCatalog: 0,
+        ordersAndBills: 0,
+        filesAndMedia: 0,
+        other: 0,
+      },
+    };
+
+    try {
+      outboxStats = await this.syncOutboxService.getOutboxStatusStats();
+    } catch {
+      // quiet fallback
+    }
+
     if (tenantId) {
       try {
         const sinceDate =
@@ -1087,8 +1407,10 @@ export class SyncService {
       tenantId: tenantId,
       cloudReachable: isCloudReachable,
       lastSyncedAt: this.lastSyncedAt ? this.lastSyncedAt.toISOString() : null,
+      lastPulledSeq: this.lastPulledSeq,
       pendingOrdersCount,
       pendingBillsCount,
+      ...outboxStats,
       localServerIp: this.getLocalIpAddress(),
       availableIps: this.getAllLocalIpAddresses(),
     };
