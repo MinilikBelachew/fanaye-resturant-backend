@@ -1,11 +1,21 @@
-import { Injectable, Logger, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../database/prisma.service';
 import { TenantExporterService } from '../backup/tenant-exporter.service';
 import { TenantRestorerService } from '../backup/tenant-restorer.service';
 import { AuthService } from '../auth/auth.service';
 import { AuthCookiesService } from '../auth/auth-cookies.service';
-import { Response as ExpressResponse } from 'express';
+import { IdentityContextService } from '../identity/identity-context.service';
+import { AllConfigType } from '../config/config.type';
+import { Request as ExpressRequest, Response as ExpressResponse } from 'express';
+import * as crypto from 'crypto';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -31,6 +41,22 @@ export interface SyncConfigDto {
   offlineSyncEnabled?: boolean;
 }
 
+export interface SyncPushPayload {
+  tenantId?: string;
+  shiftSessions?: any[];
+  tableSessions?: any[];
+  roomSessions?: any[];
+  outsideOrders?: any[];
+  orders?: any[];
+  bills?: any[];
+}
+
+const SYNC_ALLOWED_ROLES = new Set([
+  'PLATFORM_SUPER_ADMIN',
+  'OWNER_ADMIN',
+  'MANAGER',
+]);
+
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
@@ -45,18 +71,58 @@ export class SyncService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly configService: ConfigService,
+    private readonly configService: ConfigService<AllConfigType>,
     private readonly tenantExporter: TenantExporterService,
     private readonly tenantRestorer: TenantRestorerService,
     private readonly authService: AuthService,
     private readonly authCookiesService: AuthCookiesService,
-  ) {}
+    private readonly identityContext: IdentityContextService,
+    private readonly jwtService: JwtService,
+  ) {
+    this.lastSyncedAt = this.loadPersistedLastSyncedAt();
+  }
+
+  private getSyncStatePath(): string {
+    return path.resolve(process.cwd(), 'sync-state.json');
+  }
+
+  private loadPersistedLastSyncedAt(): Date | null {
+    try {
+      const statePath = this.getSyncStatePath();
+      if (!fs.existsSync(statePath)) return null;
+      const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      if (raw?.lastSyncedAt) {
+        const parsed = new Date(raw.lastSyncedAt);
+        if (!Number.isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore corrupt state file
+    }
+    return null;
+  }
+
+  private persistLastSyncedAt(date: Date) {
+    this.lastSyncedAt = date;
+    try {
+      fs.writeFileSync(
+        this.getSyncStatePath(),
+        JSON.stringify({ lastSyncedAt: date.toISOString() }, null, 2),
+        'utf8',
+      );
+    } catch (err: any) {
+      this.logger.warn(`Could not persist sync-state.json: ${err.message}`);
+    }
+  }
 
   isOfflineSyncEnabled(): boolean {
     if (this.runtimeOfflineSyncEnabled !== null) {
       return this.runtimeOfflineSyncEnabled;
     }
-    const val = this.configService.get<string>('OFFLINE_SYNC_ENABLED', { infer: true });
+    const val = this.configService.get<string>('OFFLINE_SYNC_ENABLED' as any, {
+      infer: true,
+    });
     return val === 'true' || val === '1';
   }
 
@@ -64,31 +130,139 @@ export class SyncService {
     if (this.runtimeCloudSyncUrl !== null) {
       return this.runtimeCloudSyncUrl.replace(/\/+$/, '');
     }
-    return (this.configService.get<string>('CLOUD_SYNC_URL', { infer: true }) || '').replace(/\/+$/, '');
+    return (
+      this.configService.get<string>('CLOUD_SYNC_URL' as any, {
+        infer: true,
+      }) || ''
+    ).replace(/\/+$/, '');
   }
 
   getCloudSyncToken(): string {
     if (this.runtimeCloudSyncToken !== null) {
       return this.runtimeCloudSyncToken;
     }
-    return this.configService.get<string>('CLOUD_SYNC_TOKEN', { infer: true }) || '';
+    return (
+      this.configService.get<string>('CLOUD_SYNC_TOKEN' as any, {
+        infer: true,
+      }) || ''
+    );
   }
 
   getTenantId(): string {
     if (this.runtimeTenantId !== null) {
       return this.runtimeTenantId;
     }
-    return this.configService.get<string>('TENANT_ID', { infer: true }) || '';
+    return (
+      this.configService.get<string>('TENANT_ID' as any, { infer: true }) || ''
+    );
+  }
+
+  async requireLocalAdmin(userId?: string): Promise<void> {
+    if (!userId) {
+      throw new UnauthorizedException('Authentication required.');
+    }
+    const ctx = await this.identityContext.getByUserId(String(userId));
+    if (!ctx || !SYNC_ALLOWED_ROLES.has(ctx.roleCode)) {
+      throw new ForbiddenException(
+        'Only restaurant owners or managers can manage cloud sync.',
+      );
+    }
+  }
+
+  /**
+   * Authorizes Cloud Sync requests (`export-tenant`, `push`) using:
+   * 1. A static `CLOUD_SYNC_TOKEN` (if configured on the server), OR
+   * 2. A valid `sync-node` JWT issued for `tenantId`, OR
+   * 3. A valid user Bearer JWT belonging to `OWNER_ADMIN` / `MANAGER` of `tenantId`, or `PLATFORM_SUPER_ADMIN`.
+   * Returns a long-lived `sync-node` JWT when authenticated as a user so offline nodes can keep syncing.
+   */
+  async authorizeRemoteTenantSync(
+    req: ExpressRequest,
+    targetTenantId?: string,
+  ): Promise<string | null> {
+    if (!targetTenantId) {
+      throw new BadRequestException('tenantId is required.');
+    }
+
+    const authHeader = req.headers.authorization;
+    const bearer =
+      typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7).trim()
+        : '';
+    const headerSyncToken =
+      typeof req.headers['x-sync-token'] === 'string'
+        ? req.headers['x-sync-token'].trim()
+        : '';
+    const token = bearer || headerSyncToken;
+
+    if (!token) {
+      throw new UnauthorizedException('Missing sync authentication token.');
+    }
+
+    const configuredSecret = this.getCloudSyncToken();
+    if (configuredSecret && this.timingSafeEquals(token, configuredSecret)) {
+      return null;
+    }
+
+    const jwtSecret = this.configService.get('auth.secret', { infer: true });
+    let payload: any;
+    try {
+      payload = await this.jwtService.verifyAsync(token, { secret: jwtSecret });
+    } catch {
+      throw new UnauthorizedException('Invalid or expired sync token.');
+    }
+
+    if (payload?.scope === 'sync-node') {
+      if (String(payload.tenantId) !== String(targetTenantId)) {
+        throw new ForbiddenException('Sync node token does not match tenant.');
+      }
+      return null;
+    }
+
+    if (!payload?.id) {
+      throw new UnauthorizedException('Invalid sync token payload.');
+    }
+
+    const ctx = await this.identityContext.getByUserId(String(payload.id));
+    if (!ctx || !SYNC_ALLOWED_ROLES.has(ctx.roleCode)) {
+      throw new ForbiddenException('Insufficient role for tenant sync.');
+    }
+    if (
+      ctx.roleCode !== 'PLATFORM_SUPER_ADMIN' &&
+      String(ctx.tenantId) !== String(targetTenantId)
+    ) {
+      throw new ForbiddenException('Tenant mismatch for sync request.');
+    }
+
+    // Issue a long-lived node token for subsequent background push cycles
+    return this.jwtService.signAsync(
+      {
+        id: ctx.userId,
+        tenantId: String(targetTenantId),
+        scope: 'sync-node',
+      },
+      { secret: jwtSecret, expiresIn: '365d' },
+    );
+  }
+
+  private timingSafeEquals(a: string, b: string): boolean {
+    const bufA = Buffer.from(a, 'utf8');
+    const bufB = Buffer.from(b, 'utf8');
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
   }
 
   /**
    * Updates runtime configuration and persists to .env
    */
   async updateConfig(dto: SyncConfigDto) {
-    if (dto.cloudSyncUrl !== undefined) this.runtimeCloudSyncUrl = dto.cloudSyncUrl;
+    if (dto.cloudSyncUrl !== undefined)
+      this.runtimeCloudSyncUrl = dto.cloudSyncUrl;
     if (dto.tenantId !== undefined) this.runtimeTenantId = dto.tenantId;
-    if (dto.cloudSyncToken !== undefined) this.runtimeCloudSyncToken = dto.cloudSyncToken;
-    if (dto.offlineSyncEnabled !== undefined) this.runtimeOfflineSyncEnabled = dto.offlineSyncEnabled;
+    if (dto.cloudSyncToken !== undefined)
+      this.runtimeCloudSyncToken = dto.cloudSyncToken;
+    if (dto.offlineSyncEnabled !== undefined)
+      this.runtimeOfflineSyncEnabled = dto.offlineSyncEnabled;
 
     this.persistEnvConfig({
       CLOUD_SYNC_URL: this.getCloudSyncUrl(),
@@ -139,13 +313,17 @@ export class SyncService {
    */
   async firstTimeSetup(dto: FirstTimeSetupDto, res: ExpressResponse) {
     if (!dto.cloudUrl || !dto.email || !dto.password) {
-      throw new BadRequestException('Cloud URL, Manager Email, and Password are required.');
+      throw new BadRequestException(
+        'Cloud URL, Manager Email, and Password are required.',
+      );
     }
 
     let cleanUrl = dto.cloudUrl.replace(/\/+$/, '');
     cleanUrl = cleanUrl.replace(/\/(backend|api)(\/v1)?$/i, '');
 
-    this.logger.log(`Initiating First-Time Setup via Cloud: ${cleanUrl} for ${dto.email}...`);
+    this.logger.log(
+      `Initiating First-Time Setup via Cloud: ${cleanUrl} for ${dto.email}...`,
+    );
 
     // 1. Authenticate against Cloud Server
     let cloudLoginRes: Response;
@@ -156,21 +334,31 @@ export class SyncService {
         body: JSON.stringify({ email: dto.email, password: dto.password }),
       });
     } catch (err: any) {
-      throw new BadRequestException(`Cannot reach Cloud server at ${cleanUrl}: ${err.message}`);
+      throw new BadRequestException(
+        `Cannot reach Cloud server at ${cleanUrl}: ${err.message}`,
+      );
     }
 
     if (!cloudLoginRes.ok) {
       const errData: any = await cloudLoginRes.json().catch(() => null);
       if (errData?.errors?.password) {
-        throw new UnauthorizedException('Incorrect password for this cloud manager account.');
+        throw new UnauthorizedException(
+          'Incorrect password for this cloud manager account.',
+        );
       }
       if (errData?.errors?.email) {
-        throw new UnauthorizedException(`Cloud account not found for email: ${dto.email}`);
+        throw new UnauthorizedException(
+          `Cloud account not found for email: ${dto.email}`,
+        );
       }
       if (cloudLoginRes.status === 404) {
-        throw new BadRequestException(`Cloud server reached at ${cleanUrl}, but API endpoint was not found (404).`);
+        throw new BadRequestException(
+          `Cloud server reached at ${cleanUrl}, but API endpoint was not found (404).`,
+        );
       }
-      throw new UnauthorizedException('Invalid Cloud Manager Email or Password.');
+      throw new UnauthorizedException(
+        'Invalid Cloud Manager Email or Password.',
+      );
     }
 
     const cloudData: any = await cloudLoginRes.json();
@@ -178,10 +366,14 @@ export class SyncService {
     const cloudToken = cloudData?.token;
 
     if (!tenantId) {
-      throw new BadRequestException('Your account is not assigned to an active restaurant tenant on the Cloud.');
+      throw new BadRequestException(
+        'Your account is not assigned to an active restaurant tenant on the Cloud.',
+      );
     }
 
-    this.logger.log(`Cloud authenticated! Tenant ID: ${tenantId}. Pulling restaurant database...`);
+    this.logger.log(
+      `Cloud authenticated! Tenant ID: ${tenantId}. Pulling restaurant database...`,
+    );
 
     // 2. Download and restore full restaurant database & images
     await this.pullAllFromCloud({
@@ -198,7 +390,11 @@ export class SyncService {
     });
 
     // Set cookies for immediate local authorization
-    this.authCookiesService.setRefreshCookie(res, localSession.refreshToken, true);
+    this.authCookiesService.setRefreshCookie(
+      res,
+      localSession.refreshToken,
+      true,
+    );
 
     const responseResult = { ...localSession };
     delete (responseResult as any).refreshToken;
@@ -219,7 +415,9 @@ export class SyncService {
     const exportEndpoint = `${cleanUrl}/backend/v1/sync/export-tenant/${dto.tenantId}`;
     const token = dto.token || this.getCloudSyncToken();
 
-    this.logger.log(`Connecting to Cloud at ${cleanUrl} to fetch all tenant data for ${dto.tenantId}...`);
+    this.logger.log(
+      `Connecting to Cloud at ${cleanUrl} to fetch all tenant data for ${dto.tenantId}...`,
+    );
 
     const headers: Record<string, string> = {};
     if (token) {
@@ -231,7 +429,9 @@ export class SyncService {
     try {
       response = await fetch(exportEndpoint, { headers });
     } catch (err: any) {
-      throw new BadRequestException(`Cannot reach cloud server at ${cleanUrl}: ${err.message}`);
+      throw new BadRequestException(
+        `Cannot reach cloud server at ${cleanUrl}: ${err.message}`,
+      );
     }
 
     if (!response.ok) {
@@ -240,18 +440,26 @@ export class SyncService {
       );
     }
 
+    const longLivedNodeToken =
+      response.headers.get('x-sync-node-token')?.trim() || token;
+
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    this.logger.log(`Received archive (${buffer.length} bytes). Restoring into local database...`);
+    this.logger.log(
+      `Received archive (${buffer.length} bytes). Restoring into local database...`,
+    );
 
-    const restoreResult = await this.tenantRestorer.restoreFromArchive(buffer, dto.tenantId);
+    const restoreResult = await this.tenantRestorer.restoreFromArchive(
+      buffer,
+      dto.tenantId,
+    );
 
-    // Save configuration
+    // Save configuration (persist long-lived node token if issued by cloud)
     await this.updateConfig({
       cloudSyncUrl: cleanUrl,
       tenantId: dto.tenantId,
-      cloudSyncToken: token,
+      cloudSyncToken: longLivedNodeToken,
       offlineSyncEnabled: true,
     });
 
@@ -261,7 +469,8 @@ export class SyncService {
       imagesCached = await this.cacheImagesForOffline(dto.tenantId);
     }
 
-    this.lastSyncedAt = new Date();
+    const syncedAt = new Date();
+    this.persistLastSyncedAt(syncedAt);
 
     return {
       success: true,
@@ -270,7 +479,7 @@ export class SyncService {
       tenantName: restoreResult.tenantName,
       statementsExecuted: restoreResult.statementsCount,
       imagesCachedCount: imagesCached,
-      syncedAt: this.lastSyncedAt.toISOString(),
+      syncedAt: syncedAt.toISOString(),
     };
   }
 
@@ -279,7 +488,9 @@ export class SyncService {
    * and maps them to local endpoints (/backend/v1/files/:filename)
    */
   async cacheImagesForOffline(tenantId: string): Promise<number> {
-    this.logger.log(`Caching remote images locally for tenant ${tenantId}...`);
+    this.logger.log(
+      `Caching remote images locally for tenant ${tenantId}...`,
+    );
     let cachedCount = 0;
 
     const filesDir = path.resolve(process.cwd(), 'files');
@@ -287,7 +498,6 @@ export class SyncService {
       fs.mkdirSync(filesDir, { recursive: true });
     }
 
-    // Find remote files (Cloudinary, S3, or external URLs)
     const remoteFiles = await this.prisma.file.findMany({
       where: {
         path: { startsWith: 'http' },
@@ -303,7 +513,6 @@ export class SyncService {
         const arrayBuf = await res.arrayBuffer();
         const buf = Buffer.from(arrayBuf);
 
-        // Extract extension or default to jpg
         const urlParts = imageUrl.split('?')[0].split('.');
         const ext = urlParts.length > 1 ? urlParts[urlParts.length - 1] : 'jpg';
         const cleanExt = ext.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4) || 'jpg';
@@ -312,7 +521,6 @@ export class SyncService {
 
         fs.writeFileSync(localFilePath, buf);
 
-        // Update database to local downloader path
         await this.prisma.file.update({
           where: { id: file.id },
           data: { path: `/backend/v1/files/${localFileName}` },
@@ -324,53 +532,181 @@ export class SyncService {
       }
     }
 
-    this.logger.log(`Cached ${cachedCount} remote images into local ./files directory.`);
+    this.logger.log(
+      `Cached ${cachedCount} remote images into local ./files directory.`,
+    );
     return cachedCount;
   }
 
   /**
    * RECEIVER (Runs on Contabo Cloud):
-   * Receives orders and bills pushed from the offline restaurant.
+   * Receives shift sessions, table/room/outside sessions, orders (+ items/modifiers),
+   * and bills (+ lines/payments) pushed from the offline restaurant.
    */
-  async handleIncomingPush(tenantId: string, payload: { orders?: any[]; bills?: any[] }) {
+  async handleIncomingPush(tenantId: string, payload: SyncPushPayload) {
     this.logger.log(`Received incoming sync push for tenant ${tenantId}`);
     let ordersCount = 0;
     let billsCount = 0;
 
-    if (payload.orders && payload.orders.length > 0) {
-      for (const order of payload.orders) {
-        const existing = await this.prisma.order.findUnique({ where: { id: order.id } });
-        if (!existing) {
-          const orderData = { ...order };
-          delete (orderData as any).items;
-          await this.prisma.order.create({
-            data: {
-              ...orderData,
-              tenantId,
+    await this.prisma.$transaction(
+      async (tx) => {
+        for (const shift of payload.shiftSessions ?? []) {
+          const data = { ...shift, tenantId };
+          await tx.shiftSession.upsert({
+            where: { id: shift.id },
+            create: data,
+            update: {
+              state: data.state,
+              closedAt: data.closedAt,
+              safeLockTriggeredAt: data.safeLockTriggeredAt,
+              closingRequestedAt: data.closingRequestedAt,
+              closedByMembershipId: data.closedByMembershipId,
+              version: data.version,
             },
           });
+        }
+
+        for (const session of payload.tableSessions ?? []) {
+          const data = { ...session, tenantId };
+          await tx.tableSession.upsert({
+            where: { id: session.id },
+            create: data,
+            update: {
+              status: data.status,
+              guestCount: data.guestCount,
+              billRequestedAt: data.billRequestedAt,
+              closedAt: data.closedAt,
+              closedByMembershipId: data.closedByMembershipId,
+              closeReason: data.closeReason,
+              version: data.version,
+            },
+          });
+        }
+
+        for (const roomSession of payload.roomSessions ?? []) {
+          const data = { ...roomSession, tenantId };
+          await tx.roomSession.upsert({
+            where: { id: roomSession.id },
+            create: data,
+            update: {
+              status: data.status,
+              billRequestedAt: data.billRequestedAt,
+              closedAt: data.closedAt,
+              closedByMembershipId: data.closedByMembershipId,
+              version: data.version,
+            },
+          });
+        }
+
+        for (const outsideOrder of payload.outsideOrders ?? []) {
+          const data = { ...outsideOrder, tenantId };
+          await tx.outsideOrder.upsert({
+            where: { id: outsideOrder.id },
+            create: data,
+            update: {
+              status: data.status,
+              closedAt: data.closedAt,
+              closedByMembershipId: data.closedByMembershipId,
+              version: data.version,
+            },
+          });
+        }
+
+        for (const order of payload.orders ?? []) {
+          const { items = [], ...orderFields } = order;
+          const orderData = { ...orderFields, tenantId };
+          await tx.order.upsert({
+            where: { id: order.id },
+            create: orderData,
+            update: {
+              status: orderData.status,
+              version: orderData.version,
+            },
+          });
+
+          for (const item of items) {
+            const { modifiers = [], ...itemFields } = item;
+            const itemData = { ...itemFields, tenantId };
+            await tx.orderItem.upsert({
+              where: { id: item.id },
+              create: itemData,
+              update: {
+                state: itemData.state,
+                quantity: itemData.quantity,
+                acknowledgedAt: itemData.acknowledgedAt,
+                preparationStartedAt: itemData.preparationStartedAt,
+                readyAt: itemData.readyAt,
+                servedAt: itemData.servedAt,
+                cancelledAt: itemData.cancelledAt,
+                cancelledByMembershipId: itemData.cancelledByMembershipId,
+                cancellationReason: itemData.cancellationReason,
+                version: itemData.version,
+              },
+            });
+
+            for (const mod of modifiers) {
+              await tx.orderItemModifier.upsert({
+                where: { id: mod.id },
+                create: { ...mod, tenantId },
+                update: {},
+              });
+            }
+          }
           ordersCount++;
         }
-      }
-    }
 
-    if (payload.bills && payload.bills.length > 0) {
-      for (const bill of payload.bills) {
-        const existing = await this.prisma.bill.findUnique({ where: { id: bill.id } });
-        if (!existing) {
-          const billData = { ...bill };
-          delete (billData as any).lines;
-          delete (billData as any).payments;
-          await this.prisma.bill.create({
-            data: {
-              ...billData,
-              tenantId,
+        for (const bill of payload.bills ?? []) {
+          const { lines = [], payments = [], ...billFields } = bill;
+          const billData = { ...billFields, tenantId };
+          await tx.bill.upsert({
+            where: { id: bill.id },
+            create: billData,
+            update: {
+              status: billData.status,
+              subtotalAmount: billData.subtotalAmount,
+              cancelledAmount: billData.cancelledAmount,
+              totalAmount: billData.totalAmount,
+              amountPaid: billData.amountPaid,
+              paidAt: billData.paidAt,
+              closedAt: billData.closedAt,
+              closedByMembershipId: billData.closedByMembershipId,
+              reopenedAt: billData.reopenedAt,
+              version: billData.version,
             },
           });
+
+          for (const line of lines) {
+            await tx.billLine.upsert({
+              where: { id: line.id },
+              create: { ...line, tenantId },
+              update: {
+                quantity: line.quantity,
+                lineTotal: line.lineTotal,
+                chargeStatus: line.chargeStatus,
+              },
+            });
+          }
+
+          for (const payment of payments) {
+            await tx.payment.upsert({
+              where: { id: payment.id },
+              create: { ...payment, tenantId },
+              update: {
+                status: payment.status,
+                collectedAt: payment.collectedAt,
+                verifiedAt: payment.verifiedAt,
+                settledAt: payment.settledAt,
+                cancelledAt: payment.cancelledAt,
+                version: payment.version,
+              },
+            });
+          }
+
           billsCount++;
         }
-      }
-    }
+      },
+      { timeout: 60_000, maxWait: 15_000 },
+    );
 
     return {
       success: true,
@@ -382,11 +718,14 @@ export class SyncService {
 
   /**
    * SENDER (Runs on Local Offline PC):
-   * Background cycle: Checks internet, pushes offline orders/bills to cloud.
+   * Background cycle: Checks internet, pushes offline sessions/orders/bills to cloud.
    */
   async runOfflineSyncCycle(): Promise<{ status: string; message: string }> {
     if (!this.isOfflineSyncEnabled()) {
-      return { status: 'disabled', message: 'Offline sync is not enabled on this instance.' };
+      return {
+        status: 'disabled',
+        message: 'Offline sync is not enabled on this instance.',
+      };
     }
 
     const cloudUrl = this.getCloudSyncUrl();
@@ -394,7 +733,10 @@ export class SyncService {
     const tenantId = this.getTenantId();
 
     if (!cloudUrl || !tenantId) {
-      return { status: 'skipped', message: 'Missing CLOUD_SYNC_URL or TENANT_ID.' };
+      return {
+        status: 'skipped',
+        message: 'Missing CLOUD_SYNC_URL or TENANT_ID.',
+      };
     }
 
     if (this.isSyncing) {
@@ -414,54 +756,127 @@ export class SyncService {
       clearTimeout(timeoutId);
 
       if (!healthRes || !healthRes.ok) {
-        return { status: 'offline', message: 'Cloud server not reachable. Operating offline safely.' };
+        return {
+          status: 'offline',
+          message: 'Cloud server not reachable. Operating offline safely.',
+        };
       }
 
-      this.logger.log(`Internet detected! Synchronizing with Cloud: ${cloudUrl}...`);
+      this.logger.log(
+        `Internet detected! Synchronizing with Cloud: ${cloudUrl}...`,
+      );
 
-      // 2. Fetch locally modified orders & bills
-      const sinceDate = this.lastSyncedAt || new Date(Date.now() - 24 * 60 * 60 * 1000);
+      // 2. Fetch locally modified records since last successful sync
+      const sinceDate =
+        this.lastSyncedAt || new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const syncRunStartedAt = new Date();
 
-      const recentOrders = await this.prisma.order.findMany({
-        where: {
-          tenantId,
-          updatedAt: { gte: sinceDate },
-        },
-        take: 100,
-      });
-
-      const recentBills = await this.prisma.bill.findMany({
-        where: {
-          tenantId,
-          updatedAt: { gte: sinceDate },
-        },
-        take: 100,
-      });
+      const [
+        shiftSessions,
+        tableSessions,
+        roomSessions,
+        outsideOrders,
+        recentOrders,
+        recentBills,
+      ] = await Promise.all([
+        this.prisma.shiftSession.findMany({
+          where: { tenantId, updatedAt: { gte: sinceDate } },
+          orderBy: { updatedAt: 'asc' },
+          take: 500,
+        }),
+        this.prisma.tableSession.findMany({
+          where: { tenantId, updatedAt: { gte: sinceDate } },
+          orderBy: { updatedAt: 'asc' },
+          take: 500,
+        }),
+        this.prisma.roomSession.findMany({
+          where: { tenantId, updatedAt: { gte: sinceDate } },
+          orderBy: { updatedAt: 'asc' },
+          take: 500,
+        }),
+        this.prisma.outsideOrder.findMany({
+          where: { tenantId, updatedAt: { gte: sinceDate } },
+          orderBy: { updatedAt: 'asc' },
+          take: 500,
+        }),
+        this.prisma.order.findMany({
+          where: {
+            tenantId,
+            OR: [
+              { updatedAt: { gte: sinceDate } },
+              { items: { some: { updatedAt: { gte: sinceDate } } } },
+            ],
+          },
+          include: {
+            items: {
+              include: { modifiers: true },
+            },
+          },
+          orderBy: { updatedAt: 'asc' },
+          take: 500,
+        }),
+        this.prisma.bill.findMany({
+          where: {
+            tenantId,
+            OR: [
+              { updatedAt: { gte: sinceDate } },
+              { payments: { some: { updatedAt: { gte: sinceDate } } } },
+            ],
+          },
+          include: {
+            lines: true,
+            payments: true,
+          },
+          orderBy: { updatedAt: 'asc' },
+          take: 500,
+        }),
+      ]);
 
       // 3. Push to Cloud
-      if (recentOrders.length > 0 || recentBills.length > 0) {
+      if (
+        shiftSessions.length > 0 ||
+        tableSessions.length > 0 ||
+        roomSessions.length > 0 ||
+        outsideOrders.length > 0 ||
+        recentOrders.length > 0 ||
+        recentBills.length > 0
+      ) {
         const pushRes = await fetch(`${cloudUrl}/backend/v1/sync/push`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
+            'x-sync-token': token,
             'x-tenant-id': tenantId,
           },
           body: JSON.stringify({
             tenantId,
+            shiftSessions,
+            tableSessions,
+            roomSessions,
+            outsideOrders,
             orders: recentOrders,
             bills: recentBills,
           }),
         });
 
-        if (pushRes.ok) {
-          this.logger.log(
-            `Successfully pushed ${recentOrders.length} orders and ${recentBills.length} bills to Cloud!`,
+        if (!pushRes.ok) {
+          const errText = await pushRes.text().catch(() => pushRes.statusText);
+          this.logger.warn(
+            `Cloud sync push rejected (${pushRes.status}): ${errText}`,
           );
+          return {
+            status: 'error',
+            message: `Cloud rejected sync push (${pushRes.status}): ${errText}`,
+          };
         }
+
+        this.logger.log(
+          `Successfully pushed ${recentOrders.length} orders and ${recentBills.length} bills to Cloud!`,
+        );
       }
 
-      this.lastSyncedAt = new Date();
+      this.persistLastSyncedAt(syncRunStartedAt);
       return {
         status: 'success',
         message: `Synced ${recentOrders.length} orders and ${recentBills.length} bills.`,
@@ -487,7 +902,9 @@ export class SyncService {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2500);
-        const res = await fetch(`${cloudUrl}/backend/v1/health`, { signal: controller.signal }).catch(() => null);
+        const res = await fetch(`${cloudUrl}/backend/v1/health`, {
+          signal: controller.signal,
+        }).catch(() => null);
         clearTimeout(timeoutId);
         isCloudReachable = Boolean(res && res.ok);
       } catch {
@@ -499,7 +916,8 @@ export class SyncService {
     let pendingBillsCount = 0;
     if (tenantId) {
       try {
-        const sinceDate = this.lastSyncedAt || new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const sinceDate =
+          this.lastSyncedAt || new Date(Date.now() - 24 * 60 * 60 * 1000);
         pendingOrdersCount = await this.prisma.order.count({
           where: { tenantId, updatedAt: { gte: sinceDate } },
         });
@@ -535,7 +953,11 @@ export class SyncService {
     for (const name of Object.keys(interfaces)) {
       const ifaceList = interfaces[name] || [];
       for (const iface of ifaceList) {
-        if (iface.family === 'IPv4' && !iface.internal && !iface.address.startsWith('169.254.')) {
+        if (
+          iface.family === 'IPv4' &&
+          !iface.internal &&
+          !iface.address.startsWith('169.254.')
+        ) {
           list.push({ name, ip: iface.address });
         }
       }

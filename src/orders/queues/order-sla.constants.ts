@@ -1,5 +1,12 @@
 export const ORDER_SLA_QUEUE_NAME = 'order-sla';
 
+export function isRedisQueueEnabled(): boolean {
+  return (
+    process.env.OFFLINE_DESKTOP !== 'true' &&
+    process.env.REDIS_ENABLED !== 'false'
+  );
+}
+
 export const ORDER_SLA_JOB = {
   CHECK_UNACKNOWLEDGED: 'check-unacknowledged',
   CHECK_PREPARATION_DELAY: 'check-prep-delay',

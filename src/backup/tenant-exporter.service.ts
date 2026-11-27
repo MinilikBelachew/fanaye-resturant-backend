@@ -1,6 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import * as zlib from 'zlib';
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class TenantExporterService {
@@ -20,6 +23,10 @@ export class TenantExporterService {
     billsToday: number;
     revenueToday: number;
   }> {
+    if (!UUID_REGEX.test((tenantId || '').trim())) {
+      throw new BadRequestException('Invalid tenant ID format.');
+    }
+
     // 1. Fetch Tenant entity
     const tenantRows: any[] = await this.prisma.$queryRawUnsafe(
       `SELECT * FROM public.tenants WHERE id = '${tenantId}'::uuid;`,

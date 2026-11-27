@@ -64,6 +64,29 @@ import { SyncModule } from './sync/sync.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { TalentModule } from './talent/talent.module';
 import { MarketPricesModule } from './market-prices/market-prices.module';
+import { isRedisQueueEnabled } from './orders/queues/order-sla.constants';
+
+const redisQueueImports = isRedisQueueEnabled()
+  ? [
+      BullModule.forRootAsync({
+        imports: [ConfigModule],
+        inject: [ConfigService],
+        useFactory: (configService: ConfigService) => ({
+          connection: {
+            host: configService.get('REDIS_HOST', { infer: true }) || 'localhost',
+            port:
+              Number(configService.get('REDIS_PORT', { infer: true })) || 6379,
+            maxRetriesPerRequest: null,
+            enableReadyCheck: false,
+            retryStrategy(times) {
+              // Backoff reconnection attempts to avoid terminal flooding if Redis is offline
+              return Math.min(times * 2000, 30000);
+            },
+          },
+        }),
+      }),
+    ]
+  : [];
 
 @Module({
   imports: [
@@ -92,23 +115,7 @@ import { MarketPricesModule } from './market-prices/market-prices.module';
         limit: 120,
       },
     ]),
-    BullModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        connection: {
-          host: configService.get('REDIS_HOST', { infer: true }) || 'localhost',
-          port:
-            Number(configService.get('REDIS_PORT', { infer: true })) || 6379,
-          maxRetriesPerRequest: null,
-          enableReadyCheck: false,
-          retryStrategy(times) {
-            // Backoff reconnection attempts to avoid terminal flooding if Redis is offline
-            return Math.min(times * 2000, 30000);
-          },
-        },
-      }),
-    }),
+    ...redisQueueImports,
     I18nModule.forRootAsync({
       useFactory: (configService: ConfigService<AllConfigType>) => ({
         fallbackLanguage: configService.getOrThrow('app.fallbackLanguage', {

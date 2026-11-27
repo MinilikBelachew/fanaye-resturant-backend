@@ -7,11 +7,20 @@ import {
   HttpStatus,
   Param,
   Post,
+  Request,
   Response,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Response as ExpressResponse } from 'express';
-import { SyncService, PullCloudDto, SyncConfigDto, FirstTimeSetupDto } from './sync.service';
+import { AuthGuard } from '@nestjs/passport';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Request as ExpressRequest, Response as ExpressResponse } from 'express';
+import {
+  SyncService,
+  PullCloudDto,
+  SyncConfigDto,
+  FirstTimeSetupDto,
+  SyncPushPayload,
+} from './sync.service';
 
 @ApiTags('Sync')
 @Controller({
@@ -28,7 +37,10 @@ export class SyncController {
    */
   @Post('first-time-setup')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'First-time setup: Authenticate with Cloud, provision restaurant & login' })
+  @ApiOperation({
+    summary:
+      'First-time setup: Authenticate with Cloud, provision restaurant & login',
+  })
   async firstTimeSetup(
     @Body() body: FirstTimeSetupDto,
     @Response({ passthrough: true }) res: ExpressResponse,
@@ -41,16 +53,26 @@ export class SyncController {
    * Exports full tenant database archive so a local offline PC can fetch it.
    */
   @Get('export-tenant/:tenantId')
-  @ApiOperation({ summary: 'Stream complete tenant archive for initial offline provisioning' })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Stream complete tenant archive for initial offline provisioning',
+  })
   async exportTenant(
     @Param('tenantId') tenantId: string,
+    @Request() req: ExpressRequest,
     @Response() res: ExpressResponse,
   ) {
-    const { filename, sqlGzBuffer } = await this.syncService.exportTenantData(tenantId);
+    const nodeSyncToken = await this.syncService.authorizeRemoteTenantSync(
+      req,
+      tenantId,
+    );
+    const { filename, sqlGzBuffer } =
+      await this.syncService.exportTenantData(tenantId);
     res.set({
       'Content-Type': 'application/gzip',
       'Content-Disposition': `attachment; filename="${filename}"`,
       'Content-Length': sqlGzBuffer.length,
+      ...(nodeSyncToken ? { 'x-sync-node-token': nodeSyncToken } : {}),
     });
     res.send(sqlGzBuffer);
   }
@@ -60,9 +82,14 @@ export class SyncController {
    * 1-Click Pull: Connects to Cloud, fetches all data & caches Cloudinary images locally.
    */
   @Post('pull-all')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: '1-Click initial setup: Pull all tenant data & images from Cloud' })
-  async pullAll(@Body() body: PullCloudDto) {
+  @ApiOperation({
+    summary: '1-Click initial setup: Pull all tenant data & images from Cloud',
+  })
+  async pullAll(@Request() req: any, @Body() body: PullCloudDto) {
+    await this.syncService.requireLocalAdmin(req?.user?.id);
     return this.syncService.pullAllFromCloud(body);
   }
 
@@ -71,13 +98,18 @@ export class SyncController {
    * Receives push of daily orders and bills from offline nodes.
    */
   @Post('push')
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Receive order and billing sync data from offline restaurant' })
+  @ApiOperation({
+    summary: 'Receive order and billing sync data from offline restaurant',
+  })
   async receivePush(
+    @Request() req: ExpressRequest,
     @Headers('x-tenant-id') headerTenantId: string,
-    @Body() payload: { tenantId?: string; orders?: any[]; bills?: any[] },
+    @Body() payload: SyncPushPayload,
   ) {
     const tenantId = payload.tenantId || headerTenantId;
+    await this.syncService.authorizeRemoteTenantSync(req, tenantId);
     return this.syncService.handleIncomingPush(tenantId, payload);
   }
 
@@ -86,9 +118,14 @@ export class SyncController {
    * Triggers an immediate push/pull sync cycle.
    */
   @Post('trigger-now')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Manually trigger a sync cycle from the local machine' })
-  async triggerManualSync() {
+  @ApiOperation({
+    summary: 'Manually trigger a sync cycle from the local machine',
+  })
+  async triggerManualSync(@Request() req: any) {
+    await this.syncService.requireLocalAdmin(req?.user?.id);
     return this.syncService.runOfflineSyncCycle();
   }
 
@@ -105,9 +142,12 @@ export class SyncController {
    * Update sync connection settings
    */
   @Post('configure')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update cloud sync connection credentials' })
-  async configure(@Body() body: SyncConfigDto) {
+  async configure(@Request() req: any, @Body() body: SyncConfigDto) {
+    await this.syncService.requireLocalAdmin(req?.user?.id);
     return this.syncService.updateConfig(body);
   }
 }

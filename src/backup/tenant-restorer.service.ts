@@ -69,21 +69,8 @@ export class TenantRestorerService {
       `Restoring tenant "${archiveTenantName}" (${archiveTenantId}) from verified backup archive...`,
     );
 
-    // Split SQL statements safely
-    const lines = sqlString.split('\n');
-    const statements: string[] = [];
-    let currentStmt = '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('--')) continue;
-
-      currentStmt += (currentStmt ? ' ' : '') + trimmed;
-      if (trimmed.endsWith(';')) {
-        statements.push(currentStmt);
-        currentStmt = '';
-      }
-    }
+    // Split SQL statements safely, respecting single-quoted strings and '--' comments
+    const statements = splitPostgresStatements(sqlString);
 
     // Execute in PostgreSQL transaction with statement timeout
     try {
@@ -235,5 +222,58 @@ export class TenantRestorerService {
 
     this.logger.log('Verified system roles and permissions locally.');
   }
+}
+
+function splitPostgresStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let inSingleQuote = false;
+  let inLineComment = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+
+    if (inLineComment) {
+      if (ch === '\n') {
+        inLineComment = false;
+      }
+      continue;
+    }
+
+    if (!inSingleQuote && ch === '-' && next === '-') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === "'") {
+      current += ch;
+      if (inSingleQuote && next === "'") {
+        current += next;
+        i++;
+      } else {
+        inSingleQuote = !inSingleQuote;
+      }
+      continue;
+    }
+
+    if (!inSingleQuote && ch === ';') {
+      const trimmed = current.trim();
+      if (trimmed) {
+        statements.push(`${trimmed};`);
+      }
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  const trailing = current.trim();
+  if (trailing) {
+    statements.push(trailing);
+  }
+  return statements;
 }
 

@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
 import { HomeService } from './home.service';
 import { HomeController } from './home.controller';
+import { HealthController } from './health.controller';
 import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [ConfigModule],
-  controllers: [HomeController],
+  controllers: [HomeController, HealthController],
   providers: [HomeService],
 })
 export class HomeModule {}
